@@ -1,0 +1,18 @@
+{
+  "name": "discord-forum-tool",
+  "version": "1.0.0",
+  "description": "卓工房 (TAKU-KOBO)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.4.11"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "pdfjs-dist": "^3.11.174",
+    "yauzl": "^2.10.0"
+  }
+}

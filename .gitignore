@@ -1,0 +1,9 @@
+_TRPG_Data/
+node_modules/
+dist/
+out/
+release/
+__pycache__/
+.DS_Store
+Thumbs.db
+*.log

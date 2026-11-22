@@ -1,0 +1,1634 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>卓工房 - TAKU-KOBO | TRPG GM総合支援ツール</title>
+  <link rel="stylesheet" href="discord_forum_app_test49.css">
+  <link rel="stylesheet" href="ccfolia/ccf.css">
+  <link rel="stylesheet" href="theme_test49.css">
+  <script src="app_test49_15_theme.js"></script>
+</head>
+<body data-active-tab="databaseTab">
+  <div id="appBootSplash" class="boot-splash" role="status" aria-live="polite" aria-label="アプリを起動しています">
+    <div class="boot-splash-card">
+      <div class="boot-splash-icon">
+        <svg class="taku-brand-svg taku-splash-svg" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <!-- 外周の破線歯車リング -->
+          <circle cx="32" cy="32" r="28.5" stroke="var(--taku-logo-sub)" stroke-width="2" stroke-dasharray="4.5 3.5" stroke-linecap="round"/>
+          <circle cx="32" cy="32" r="24.5" stroke="var(--taku-logo-sub)" stroke-width="1" stroke-opacity="0.45"/>
+          <!-- 和綴じ本（立体・ページ重なり・背表紙・綴じ紐・題箋） -->
+          <g stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 44.8 C12 46.5 13.5 47.4 15.6 47.4 H36.4 C37.5 47.4 38.2 46.7 38.2 45.6 V42" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="1.8"/>
+            <path d="M16.5 45.1 H36.3" stroke="var(--taku-logo-sub)" stroke-width="1.3"/>
+            <path d="M12 17.4 C12 15.7 13.4 14.8 15.2 14.8 H36 C37.2 14.8 38 15.6 38 16.8 V41.2 C38 42.3 37.2 43 36 43 H15.2 C13.4 43 12 43.7 12 44.8 Z" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="2"/>
+            <line x1="16.5" y1="15" x2="16.5" y2="43" stroke="var(--taku-logo-main)" stroke-width="1.5"/>
+            <path d="M12 20h4.5M12 26h4.5M12 32h4.5M12 38h4.5" stroke="var(--taku-logo-main)" stroke-width="1.6"/>
+            <rect x="25.5" y="19" width="5.5" height="17" rx="1" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-sub)" stroke-width="1.4"/>
+            <line x1="28.25" y1="22" x2="28.25" y2="33" stroke="var(--taku-logo-sub)" stroke-width="1.2"/>
+          </g>
+          <!-- 万年筆のペン先（執筆・記録） -->
+          <g transform="translate(41 19) rotate(32)" stroke="var(--taku-logo-main)" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M0 -8.5 L6 2 L3.8 8.5 H-3.8 L-6 2 Z" fill="var(--taku-logo-bg)" stroke-width="1.8"/>
+            <line x1="0" y1="-8.5" x2="0" y2="1" stroke-width="1.4"/>
+            <circle cx="0" cy="2" r="1.4" fill="var(--taku-logo-main)"/>
+            <line x1="-4.2" y1="11" x2="4.2" y2="11" stroke-width="1.6"/>
+          </g>
+          <!-- 20面ダイス（TRPG） -->
+          <g stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="44,25 53,30.5 53,41.5 44,47 35,41.5 35,30.5" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="1.8"/>
+            <polygon points="44,29.2 50,39.5 38,39.5" stroke="var(--taku-logo-sub)" stroke-width="1.3"/>
+            <path d="M44 25v4.2M53 30.5l-3 9M53 41.5l-3-2M44 47l-6-7.5M44 47l6-7.5M35 41.5l3-2M35 30.5l3 9" stroke="var(--taku-logo-sub)" stroke-width="1.2"/>
+          </g>
+        </svg>
+      </div>
+      <div class="boot-splash-title">
+        <span class="taku-brand-title">卓工房</span>
+        <span class="taku-brand-sub">TAKU-KOBO / Scenario &amp; Room Studio</span>
+      </div>
+      <div class="boot-splash-spinner" aria-hidden="true"></div>
+      <div class="boot-splash-msg">データを読み込んでいます…</div>
+    </div>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="taku-brand-header">
+        <svg class="taku-brand-svg" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <!-- 外周の破線歯車リング -->
+          <circle cx="32" cy="32" r="28.5" stroke="var(--taku-logo-sub)" stroke-width="2" stroke-dasharray="4.5 3.5" stroke-linecap="round"/>
+          <circle cx="32" cy="32" r="24.5" stroke="var(--taku-logo-sub)" stroke-width="1" stroke-opacity="0.45"/>
+          <!-- 和綴じ本（立体・ページ重なり・背表紙・綴じ紐・題箋） -->
+          <g stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 44.8 C12 46.5 13.5 47.4 15.6 47.4 H36.4 C37.5 47.4 38.2 46.7 38.2 45.6 V42" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="1.8"/>
+            <path d="M16.5 45.1 H36.3" stroke="var(--taku-logo-sub)" stroke-width="1.3"/>
+            <path d="M12 17.4 C12 15.7 13.4 14.8 15.2 14.8 H36 C37.2 14.8 38 15.6 38 16.8 V41.2 C38 42.3 37.2 43 36 43 H15.2 C13.4 43 12 43.7 12 44.8 Z" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="2"/>
+            <line x1="16.5" y1="15" x2="16.5" y2="43" stroke="var(--taku-logo-main)" stroke-width="1.5"/>
+            <path d="M12 20h4.5M12 26h4.5M12 32h4.5M12 38h4.5" stroke="var(--taku-logo-main)" stroke-width="1.6"/>
+            <rect x="25.5" y="19" width="5.5" height="17" rx="1" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-sub)" stroke-width="1.4"/>
+            <line x1="28.25" y1="22" x2="28.25" y2="33" stroke="var(--taku-logo-sub)" stroke-width="1.2"/>
+          </g>
+          <!-- 万年筆のペン先（執筆・記録） -->
+          <g transform="translate(41 19) rotate(32)" stroke="var(--taku-logo-main)" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M0 -8.5 L6 2 L3.8 8.5 H-3.8 L-6 2 Z" fill="var(--taku-logo-bg)" stroke-width="1.8"/>
+            <line x1="0" y1="-8.5" x2="0" y2="1" stroke-width="1.4"/>
+            <circle cx="0" cy="2" r="1.4" fill="var(--taku-logo-main)"/>
+            <line x1="-4.2" y1="11" x2="4.2" y2="11" stroke-width="1.6"/>
+          </g>
+          <!-- 20面ダイス（TRPG） -->
+          <g stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="44,25 53,30.5 53,41.5 44,47 35,41.5 35,30.5" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="1.8"/>
+            <polygon points="44,29.2 50,39.5 38,39.5" stroke="var(--taku-logo-sub)" stroke-width="1.3"/>
+            <path d="M44 25v4.2M53 30.5l-3 9M53 41.5l-3-2M44 47l-6-7.5M44 47l6-7.5M35 41.5l3-2M35 30.5l3 9" stroke="var(--taku-logo-sub)" stroke-width="1.2"/>
+          </g>
+        </svg>
+        <div class="taku-brand-text">
+          <span class="taku-brand-title">卓工房</span>
+          <span class="taku-brand-sub">TAKU-KOBO / Scenario &amp; Room Studio</span>
+        </div>
+      </div>
+      <nav class="nav-tabs" role="tablist" aria-label="メニュー">
+        <button role="tab" aria-selected="true" class="tab-btn active" data-tab="databaseTab" data-on-click="switchTab-databaseTab-event">🏠 ホーム<small>シナリオ一覧</small></button>
+        <button role="tab" aria-selected="false" class="tab-btn" data-tab="postTab" data-on-click="switchTab-postTab-event">📝 Discord投稿・編集<small>選択中のシナリオ</small></button>
+        <button role="tab" aria-selected="false" class="tab-btn" data-tab="galleryTab" data-on-click="switchTab-galleryTab-event">🖼️ 共通ギャラリー<small>画像素材</small></button>
+        <button role="tab" aria-selected="false" class="tab-btn" data-tab="ccfTab">🎲 ココフォリア<small>PDF抽出・NPC自動生成</small></button>
+      </nav>
+      <div class="sb-filter">
+        <label class="sb-label" for="sbSearch">🔎 シナリオを検索</label>
+        <input type="search" id="sbSearch" placeholder="タイトル・システム・タグ…" autocomplete="off">
+        <div class="sb-label">🏷️ 絞り込みタグ</div>
+        <div id="sbSelBar" class="sb-selbar" style="display:none;"></div>
+        <div id="sbTags" class="sb-tags"></div>
+      </div>
+      <div class="sb-theme"><button type="button" id="settingsOpenBtn" class="theme-toggle" data-on-click="open-settings-appearance" aria-label="設定を開く（外観・テーマ／データ保存・同期／Discord投稿）">⚙️ 設定</button></div>
+    </aside>
+    <main class="main-area" id="mainArea">
+      <div class="app-header">
+    <div class="app-title" id="pageName">🏠 ホーム</div>
+    <div class="app-actions" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+      <button type="button" class="btn btn-secondary post-only" data-on-click="resetForm">🧹 フォーム初期化</button>
+      <button type="button" class="btn btn-secondary post-only" data-on-click="resetInputs" title="本文・画像・タグ・選択中のシナリオだけをクリアします（ブロックの並びやチャンネル選択はそのまま）">🧹 入力内容のみクリア</button>
+      <div class="cloud-sync-bar" id="cloudSyncBar">
+        <button type="button" id="mobileReaderToggleBtn" class="btn btn-secondary" title="スマホ・タブレット向けのクラウド読書＆GMメモ閲覧モードに切り替えます">📖 モバイル閲覧モード</button>
+        <span id="cloudStatusBadge" class="cloud-status-pill" title="クラウド同期の状態">未ログイン</span>
+        <button type="button" id="cloudManualSyncBtn" class="btn btn-secondary" title="クラウドへ今すぐ最新の状態を保存・同期します">🔄 今すぐ同期</button>
+        <button type="button" id="authOpenBtn" class="btn btn-secondary">🔑 ログイン / 登録</button>
+        <button type="button" id="authLogoutBtn" class="btn btn-secondary" style="display:none;">ログアウト</button>
+      </div>
+    </div>
+  </div>
+
+
+<!-- 1. 投稿作成画面 -->
+<div id="postTab" class="tab-content">
+  <div class="workspace">
+    <div class="form-area">
+      
+      <div class="card" style="border-left: 4px solid var(--dc-accent);">
+        <div class="card-title">📖 保存シナリオからデータを呼び出す</div>
+        <div class="qs-wrap">
+          <input type="text" id="scenarioQuickSearch" placeholder="🔍 検索して呼び出し（シナリオ名・システム・技能・タグなど。スペース区切りでAND検索）" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="scenarioQuickResults">
+          <div id="scenarioQuickResults" class="qs-results" role="listbox"></div>
+        </div>
+        <div class="grid-2">
+          <select id="dbScenarioSelect" data-on-change="loadScenarioFromDB-this-value">
+            <option value="">-- 保存済みシナリオを選択して自動入力 --</option>
+          </select>
+          <button type="button" class="btn btn-secondary btn-success" data-on-click="saveCurrentToDB">💾 入力中の内容を保存/更新</button>
+        </div>
+      </div>
+
+      <div id="hoTabs" class="ho-tabs" role="tablist"></div>
+      <div id="hoPanel" style="display:none"></div>
+      <form id="postForm" data-on-submit="handlePost-event">
+        <div class="card post-acc-card" id="channelTagCard">
+          <div class="card-title post-acc-header" id="channelTagAccHeader" role="button" tabindex="0" aria-expanded="true" aria-controls="channelTagAccBody" title="クリックで開閉">
+            <div class="post-acc-title-wrap">
+              <span class="post-acc-caret" id="channelTagAccCaret">▼</span>
+              <span class="post-acc-title">📌 送信先チャンネル(複数選択可)</span>
+              <span class="post-acc-summary is-empty" id="channelTagAccSummary">（未選択）</span>
+            </div>
+            <button type="button" class="btn btn-secondary post-acc-action" id="openDiscordSettingsBtn" data-on-click="open-settings-modal" title="Bot・記号・チャンネル（Webhook・タグ）の設定を開きます">⚙️ Discord設定</button>
+          </div>
+          <div class="post-acc-body" id="channelTagAccBody">
+          <div class="form-group">
+            <label>送信先フォーラムチャンネル<span class="req">*</span></label>
+            <div id="channelCheckboxContainer" class="tag-chips"></div>
+          </div>
+
+          <div class="form-group">
+            <label>付与タグ (クリックで選択)</label>
+            <div id="tagContainer" class="tag-picker-wrap"></div>
+            <div class="tag-actions-bar">
+              <div class="tag-add-group">
+                <input type="text" id="newCustomTagInput" placeholder="＋ 新しいタグ名を追加" autocomplete="off">
+                <button type="button" class="btn btn-secondary" id="addCustomTagBtn">追加</button>
+              </div>
+              <button type="button" class="btn btn-secondary" data-on-click="rederive-tags" title="人数・システム欄の文から、人数タグ（2PL/ソロ/タイマン等）とシステムタグを付け直します（手動のタグは維持）">🔄 スペック・本文からタグを再自動判定</button>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-top:14px; margin-bottom:0; border-top:1px dashed var(--dc-border); padding-top:12px;">
+            <div style="display:flex; flex-direction:column; gap:8px;">
+              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.85rem; text-transform:none; color:var(--dc-text-normal);">
+                <input type="checkbox" id="verticalImageMode" data-on-change="renderPreview" style="width:auto; cursor:pointer;" checked> 
+                📷 画像を縦並び（スタック表示）でアタッチする (推奨)
+              </label>
+              <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.85rem; text-transform:none; color:var(--dc-red);">
+                <input type="checkbox" id="noImageMode" data-on-change="renderPreview" style="width:auto; cursor:pointer;"> 
+                🚫 画像を一切添付しない（テキストのみで投稿する）
+              </label>
+            </div>
+          </div>
+
+          <div id="duplicateWarning" style="display:none; color:var(--dc-yellow); font-size:0.85rem; font-weight:bold; margin-top:6px;">
+            ⚠️ 選択中のチャンネルの一部に投稿済みです
+          </div>
+          </div>
+        </div>
+
+        <div class="card post-acc-card" id="basicInfoCard">
+          <div class="edit-toolbar post-acc-header" id="basicInfoAccHeader" role="button" tabindex="0" aria-expanded="true" aria-controls="basicInfoAccBody" title="クリックで開閉">
+            <div class="post-acc-title-wrap">
+              <span class="post-acc-caret" id="basicInfoAccCaret">▼</span>
+              <div id="editScenarioName" class="edit-sname">📝 未登録の下書き（保存／投稿で自動登録）</div>
+            </div>
+            <button type="button" class="btn btn-secondary post-acc-action" id="openHistoryModalBtn" data-on-click="open-history-modal">📜 投稿履歴を見る</button>
+          </div>
+          <div class="post-acc-body" id="basicInfoAccBody">
+        <div class="form-group" style="margin:0;">
+            <label>フォーラムスレッドタイトル<span class="req">*</span></label>
+            <input type="text" id="title" placeholder="例: サンプルシナリオA" required data-on-input="checkDuplicateStatus-renderPreview">
+          </div>
+          
+          <div class="form-group" style="margin-top:14px;">
+            <label>ショップURL (任意)</label>
+            <input type="url" id="topShopUrl" placeholder="https://..." data-on-input="renderPreview">
+          </div>
+          
+          <div class="form-group" style="margin-top:14px;">
+            <label style="display:flex; justify-content:space-between; align-items:center;">
+              <span>トレーラー・キャッチコピー (見出し無し・ショップURLの後に表示)</span>
+              <span style="display:inline-flex; align-items:center; gap:4px; font-weight:normal; text-transform:none;">
+                装飾スタイル:
+                <select id="topTrailerDecor" style="padding:4px; font-size:0.75rem; background:var(--dc-bg-primary); border:1px solid var(--dc-border); color:var(--dc-text-normal); border-radius:4px; outline:none;" data-on-change="renderPreview-2">
+                  <option value="default">通常(引用)</option>
+                  <option value="simple">シンプル</option>
+                  <option value="fancy">ファンシー</option>
+                  <option value="codeblock">コードブロック</option>
+                  <option value="none">装飾なし</option>
+                </select>
+              </span>
+            </label>
+            <textarea id="topTrailer" data-on-input="renderPreview" placeholder="例：その扉を開けた時、日常は静かに幕を閉じた。"></textarea>
+          </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            ↕️ 項目ブロック
+            <div>
+              <button type="button" class="btn btn-secondary" data-on-click="toggleAllBlocks-false">📂 全て開く</button>
+              <button type="button" class="btn btn-secondary" data-on-click="toggleAllBlocks-true">📁 全て閉じる</button>
+              <button type="button" class="btn btn-secondary btn-warning" data-on-click="addSplitBlock">✂️ 投稿分割</button>
+              <button type="button" class="btn btn-secondary btn-warning" data-on-click="autoSplitBlocks">✂️ 自動分割</button>
+              <button type="button" class="btn btn-secondary" data-on-click="addImageBlock">🖼️ 画像追加</button>
+              <button type="button" class="btn btn-secondary" data-on-click="addCustomBlock">＋ 自由項目</button>
+            </div>
+          </div>
+          <div style="font-size: 0.8rem; color: var(--dc-text-muted); margin-bottom: 12px; background: rgba(0,0,0,0.1); padding: 8px 12px; border-radius: 4px; text-align: center; border: 1px dashed var(--dc-border);">
+            💡 項目ごとに装飾スタイル(シンプル・コードブロック等)を選択できます。<br>
+            💡 このエリア内に画像ファイルをドラッグ＆ドロップすると画像ブロックが追加されます。
+          </div>
+          <div id="sortableBlockContainer" 
+               data-on-dragover="handleContainerDragOver-event" 
+               data-on-dragleave="handleContainerDragLeave-event" 
+               data-on-drop="handleContainerDrop-event"
+               style="min-height: 50px; transition: 0.2s;">
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">💬 自動追記返信 (スレッド作成直後の初速返信)</div>
+          <div class="form-group">
+            <textarea id="autoReplyText" placeholder="例: 日程調整用URL: https://example.com/！" data-on-input="renderPreview"></textarea>
+          </div>
+        </div>
+
+        <button type="submit" class="btn" id="submitBtn">🚀 Discordフォーラムに投稿する</button>
+        <div id="statusMsg" class="status-msg"></div>
+      </form>
+    </div>
+
+    <div class="preview-area" id="postRightPane">
+      <!-- 1. 上段：リアルタイム Discord プレビュー -->
+      <div class="right-acc-panel" id="previewAccPanel">
+        <div class="right-acc-header" id="previewAccHeader" role="button" tabindex="0" aria-expanded="true" aria-controls="previewAccBody" title="クリックでプレビューを開閉">
+          <div class="right-acc-title-wrap">
+            <span class="right-acc-caret" id="previewAccCaret">▼</span>
+            <span class="right-acc-title">👀 リアルタイム Discord プレビュー</span>
+          </div>
+          <div class="preview-tools right-acc-actions">
+            <button type="button" id="previewZoomBtn" class="btn btn-secondary btn-xs" data-on-click="preview-zoom" title="プレビューを大きく表示（Escで閉じる）">🔍 拡大表示</button>
+            <button type="button" id="copyPostBtn" class="btn btn-secondary btn-xs" data-on-click="copyPostContent">📋 投稿内容をコピー</button>
+          </div>
+        </div>
+        <div class="right-acc-body" id="previewAccBody">
+          <div class="discord-preview-box" id="hoPreviewBox" style="display:none"></div>
+          <div class="discord-preview-box" id="pubPreviewBox">
+            <div class="discord-thread-title" id="pvThreadTitle">【スレッドタイトル】</div>
+            <div class="discord-tags" id="pvTags"></div>
+
+            <div class="discord-msg">
+              <img id="pvAvatar" class="discord-avatar" src="https://cdn.discordapp.com/embed/avatars/0.png">
+              <div style="flex:1;">
+                <div>
+                  <span class="discord-username" id="pvUsername">概要投稿Bot</span>
+                  <span class="discord-bot-tag">BOT</span>
+                  <span class="discord-timestamp">今日 12:00</span>
+                </div>
+                <div class="discord-text" id="pvContent"></div>
+              </div>
+            </div>
+
+            <div id="pvReplySection" class="discord-reply-preview" style="display:none; margin-top:16px;">
+              <div class="discord-header">💬 自動追記返信プレビュー</div>
+              <div class="discord-msg">
+                <img id="pvAvatarReply" class="discord-avatar" src="https://cdn.discordapp.com/embed/avatars/0.png">
+                <div>
+                  <span class="discord-username" id="pvUsernameReply">概要投稿Bot</span>
+                  <span class="discord-bot-tag">BOT</span>
+                  <div class="discord-text" id="pvReplyContent"></div>
+                </div>
+              </div>
+            </div>
+
+            <div id="charCounter" class="char-counter">文字数推定: 0 / 2000文字</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. 下段：シナリオ資料ビューワ（PDF / TXT） -->
+      <div class="right-acc-panel" id="docViewerAccPanel">
+        <div class="right-acc-header" id="docViewerAccHeader" role="button" tabindex="0" aria-expanded="true" aria-controls="docViewerAccBody" title="クリックでシナリオ資料ビューワを開閉">
+          <div class="right-acc-title-wrap">
+            <span class="right-acc-caret" id="docViewerAccCaret">▼</span>
+            <span class="right-acc-title">📄 シナリオ資料ビューワ（PDF / TXT）</span>
+          </div>
+          <div class="right-acc-actions">
+            <span id="postDocMetaBadge" class="post-doc-meta-badge"></span>
+          </div>
+        </div>
+        <div class="right-acc-body post-doc-viewer-body" id="docViewerAccBody">
+          <div class="post-doc-toolbar">
+            <div class="post-doc-file-row">
+              <select id="postDocSelect" title="選択中のシナリオに紐づく資料ファイル（PDF / TXT / MD / HTML）を切り替え" aria-label="シナリオ資料ファイル選択">
+                <option value="">-- シナリオ資料を選択 --</option>
+              </select>
+              <button type="button" id="postDocOpenBtn" class="btn btn-secondary btn-xs" title="PC内のPDF / TXT / MD / HTMLファイルを選択して開きます">📂 ファイルを開く</button>
+              <input type="file" id="postDocFileInput" accept=".pdf,.txt,.md,.markdown,.html,.htm" style="display:none;">
+            </div>
+            <div class="post-doc-transfer-row" aria-label="選択テキストのワンクリック転記アシスタント">
+              <span class="post-doc-transfer-label">選択文を転記:</span>
+              <button type="button" class="post-doc-transfer-btn" data-doc-transfer="catchcopy" title="ビューワ内で選択中のテキストを整形して左ペインの「トレーラー・キャッチコピー」欄へ反映（追記）します">[➔ キャッチコピーへ]</button>
+              <button type="button" class="post-doc-transfer-btn" data-doc-transfer="synopsis" title="ビューワ内で選択中のテキストを整形して左ペインの「あらすじ（イントロダクション）」欄へ反映（追記）します">[➔ あらすじへ]</button>
+              <button type="button" class="post-doc-transfer-btn" data-doc-transfer="notes" title="ビューワ内で選択中のテキストを整形して左ペインの「注意事項・備考」欄へ反映（追記）します">[➔ 注意事項へ]</button>
+              <button type="button" class="post-doc-transfer-btn post-doc-copy-btn" data-doc-transfer="copy" title="ビューワ内で選択中のテキストをスマート整形してクリップボードへコピーします（自由項目等への貼り付け用）">[📋 整形コピー]</button>
+            </div>
+            <div class="post-doc-ctrl-row">
+              <button type="button" id="postDocRectModeBtn" class="post-doc-ctrl-btn post-doc-rect-btn" aria-pressed="false" title="ONの時にPDFページ上をドラッグすると半透明矩形内のテキスト要素のみを行順・座標順に抽出します（2段組みPDFの片側段の抽出に最適）">▭ 範囲選択</button>
+              <div class="post-doc-page-grp" id="postDocPageGrp">
+                <button type="button" id="postDocPrevPage" class="post-doc-ctrl-btn" title="前のページ" disabled>◀</button>
+                <input type="number" id="postDocPageInput" class="post-doc-page-input" min="1" value="1" aria-label="ページ番号" disabled>
+                <span id="postDocPageTotal" class="post-doc-page-total">/ -</span>
+                <button type="button" id="postDocNextPage" class="post-doc-ctrl-btn" title="次のページ" disabled>▶</button>
+              </div>
+              <div class="post-doc-zoom-grp">
+                <button type="button" id="postDocZoomOut" class="post-doc-ctrl-btn" title="縮小">－</button>
+                <span id="postDocZoomLabel" class="post-doc-zoom-label">100%</span>
+                <button type="button" id="postDocZoomIn" class="post-doc-ctrl-btn" title="拡大">＋</button>
+                <button type="button" id="postDocZoomFit" class="post-doc-ctrl-btn" title="幅に合わせる">↔ 幅合わせ</button>
+              </div>
+              <div class="post-doc-search-grp">
+                <input type="search" id="postDocSearchInput" class="post-doc-search-input" placeholder="🔍 キーワード検索..." aria-label="資料内キーワード検索" autocomplete="off">
+                <button type="button" id="postDocSearchPrev" class="post-doc-ctrl-btn" title="前の一致箇所へ (Shift+Enter)">▲</button>
+                <button type="button" id="postDocSearchNext" class="post-doc-ctrl-btn" title="次の一致箇所へ (Enter)">▼</button>
+                <span id="postDocSearchCount" class="post-doc-search-count"></span>
+              </div>
+            </div>
+          </div>
+          <div class="post-doc-viewport" id="postDocViewport">
+            <div class="post-doc-empty" id="postDocEmpty">
+              <div class="post-doc-empty-icon">📄</div>
+              <div class="post-doc-empty-title">シナリオ資料（PDF / TXT / MD / HTML）を閲覧できます</div>
+              <div class="post-doc-empty-sub">上のプルダウンから選択、「📂 ファイルを開く」、または<br>このエリアへファイルを直接ドラッグ＆ドロップしてください</div>
+            </div>
+            <div class="post-doc-pages" id="postDocPages" hidden></div>
+            <div class="post-doc-text-wrap" id="postDocTextWrap" hidden>
+              <div class="post-doc-text-head" id="postDocTextHead"></div>
+              <div class="post-doc-text-body" id="postDocTextBody"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+<div class="edit-bottom">
+      <div id="scenarioGallery" class="card"></div>
+      <div id="scenarioDocs" class="card"></div>
+    </div>
+</div>
+
+<!-- 2. シナリオデータベース ＆ ダッシュボード画面 -->
+<div id="databaseTab" class="tab-content active">
+  <div class="card">
+    <div class="card-title">
+      📊 ダッシュボード集計 & フィルター・ソート
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input type="text" id="dbSearchInput" placeholder="名前・システム・技能・備考・タグ等（スペースでAND）" title="全角/半角・ひらがな/カタカナの違いは無視して検索します" style="width:260px; padding:6px 10px;" data-on-input="debouncedDB">
+        <select id="dbFilterStatus" style="width:130px; padding:6px;" data-on-change="renderDBView">
+          <option value="all">すべての状態</option>
+          <option value="unposted">未投稿のみ</option>
+          <option value="posted">投稿済みのみ</option>
+          <option value="fav">★お気に入りのみ</option>
+        </select>
+        <select id="dbFilterPlayStatus" style="width:150px; padding:6px;" title="プレイ状況で絞り込み">
+          <option value="all">すべてのプレイ状況</option>
+          <option value="unset">未設定</option>
+          <option value="unplayed">未通過</option>
+          <option value="planned">通過予定</option>
+          <option value="played">通過済</option>
+          <option value="can_gm">回せる</option>
+          <option value="stacked">積んでいる</option>
+        </select>
+        <select id="dbFilterChannel" style="width:170px; padding:6px;" data-on-change="renderDBView" title="チャンネル別に絞り込み"></select>
+        <span id="dbResultCount" class="search-count"></span><span id="dbSelTags" class="db-seltags"></span>
+        <select id="dbSortOrder" style="width:140px; padding:6px;" data-on-change="renderDBView">
+          <option value="newest">登録順 (新しい順)</option>
+          <option value="unposted_first">未投稿を優先</option>
+          <option value="title">タイトル順 (あいうえお)</option>
+        </select>
+        <label class="search-count" style="display:flex; align-items:center; gap:4px; cursor:pointer;" title="★を付けたシナリオを、どの並び順でも先頭に表示します"><input type="checkbox" id="dbFavFirst" style="width:auto;" checked data-on-change="try-localStorage-setItem-discord_forum_t">★を先頭に</label>
+        <button class="btn btn-secondary" data-on-click="setDBViewMode-card" id="btnViewCard">📇 カード</button>
+        <button class="btn btn-secondary" data-on-click="setDBViewMode-table" id="btnViewTable">📋 テーブル</button>
+      </div>
+    </div>
+    <div class="grid-3" style="text-align:center;">
+      <div style="background:var(--dc-bg-primary); padding:12px; border-radius:6px;">
+        <div style="font-size:0.8rem; color:var(--dc-text-muted);">総シナリオ数</div>
+        <div id="totalScenarioCount" style="font-size:1.5rem; font-weight:bold; color:#fff;">0</div>
+      </div>
+      <div style="background:var(--dc-bg-primary); padding:12px; border-radius:6px;">
+        <div style="font-size:0.8rem; color:var(--dc-text-muted);">投稿済</div>
+        <div id="postedScenarioCount" style="font-size:1.5rem; font-weight:bold; color:var(--dc-green);">0</div>
+      </div>
+      <div style="background:var(--dc-bg-primary); padding:12px; border-radius:6px;">
+        <div style="font-size:0.8rem; color:var(--dc-text-muted);">未投稿</div>
+        <div id="unpostedScenarioCount" style="font-size:1.5rem; font-weight:bold; color:var(--dc-yellow);">0</div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">
+      📚 シナリオライブラリ
+      <div class="lib-head-actions">
+        <button type="button" class="btn btn-secondary" data-lib-act="sync-watch" title="設定済みのシナリオ監視フォルダをスキャンして差分取り込みを実行（Shift+クリックでフォルダ変更）">🔄 監視フォルダ同期</button>
+        <button type="button" class="btn btn-secondary" data-lib-act="pick-watch" id="btnScnWatchPick" title="シナリオ用監視フォルダを設定（未設定）">📁 監視フォルダ設定</button>
+        <span id="scnWatchBadgeWrap" class="scn-watch-badge-wrap" style="display:none;">
+          <span id="scnWatchFolderBadge" class="scn-watch-badge" title=""></span>
+          <button type="button" class="btn btn-secondary scn-watch-unwatch-btn" data-lib-act="unwatch-scenario" title="シナリオ監視フォルダの設定を解除">✕ 監視解除</button>
+        </span>
+        <button type="button" class="btn btn-secondary" data-lib-act="pick-folder" title="フォルダを選択してシナリオを一括登録します">📁 フォルダを選んで登録</button>
+        <button type="button" class="btn btn-secondary" data-lib-act="pick-files" title="PDF・ZIP・TXT・HTMLファイルを選んでシナリオを登録します">📄 PDF・ZIPを選んで登録</button>
+        <button type="button" class="btn btn-secondary" data-lib-act="cleanup-scenarios" id="btnCleanupScenarios" title="タイトルの自動クレンジング・重複や親子分裂シナリオの統合・誤抽出された分類名カードの削除を診断して一括整理します">🧹 重複・誤抽出を整理</button>
+        <button type="button" class="btn btn-success" data-on-click="openAddScenarioModal">＋ 新規シナリオ手動追加</button>
+      </div>
+    </div>
+    <div id="dbBulkBar" class="db-bulk-bar" style="display:none;">
+      <div class="db-bulk-info"><strong id="dbBulkCount">0</strong> 件選択中<span class="db-bulk-hint">（Shift+クリックで範囲選択）</span></div>
+      <div class="db-bulk-actions">
+        <button type="button" class="btn btn-secondary" data-bulk-act="toggle-all" id="btnBulkToggleAll">☑ 表示中を全選択 / 解除</button>
+        <button type="button" class="btn btn-primary" data-bulk-act="merge" id="btnBulkMerge" disabled>🔗 選択したシナリオを1つに統合（0件）</button>
+        <button type="button" class="btn btn-danger" data-bulk-act="delete" id="btnBulkDelete">🗑️ 選択したシナリオを一括削除（0件）</button>
+        <button type="button" class="btn btn-secondary" data-bulk-act="clear">✕ 選択解除</button>
+      </div>
+    </div>
+    <div id="dbCardContainer" class="scenario-grid"></div>
+    <div id="dbTableContainer" style="display:none; overflow-x:auto;">
+      <table class="db-table">
+        <thead>
+          <tr>
+            <th style="width:36px; text-align:center;"><input type="checkbox" id="dbTableHeadCheck" class="db-sel-chk-all" title="表示中を全選択 / 解除" aria-label="表示中を全選択または解除"></th><th style="width:70px;">画像</th><th>シナリオ名</th><th>システム</th><th>人数 / 時間</th><th>投稿状態</th><th>投稿済チャンネル</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="dbTableBody"></tbody>
+      </table>
+    </div>
+    <div id="dbMoreWrap" style="text-align:center; margin-top:12px;"></div>
+  </div>
+</div>
+
+<!-- 新規シナリオ手動追加 モーダル -->
+<div id="addScenarioModal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="card-title">📝 新規シナリオ手動追加<button type="button" class="btn-sort" data-on-click="closeAddScenarioModal">✕</button></div>
+    <form data-on-submit="handleManualAddScenario-event">
+      <div class="form-group"><label>シナリオタイトル<span class="req">*</span></label><input type="text" id="mTitle" required placeholder="例: サンプルシナリオA"></div>
+      <div class="grid-2">
+        <div class="form-group"><label>システム</label><input type="text" id="mSystem" placeholder="例: システム名"></div>
+        <div class="form-group"><label>ショップURL</label><input type="url" id="mShopUrl" placeholder="https://..."></div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group"><label>プレイ人数</label><textarea id="mPlayerCount" class="short-input" placeholder="例: 4人"></textarea></div>
+        <div class="form-group"><label>プレイ時間</label><textarea id="mPlayTime" class="short-input" placeholder="例: 3〜4時間"></textarea></div>
+      </div>
+      <div class="grid-3">
+        <div class="form-group"><label>必須技能</label><textarea id="mReqSkills" class="short-input" placeholder="例: 必須技能1、必須技能2"></textarea></div>
+        <div class="form-group"><label>推奨技能</label><textarea id="mRecSkills" class="short-input" placeholder="例: 推奨技能1、推奨技能2"></textarea></div>
+        <div class="form-group"><label>準推奨技能</label><textarea id="mSemiRecSkills" class="short-input" placeholder="例: 準推奨技能1、準推奨技能2"></textarea></div>
+      </div>
+      <div class="grid-2">
+        <div class="form-group"><label>ロスト率</label><textarea id="mLostRate" class="short-input" placeholder="例: 低"></textarea></div>
+        <div class="form-group"><label>後遺症</label><textarea id="mAftereffect" class="short-input" placeholder="例: なし"></textarea></div>
+      </div>
+      <div class="form-group">
+        <label>サムネイル画像 (ドラッグ＆ドロップ または URL指定)</label>
+        <div class="drop-zone" id="mDropZone" data-on-click="document-getElementById-mFileInput-click" data-on-dragover="handleDragOver-event" data-on-dragleave="handleDragLeave-event" data-on-drop="handleManualImageDrop-event">
+          <span id="mDropText">📷 画像ファイルをここにドロップ または クリックして選択</span>
+          <input type="file" id="mFileInput" accept="image/*" style="display:none;" data-on-change="handleManualImageSelect-event">
+        </div>
+        <input type="text" id="mImageUrl" placeholder="https://... または画像をドロップ" style="margin-top:6px;">
+      </div>
+      <div class="form-group"><label>トレーラー・キャッチコピー</label><textarea id="mTrailer" placeholder="例：その扉を開けた時、日常は静かに幕を閉じた。"></textarea></div>
+      <div class="form-group"><label>注意事項・備考</label><textarea id="mNotes" placeholder="注意事項..."></textarea></div>
+      <div class="actions-right">
+        <button type="button" class="btn btn-secondary btn-md" data-on-click="closeAddScenarioModal">キャンセル</button>
+        <button type="submit" class="btn btn-success btn-md">💾 データベースに登録</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- 3. 投稿履歴画面 -->
+<div id="galleryTab" class="tab-content"></div>
+
+<div id="historyTab" class="tab-content">
+  <div class="card">
+    <div class="card-title">📜 過去の投稿ログ<button class="btn btn-secondary btn-danger" data-on-click="clearHistory">ログ消去</button></div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+      <input type="text" id="historySearchInput" placeholder="🔍 日時・シナリオ名・チャンネル・タグで検索（スペースでAND）" style="flex:1; min-width:220px; padding:6px 10px;" data-on-input="renderHistoryTable">
+      <button type="button" class="btn btn-secondary" data-on-click="document-getElementById-historySearchInp">クリア</button>
+      <span id="historyResultCount" class="search-count"></span>
+    </div>
+    <table>
+      <thead><tr><th>投稿日時</th><th>シナリオ名</th><th>投稿先チャンネル</th><th>付与タグ</th><th>スレッド</th></tr></thead>
+      <tbody id="historyTableBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 4. Discord設定ポップアップ（「📝 Discord投稿・編集」画面の「⚙️ Discord設定」ボタンから開く。Bot・記号・チャンネル・バックアップ） -->
+<div id="settingsModal" class="settings-overlay" role="dialog" aria-modal="true" aria-label="設定">
+<div class="settings-dialog">
+  <div class="settings-head">
+    <div class="taku-settings-brand">
+      <svg class="taku-brand-svg taku-settings-svg" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <circle cx="32" cy="32" r="28.5" stroke="var(--taku-logo-sub)" stroke-width="2" stroke-dasharray="4.5 3.5" stroke-linecap="round"/>
+        <circle cx="32" cy="32" r="24.5" stroke="var(--taku-logo-sub)" stroke-width="1" stroke-opacity="0.45"/>
+        <g stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 44.8 C12 46.5 13.5 47.4 15.6 47.4 H36.4 C37.5 47.4 38.2 46.7 38.2 45.6 V42" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="1.8"/>
+          <path d="M16.5 45.1 H36.3" stroke="var(--taku-logo-sub)" stroke-width="1.3"/>
+          <path d="M12 17.4 C12 15.7 13.4 14.8 15.2 14.8 H36 C37.2 14.8 38 15.6 38 16.8 V41.2 C38 42.3 37.2 43 36 43 H15.2 C13.4 43 12 43.7 12 44.8 Z" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="2"/>
+          <line x1="16.5" y1="15" x2="16.5" y2="43" stroke="var(--taku-logo-main)" stroke-width="1.5"/>
+          <path d="M12 20h4.5M12 26h4.5M12 32h4.5M12 38h4.5" stroke="var(--taku-logo-main)" stroke-width="1.6"/>
+          <rect x="25.5" y="19" width="5.5" height="17" rx="1" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-sub)" stroke-width="1.4"/>
+          <line x1="28.25" y1="22" x2="28.25" y2="33" stroke="var(--taku-logo-sub)" stroke-width="1.2"/>
+        </g>
+        <g transform="translate(41 19) rotate(32)" stroke="var(--taku-logo-main)" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M0 -8.5 L6 2 L3.8 8.5 H-3.8 L-6 2 Z" fill="var(--taku-logo-bg)" stroke-width="1.8"/>
+          <line x1="0" y1="-8.5" x2="0" y2="1" stroke-width="1.4"/>
+          <circle cx="0" cy="2" r="1.4" fill="var(--taku-logo-main)"/>
+          <line x1="-4.2" y1="11" x2="4.2" y2="11" stroke-width="1.6"/>
+        </g>
+        <g stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="44,25 53,30.5 53,41.5 44,47 35,41.5 35,30.5" fill="var(--taku-logo-bg)" stroke="var(--taku-logo-main)" stroke-width="1.8"/>
+          <polygon points="44,29.2 50,39.5 38,39.5" stroke="var(--taku-logo-sub)" stroke-width="1.3"/>
+          <path d="M44 25v4.2M53 30.5l-3 9M53 41.5l-3-2M44 47l-6-7.5M44 47l6-7.5M35 41.5l3-2M35 30.5l3 9" stroke="var(--taku-logo-sub)" stroke-width="1.2"/>
+        </g>
+      </svg>
+      <h2>⚙️ 設定<small>卓工房 (TAKU-KOBO) — 外観・テーマ／データ保存・同期／Discord投稿</small></h2>
+    </div>
+    <button type="button" class="btn btn-secondary" data-on-click="close-settings-modal" aria-label="設定を閉じる">✕ 閉じる</button>
+  </div>
+  <div class="settings-tabs" role="tablist" aria-label="設定の種類">
+    <button type="button" role="tab" class="set-tab on" data-set-tab="appearance" aria-selected="true">🎨 外観・テーマ設定</button>
+    <button type="button" role="tab" class="set-tab" data-set-tab="cloud" aria-selected="false">☁️ データ保存・同期設定</button>
+    <button type="button" role="tab" class="set-tab" data-set-tab="discord" aria-selected="false">🤖 Discord投稿・タグ設定</button>
+  </div>
+  <div class="settings-body" data-set-pane="appearance">
+    <div class="card">
+      <div class="card-title">🌗 ベーステーマ</div>
+      <div class="theme-opts">
+        <button type="button" class="theme-opt" data-theme-set="dark">
+          <b>🌙 ダーク</b>
+          <small>暗い背景で目に優しい。夜の作業向け。</small>
+          <span class="theme-swatches" aria-hidden="true"><i style="background:#5865f2"></i><i style="background:#1e1f22"></i><i style="background:#313338"></i></span>
+        </button>
+        <button type="button" class="theme-opt" data-theme-set="light">
+          <b>☀️ ライト</b>
+          <small>明るい背景ですっきり。日中の作業向け。</small>
+          <span class="theme-swatches" aria-hidden="true"><i style="background:#5865f2"></i><i style="background:#e3e5e8"></i><i style="background:#d4d7dc"></i></span>
+        </button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">🖌️ 雰囲気スタイル</div>
+      <div class="theme-opts style-opts">
+        <button type="button" class="theme-opt" data-style-set="modern">
+          <b>モダン</b>
+          <small>標準のモダンな見た目。青系アクセントで締まった印象。</small>
+          <span class="theme-swatches" aria-hidden="true"><i style="background:#5865f2"></i><i style="background:#2b2d31"></i><i style="background:#23a55a"></i></span>
+        </button>
+        <button type="button" class="theme-opt" data-style-set="calm">
+          <b>落ち着いた</b>
+          <small>くすんだ暖色系の配色。長時間見ても疲れにくい。</small>
+          <span class="theme-swatches" aria-hidden="true"><i style="background:#b08254"></i><i style="background:#4a423b"></i><i style="background:#738670"></i></span>
+        </button>
+        <button type="button" class="theme-opt" data-style-set="soft">
+          <b>やわらかめ</b>
+          <small>大きめの角丸とやさしい配色。親しみやすい印象。</small>
+          <span class="theme-swatches" aria-hidden="true"><i style="background:#7c9eff"></i><i style="background:#f5c2d7"></i><i style="background:#a8e6cf"></i></span>
+        </button>
+        <button type="button" class="theme-opt" data-style-set="minimal">
+          <b>ミニマル</b>
+          <small>装飾を抑えた白黒基調。情報だけを見たいとき向け。</small>
+          <span class="theme-swatches" aria-hidden="true"><i style="background:#18181b"></i><i style="background:#71717a"></i><i style="background:#e4e4e7"></i></span>
+        </button>
+      </div>
+      <div class="set-note" style="margin-top:10px;">外観設定はクリックで即座に反映・保存され、次回起動時も引き継がれます。</div>
+    </div>
+  </div>
+  <div class="settings-body" data-set-pane="cloud" hidden>
+    <div class="card" id="settingsCloudCard">
+      <div class="card-title">☁️ データ保存・同期設定</div>
+      <div id="settingsCloudHost"></div>
+    </div>
+  </div>
+  <div class="settings-body" data-set-pane="discord" hidden>
+  <div class="card">
+    <div class="card-title">🤖 Bot・投稿の基本設定</div>
+    <div class="bot-row">
+      <div class="bot-avatar drop-zone" title="Botアイコン：クリックして選択、または画像をドラッグ＆ドロップ" data-on-click="document-getElementById-botAvatarInput-click" data-on-dragover="handleDragOver-event" data-on-dragleave="handleDragLeave-event" data-on-drop="handleBotAvatarDrop-event">
+        <span id="botAvatarDropText">📷</span>
+        <input type="file" id="botAvatarInput" accept="image/*" style="display:none;" data-on-change="handleBotAvatarSelect-event">
+        <img id="botAvatarPreview" class="image-preview-thumb" style="display:none;" alt="">
+      </div>
+      <div class="form-group" style="flex:1; min-width:150px; margin:0;"><label>Bot表示名</label><input type="text" id="botName" value="概要投稿Bot" data-on-input="appState-botName-this-value-saveState-tr"></div>
+      <div class="form-group" style="margin:0;"><label>添付ファイルの上限</label><div style="display:flex; align-items:center; gap:4px;"><input type="number" id="maxAttachMB" min="1" max="500" step="0.5" value="9.5" style="width:84px;" data-on-input="saveMaxAttach-this-value"> MB</div></div>
+      <button type="button" class="btn-sort" data-on-click="pick-bot-avatar">選ぶ</button>
+      <button type="button" class="btn-sort btn-danger" style="display:none;" id="botAvatarClearBtn" data-on-click="clearBotAvatar">🗑️ アイコン解除</button>
+    </div>
+    <details class="set-note"><summary>アイコン・添付上限について</summary><p>アイコンは、投稿直前にWebhook自体のアイコンを更新して反映します（解除すると次の投稿時に初期アイコンへ戻します）。表示名は投稿ごとに指定するので、Webhookの名前は変更しません。添付上限はサーバーのブースト状況で異なります。この値を超える画像は圧縮した画像で送り、1通の合計が超える場合は投稿前にお知らせします。</p></details>
+  </div>
+  <div class="card">
+    <div class="card-title">🎨 フォーマット・記号</div>
+    <div class="fmt-grid">
+      <div><label>通常: 見出し(h1)</label><input type="text" id="cfgH1" data-on-input="saveFormatConfig-renderPreview"></div>
+      <div><label>概要まとめ: 項目カッコ 前 / 後</label><div style="display:flex; gap:4px;"><input type="text" id="cfgSubPre" data-on-input="saveFormatConfig-renderPreview"><input type="text" id="cfgSubPost" data-on-input="saveFormatConfig-renderPreview"></div></div>
+      <div><label>シンプル: 見出し</label><input type="text" id="cfgSimpleH1" data-on-input="saveFormatConfig-renderPreview"></div>
+      <div><label>シンプル: 箇条書き</label><input type="text" id="cfgSimpleList" data-on-input="saveFormatConfig-renderPreview"></div>
+      <div><label>ファンシー: 見出し</label><input type="text" id="cfgFancyH1" data-on-input="saveFormatConfig-renderPreview"></div>
+      <div><label>ファンシー: 箇条書き</label><input type="text" id="cfgFancyList" data-on-input="saveFormatConfig-renderPreview"></div>
+    </div>
+    <div class="fmt-sub">自分のフォーマット <span>（ブロックの装飾プルダウンに「🎨 名前」として出ます）</span></div>
+    <div id="customFormatList"></div>
+    <button type="button" class="btn btn-secondary btn-sm" data-fmt-act="add">＋ フォーマットを追加</button>
+  </div>
+  <div class="card" id="baseTagCard"></div>
+  <div class="card">
+    <div class="card-title">🔗 投稿先フォーラム &amp; タグIDマトリクス設定</div>
+    <details class="set-note"><summary>Webhook URLの扱いについて</summary><p>※ Webhook URLもクラウド同期の対象に含まれます（ご自身のアカウントのみ閲覧・編集できるよう保護されています）。入力欄は編集中以外は伏せ字で表示されます。</p></details>
+    <div id="channelConfigList"></div>
+    <button type="button" class="btn btn-secondary" data-on-click="addChannelConfig">＋ チャンネルを追加</button>
+  </div>
+
+  <div class="card" id="backupCard">
+    <div class="card-title">📦 バックアップ（全データ インポート / エクスポート）</div>
+    <details class="set-note"><summary>バックアップについて</summary><p>登録シナリオ・投稿履歴・チャンネル設定・画像を、1つのファイル（JSON）にまとめて保存／復元します。復元すると現在のデータはファイルの内容で置き換わります（直前のデータは自動でバックアップされます）。<br>※ Webhook URLも含まれるため、ファイルは他人に共有しないでください。</p></details>
+    <div class="actions-right" style="margin-top:0;">
+      <button type="button" class="btn btn-secondary btn-md" data-on-click="exportData">💾 JSONに保存</button>
+      <button type="button" class="btn btn-secondary btn-md" data-on-click="document-getElementById-importFile-click">📂 JSONから復元</button>
+      <input type="file" id="importFile" accept=".json" style="display:none;" data-on-change="importData-event">
+      <button type="button" class="btn btn-secondary btn-md" data-on-click="exportPreV3Backup">🕰 移行前データをJSONで書き出し</button>
+    </div>
+  </div>
+  </div>
+  <div class="settings-foot">
+    <button type="button" class="btn btn-secondary btn-md" data-on-click="close-settings-modal">閉じる</button>
+    <button type="button" class="btn btn-md" data-on-click="saveSettings">💾 設定を保存する</button>
+  </div>
+</div>
+</div>
+
+<!-- 5. ココフォリア特化ツール（Phase 1：PDF抽出・テキスト整形・NPC自動生成）。中身は ccfolia/ccf_ui.js が作る -->
+<div id="ccfTab" class="tab-content"></div>
+
+<!-- 6. Firebase ログイン / 新規登録 モーダル -->
+<div id="authModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+  <div class="modal-card auth-modal-card">
+    <div class="auth-modal-head">
+      <div class="auth-modal-title-wrap">
+        <h2 id="authModalTitle">☁️ クラウド同期アカウント</h2>
+        <p class="auth-lead">ログインしなくてもそのまま使えます。ログインすると別端末ともデータを引き継げます。</p>
+      </div>
+      <button type="button" class="btn-sort auth-close-btn" id="authCloseBtn" aria-label="閉じる">✕</button>
+    </div>
+    <div class="auth-tabs" role="tablist" aria-label="認証モード">
+      <button type="button" class="auth-tab active" data-auth-mode="login" role="tab" aria-selected="true">ログイン</button>
+      <button type="button" class="auth-tab" data-auth-mode="register" role="tab" aria-selected="false">新規登録</button>
+    </div>
+    <form id="authForm" class="auth-form">
+      <div class="form-group">
+        <label for="authEmail">メールアドレス</label>
+        <input type="email" id="authEmail" required autocomplete="email" placeholder="example@mail.com">
+      </div>
+      <div class="form-group">
+        <label for="authPassword">パスワード（6文字以上）</label>
+        <input type="password" id="authPassword" required minlength="6" autocomplete="current-password" placeholder="6文字以上のパスワード">
+      </div>
+      <div class="auth-aux-row">
+        <button type="button" id="authPwResetBtn" class="btn btn-secondary btn-sm auth-reset-btn">🔑 パスワードを設定・忘れた場合（設定メールを送信）</button>
+      </div>
+      <button type="submit" id="authSubmitBtn" class="btn auth-submit-btn">☁️ ログインしてクラウド同期を開始</button>
+    </form>
+    <div id="authGoogleWrap">
+      <div class="auth-divider">または</div>
+      <button type="button" id="authGoogleBtn" class="btn btn-secondary auth-google-btn"><span class="auth-google-g" aria-hidden="true">G</span> Googleアカウントでログイン</button>
+    </div>
+    <div id="authElectronHint" class="set-note auth-electron-hint" style="display:none;">💡 Googleログインをお使いの方も、同じGmailアドレスでパスワードを設定するとメールアドレスでもログインできるようになります。</div>
+    <div id="authMsg" class="auth-msg" role="status"></div>
+    <details id="firebaseCfgDetails" class="auth-cfg-box">
+      <summary>高度な設定（独自のFirebaseを使用する場合のみ）</summary>
+      <div class="auth-cfg-desc">通常は設定不要です。独自の Firebase プロジェクトへ切り替える場合のみ、<code>firebaseConfig</code> の JSON を貼り付けて保存してください。</div>
+      <textarea id="firebaseCfgInput" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","appId":"..."}'></textarea>
+      <div class="auth-cfg-actions">
+        <button type="button" id="firebaseCfgClearBtn" class="btn btn-secondary btn-sm">既定設定に戻す</button>
+        <button type="button" id="firebaseCfgSaveBtn" class="btn btn-success btn-sm">設定を保存して接続</button>
+      </div>
+    </details>
+    <div class="auth-cloud-jump-wrap">
+      <button type="button" id="authOpenCloudSettingsBtn" class="btn btn-secondary auth-cloud-jump-btn">⚙️ 同期範囲・クラウド保存先の設定を開く</button>
+    </div>
+  </div>
+</div>
+
+<!-- 7. アプリ終了時 クラウド同期プログレスダイアログ（Electron版） -->
+<div id="cloudExitModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="cloudExitTitle" style="display:none; z-index:10050;">
+  <div class="modal-card cloud-exit-card">
+    <h3 id="cloudExitTitle">☁️ クラウドへ同期して終了しています...</h3>
+    <p id="cloudExitMsg" class="cloud-exit-msg">未送信のデータを同期しています（残り 0 件）</p>
+    <div class="cloud-exit-progress-wrap"><div id="cloudExitBar" class="cloud-exit-progress-bar" style="width:0%;"></div></div>
+    <div class="cloud-exit-actions">
+      <button type="button" id="cloudExitSkipBtn" class="btn btn-secondary">次回起動時に回して今すぐ閉じる</button>
+    </div>
+  </div>
+</div>
+
+</main>
+  </div>
+  <div id="mobileReaderView" class="mobile-reader-root" hidden></div>
+
+<script src="app_test49_00_electron.js"></script>
+<script src="app_test49_00_block_common.js"></script>
+<script src="app_test49_01_state_model.js"></script>
+<script src="app_test49_02_storage_images.js"></script>
+<script src="app_test49_03_ui_basics.js"></script>
+<script src="app_test49_04_forms_blocks.js"></script>
+<script src="app_test49_05_channels_save_sync.js"></script>
+<script src="app_test49_06_post.js"></script>
+<script src="app_test49_07_boot.js"></script>
+<script src="app_test49_08_events.js"></script>
+<script src="app_test49_09_actions.js"></script>
+<script src="app_test49_10_secret_ho.js"></script>
+<script src="app_test49_11_custom_formats.js"></script>
+<script src="app_test49_12_scenario_window.js"></script>
+<script src="app_test49_13_shell.js"></script>
+<script src="app_test49_14_gallery.js"></script>
+<script src="app_test49_16_scenario_detail.js"></script>
+<script src="ccfolia/ccf_text.js"></script>
+<script src="ccfolia/ccf_sys.js"></script>
+<script src="ccfolia/ccf_npc.js"></script>
+<script src="ccfolia/ccf_model.js"></script>
+<script src="ccfolia/ccf_pdf_viewer.js"></script>
+<script src="ccfolia/ccf_ui.js"></script>
+<script src="ccfolia/ccf_zip.js"></script>
+<script src="ccfolia/ccf_pkg.js"></script>
+<script src="ccfolia/ccf_zip_export.js"></script>
+<script src="ccfolia/ccf_zip_import.js"></script>
+<script src="ccfolia/ccf_doc_export.js"></script>
+<script src="ccfolia/ccf_npc_ui.js"></script>
+<script src="ccfolia/ccf_assets.js"></script>
+<script src="ccfolia/ccf_library.js"></script>
+<script src="ccfolia/ccf_scene_match.js"></script>
+<script src="ccfolia/ccf_scene_ui.js"></script>
+<script src="ccfolia/ccf_scan.js"></script>
+<script src="ccfolia/ccf_dnd.js"></script>
+
+<script type="module">
+(() => {
+  const CFG_KEY = 'taku_kobo_firebase_config';
+  const DIRTY_KEY = 'discord_forum_tool_dirty';
+  const FB_BASE = 'https://www.gstatic.com/firebasejs/10.14.1/';
+  const DEFAULT_FIREBASE_CONFIG = {
+    apiKey: "AIzaSyCwOehXQfm9tNBLpjXLTbMvfvll9rbvOd0",
+    authDomain: "taku-kobo.firebaseapp.com",
+    projectId: "taku-kobo",
+    storageBucket: "taku-kobo.firebasestorage.app",
+    messagingSenderId: "689074346144",
+    appId: "1:689074346144:web:cc67725e841562ca0e51c5"
+  };
+  const $ = id => document.getElementById(id);
+  const isElectronRenderer = !!(
+    (typeof IS_ELECTRON !== 'undefined' && IS_ELECTRON) ||
+    (window.process && window.process.type === 'renderer')
+  );
+  function getIpcRenderer() {
+    if (!isElectronRenderer || typeof require !== 'function') return null;
+    try { return require('electron').ipcRenderer || null; } catch (_) { return null; }
+  }
+  const canGoogle = !!getIpcRenderer() || (!isElectronRenderer && /^https?:$/i.test(location.protocol));
+
+  const OWNER_KEY = 'discord_forum_tool_owner';
+  const lastKey = uid => 'discord_forum_tool_cloud_last_' + uid;
+  const lastSyncAtKey = uid => 'taku_last_cloud_sync_at_' + uid;
+  const markLastSyncAt = (uid, ts) => {
+    const v = String(Number(ts) || Date.now());
+    try { if (uid) localStorage.setItem(lastSyncAtKey(uid), v); localStorage.setItem('taku_last_cloud_sync_at', v); } catch (_) {}
+  };
+  window.cloudGetUid = () => currentUser ? currentUser.uid : '';
+  const IMG_RE = /data:[a-zA-Z0-9.+\/-]+;base64,[A-Za-z0-9+\/=]+/g;
+  const REF_RE = /@img:([a-z0-9]+)/g;
+  const CHUNK = 800000;
+  const DOC_LIMIT = 1000000;
+
+  let fb = null, fbApp = null, fbAuth = null, fbDb = null, currentUser = null;
+  let authMode = 'login', syncTimer = null, syncing = false, pending = false, syncBlocked = false, deleteGuardDeclined = false, fbSyncError = false;
+  let cloudIndex = null, cloudImages = new Map();
+
+  window.getFirebaseSyncStatus = () => ({
+    loggedIn: !!currentUser,
+    email: (currentUser && (currentUser.email || currentUser.displayName)) || '',
+    syncing: !!syncing,
+    syncBlocked: !!syncBlocked,
+    syncError: !!fbSyncError,
+    dirty: (() => { try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch (_) { return false; } })()
+  });
+
+  function parseFirebaseConfig(raw) {
+    if (!raw) return null;
+    if (typeof raw === 'object') return raw.apiKey && raw.projectId ? raw : null;
+    let s = String(raw).trim();
+    if (!s) return null;
+    const m = s.match(/\{[\s\S]*\}/);
+    if (m) s = m[0];
+    try {
+      const obj = JSON.parse(s);
+      return (obj && obj.apiKey && obj.projectId) ? obj : null;
+    } catch (_) {
+      try {
+        const relaxed = s
+          .replace(/\/\/.*$/gm, '')
+          .replace(/\/\*[\s\S]*?\*\//g, '')
+          .replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":')
+          .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_, g) => JSON.stringify(g))
+          .replace(/,\s*([}\]])/g, '$1');
+        const obj = JSON.parse(relaxed);
+        return (obj && obj.apiKey && obj.projectId) ? obj : null;
+      } catch (__) { return null; }
+    }
+  }
+
+  function clearLegacyDriveCache() {
+    try {
+      localStorage.removeItem('taku_gdrive_token_v1');
+      localStorage.removeItem('taku_gdrive_folders_v1');
+    } catch (_) {}
+  }
+
+  (function resetStaleProjectCache() {
+    const PROJECT_MARKER_KEY = 'taku_fb_project_id_v1';
+    try {
+      const savedProject = localStorage.getItem(PROJECT_MARKER_KEY);
+      if (savedProject && savedProject !== DEFAULT_FIREBASE_CONFIG.projectId) {
+        clearLegacyDriveCache();
+      }
+      localStorage.setItem(PROJECT_MARKER_KEY, DEFAULT_FIREBASE_CONFIG.projectId);
+    } catch (_) {}
+  })();
+
+  function loadCustomConfig() {
+    if (window.FIREBASE_CONFIG) {
+      const c = parseFirebaseConfig(window.FIREBASE_CONFIG);
+      if (c) return c;
+    }
+    try {
+      const c = parseFirebaseConfig(localStorage.getItem(CFG_KEY));
+      if (c && c.projectId !== DEFAULT_FIREBASE_CONFIG.projectId) {
+        localStorage.removeItem(CFG_KEY);
+        clearLegacyDriveCache();
+        return null;
+      }
+      return c;
+    } catch (_) { return null; }
+  }
+
+  function loadStoredConfig() {
+    return loadCustomConfig() || DEFAULT_FIREBASE_CONFIG;
+  }
+
+  function setStatus(text, cls) {
+    if (typeof window.updateUnifiedSyncBadge === 'function') {
+      window.updateUnifiedSyncBadge();
+      return;
+    }
+    const el = $('cloudStatusBadge');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'cloud-status-pill' + (cls ? ' ' + cls : '');
+  }
+
+  function setAuthMsg(text, ok) {
+    const el = $('authMsg');
+    if (!el) return;
+    el.textContent = text || '';
+    el.className = 'auth-msg' + (ok ? ' ok' : '');
+  }
+
+  function refreshAuthUi() {
+    const loginBtn = $('authOpenBtn'), logoutBtn = $('authLogoutBtn');
+    const gw = $('authGoogleWrap'), eh = $('authElectronHint');
+    if (gw) gw.style.display = '';
+    if (eh) eh.style.display = canGoogle ? 'none' : '';
+    if (currentUser) {
+      if (loginBtn) loginBtn.style.display = 'none';
+      if (logoutBtn) logoutBtn.style.display = '';
+    } else {
+      if (loginBtn) loginBtn.style.display = '';
+      if (logoutBtn) logoutBtn.style.display = 'none';
+    }
+    if (typeof window.updateUnifiedSyncBadge === 'function') {
+      window.updateUnifiedSyncBadge();
+    } else {
+      const isFileDirect = !isElectronRenderer && typeof location !== 'undefined' && location.protocol === 'file:';
+      if (currentUser) {
+        const dirty = (() => { try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch (_) { return false; } })();
+        if (syncing) setStatus('🔄 同期中…', 'syncing');
+        else if (syncBlocked) setStatus('⚠️ 未同期（他端末で更新あり）', 'err');
+        else if (dirty) setStatus('● 未同期', 'dirty');
+        else if (isFileDirect) setStatus('● 同期完了（Firebase同期）', 'ok');
+        else setStatus('● 同期完了 (' + (currentUser.email || currentUser.displayName || 'ログイン中') + ')', 'ok');
+      } else {
+        setStatus('未ログイン', '');
+      }
+    }
+  }
+
+  function openAuthModal() {
+    const m = $('authModal');
+    if (!m) return;
+    const customCfg = loadCustomConfig();
+    const inp = $('firebaseCfgInput'), det = $('firebaseCfgDetails');
+    if (inp) inp.value = customCfg ? JSON.stringify(customCfg, null, 2) : '';
+    if (det) det.open = false;
+    setAuthMsg('');
+    refreshAuthUi();
+    m.style.display = 'flex';
+  }
+  function closeAuthModal() {
+    const m = $('authModal');
+    if (m) m.style.display = 'none';
+  }
+
+  async function resetFirebaseInstance() {
+    if (fbApp && fb && typeof fb.deleteApp === 'function') {
+      try { await fb.deleteApp(fbApp); } catch (_) {}
+    }
+    fbApp = fbAuth = fbDb = null;
+  }
+
+  async function ensureFirebase() {
+    const cfg = loadStoredConfig();
+    if (!cfg) return null;
+    if (fbApp && fbAuth && fbDb) return fb;
+    const [appMod, authMod, fsMod] = await Promise.all([
+      import(FB_BASE + 'firebase-app.js'),
+      import(FB_BASE + 'firebase-auth.js'),
+      import(FB_BASE + 'firebase-firestore.js')
+    ]);
+    fb = { ...appMod, ...authMod, ...fsMod };
+    fbApp = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(cfg);
+    fbAuth = authMod.getAuth(fbApp);
+    fbDb = fsMod.getFirestore(fbApp);
+    authMod.onAuthStateChanged(fbAuth, async user => {
+      if (user && user.isAnonymous) {
+        try { await authMod.signOut(fbAuth); } catch (_) {}
+        return;
+      }
+      currentUser = user || null;
+      refreshAuthUi();
+      if (currentUser) {
+        closeAuthModal();
+        await cloudOnLogin(currentUser);
+      } else {
+        cloudOnLogout();
+      }
+    });
+    return fb;
+  }
+
+  const settingsRef = uid => fb.doc(fbDb, 'users', uid, 'sync', 'settings');
+  const scenCol = uid => fb.collection(fbDb, 'users', uid, 'scenarios');
+  const imgCol = uid => fb.collection(fbDb, 'users', uid, 'images');
+
+  function scenId(sc) {
+    if (sc && sc.id) return 's_' + String(sc.id).replace(/[^A-Za-z0-9_-]/g, '');
+    const title = sc && sc.title;
+    let h = 5381;
+    for (const c of String(title)) h = ((h * 33) ^ c.codePointAt(0)) >>> 0;
+    return `s_${h.toString(36)}_${String(title).length}`;
+  }
+
+  function externalize(obj, images) {
+    return JSON.stringify(obj).replace(IMG_RE, m => {
+      const h = typeof hashStr === 'function' ? hashStr(m) : '';
+      if (!h) return m;
+      images.set(h, m);
+      return '@img:' + h;
+    });
+  }
+
+  async function loadIndex(uid) {
+    const snap = await fb.getDocs(scenCol(uid));
+    cloudIndex = new Map();
+    snap.forEach(d => cloudIndex.set(d.id, d.data()));
+  }
+
+  async function fetchCloudImage(uid, h, total) {
+    total = Number(total) || 1;
+    const parts = [];
+    for (let i = 0; i < total; i++) {
+      const d = await fb.getDoc(fb.doc(imgCol(uid), `${h}_${i}`));
+      if (!d.exists()) return null;
+      parts.push(d.data().data);
+    }
+    return parts.join('');
+  }
+
+  window.cloudFetchImage = h => currentUser ? fetchCloudImage(currentUser.uid, h, cloudImages.get(h)) : Promise.resolve(null);
+
+  async function uploadImage(uid, h, data) {
+    const total = Math.ceil(data.length / CHUNK);
+    for (let i = 0; i < total; i++) {
+      await fb.setDoc(fb.doc(imgCol(uid), `${h}_${i}`), {
+        h,
+        i,
+        total,
+        data: data.slice(i * CHUNK, (i + 1) * CHUNK)
+      });
+    }
+    return total;
+  }
+
+  async function mergeRemote(uid, rs) {
+    setStatus('🔄 他の端末の変更を統合中…', 'syncing');
+    await loadIndex(uid);
+    const rsData = rs.data() || {};
+    cloudImages = new Map(Object.entries(rsData.images || {}));
+    const local = window.getAppStateForSync({ forCloud: true });
+    const remoteRest = rsData.json ? JSON.parse(rsData.json) : {};
+    const remoteScenarios = [];
+    [...cloudIndex.values()]
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+      .forEach(v => {
+        try {
+          const c = JSON.parse(v.json);
+          if (c && c.id) remoteScenarios.push(c);
+        } catch (e) { console.warn('[cloud] mergeRemote.parse', e); }
+      });
+    const remote = { ...remoteRest, scenarios: remoteScenarios };
+    window._lastCloudConflictCount = 0;
+    const merged = window.mergeCloudStates(local, remote);
+    await window.applyMergedState(merged, { fromCloud: true });
+    if (window._lastCloudConflictCount > 0 && typeof toast === 'function') {
+      toast(`🛡️ 別端末との編集競合を検出し、${window._lastCloudConflictCount}件の古いデータを別名バックアップとして退避しました`);
+    }
+    markLastSyncAt(uid, Date.now());
+  }
+
+  async function pushToCloud() {
+    const uid = currentUser.uid;
+    if (syncBlocked) return -1;
+    const rs = await fb.getDoc(settingsRef(uid));
+    if (rs.exists() && rs.data().updatedAt !== Number(localStorage.getItem(lastKey(uid)) || 0)) {
+      await mergeRemote(uid, rs);
+    }
+    if (typeof window.imgFlush === 'function') await window.imgFlush();
+    const { scenarios = [], ...rest } = window.getAppStateForSync({ forCloud: true });
+    const images = new Map();
+    let restJson = externalize(rest, images);
+    const BYTES = t => new TextEncoder().encode(t).length;
+    if (BYTES(restJson) > DOC_LIMIT && Array.isArray(rest.history)) {
+      rest.history = rest.history.slice(-50);
+      restJson = externalize(rest, images);
+    }
+    if (BYTES(restJson) > DOC_LIMIT) throw new Error('設定データが1ドキュメントの上限（約1MB）を超えています');
+    const scJsons = scenarios.map(sc => externalize(sc, images));
+    for (const j of [restJson, ...scJsons]) {
+      for (const mm of j.matchAll(REF_RE)) {
+        if (!images.has(mm[1])) images.set(mm[1], null);
+      }
+    }
+    let failed = 0;
+
+    // 1) 画像（未保存のものだけ。4件ずつ並列）
+    const manifest = {};
+    const todo = [];
+    for (const [h, data] of images) {
+      if (cloudImages.has(h)) manifest[h] = cloudImages.get(h);
+      else todo.push([h, data]);
+    }
+    for (let i = 0; i < todo.length; i += 4) {
+      setStatus(`🔄 画像を保存中… ${Math.min(i + 4, todo.length)}/${todo.length}`, 'syncing');
+      await Promise.all(todo.slice(i, i + 4).map(async ([h, data]) => {
+        try {
+          if (!data && typeof window.idbImageDataUrl === 'function') data = await window.idbImageDataUrl(h);
+          if (!data) return;
+          const total = await uploadImage(uid, h, data);
+          manifest[h] = total;
+          cloudImages.set(h, total);
+        } catch (e) { failed++; console.error('[cloud] 画像の保存に失敗:', e); }
+      }));
+    }
+
+    // 2) シナリオ（1件ずつ users/{uid}/scenarios/{id} へ差分書き込み）
+    const keep = new Set();
+    for (let i = 0; i < scenarios.length; i++) {
+      let sc = scenarios[i], id = scenId(sc), json = scJsons[i];
+      keep.add(id);
+      if (BYTES(json) > DOC_LIMIT - 20000 && Array.isArray(sc.docTexts) && sc.docTexts.length) {
+        const scTrim = Object.assign({}, sc, { docTexts: sc.docTexts.map(d => d ? Object.assign({}, d) : d) });
+        let budget = scTrim.docTexts.reduce((s, d) => s + (d && d.text ? d.text.length : 0), 0);
+        while (BYTES(json) > DOC_LIMIT - 20000 && scTrim.docTexts.length && budget > 0) {
+          const excess = BYTES(json) - (DOC_LIMIT - 20000);
+          budget = Math.max(0, budget - Math.max(4000, Math.ceil(excess * 0.7)));
+          if (typeof window.trimScenarioDocTextsToBudget === 'function') {
+            window.trimScenarioDocTextsToBudget(scTrim, budget);
+          } else {
+            let rem = budget;
+            scTrim.docTexts = scTrim.docTexts.filter(d => d && d.text && rem > 0).map(d => {
+              const t = d.text.length > rem ? d.text.slice(0, rem) : d.text;
+              rem -= t.length;
+              return Object.assign({}, d, { text: t });
+            });
+          }
+          if (budget <= 0) scTrim.docTexts = [];
+          json = externalize(scTrim, images);
+        }
+        if (BYTES(json) > DOC_LIMIT - 20000 && scTrim.docTexts.length) {
+          scTrim.docTexts = [];
+          json = externalize(scTrim, images);
+        }
+        sc = scTrim;
+      }
+      if (BYTES(json) > DOC_LIMIT) {
+        failed++;
+        console.error('[cloud] シナリオが大きすぎて同期できません:', sc.title);
+        if (typeof toast === 'function') toast('⚠️ 「' + (sc.title || '無題') + '」は文字量が多すぎてクラウド同期できません（約1MBが上限）。内容を分けるか、JSONバックアップで保管してください。');
+        continue;
+      }
+      const prev = cloudIndex.get(id);
+      if (prev && prev.json === json && prev.order === i) continue;
+      try {
+        const title = String(sc.title || '');
+        await fb.setDoc(fb.doc(scenCol(uid), id), { title, order: i, json });
+        cloudIndex.set(id, { title, order: i, json });
+      } catch (e) { failed++; console.error('[cloud] シナリオ同期失敗:', sc.title, e); }
+    }
+    const stale = [...cloudIndex.keys()].filter(id => !keep.has(id));
+    const delMap = (typeof appState !== 'undefined' && appState && appState.deletedScenarios) ? appState.deletedScenarios : {};
+    const unexplainedStale = stale.filter(id => !delMap[id]);
+    let skipDelete = false;
+    if (unexplainedStale.length >= 2 && scenarios.length < cloudIndex.size / 2) {
+      if (!deleteGuardDeclined && typeof appConfirm === 'function') {
+        const ok = await appConfirm(
+          `クラウドにあるシナリオ ${cloudIndex.size} 件のうち ${unexplainedStale.length} 件が、この端末には存在しません。\n\nこれらをクラウドから削除して同期しますか？\n（端末のデータが正しく読み込めていない可能性がある場合は「削除しない」を選んでください）`,
+          { okText: '削除して同期', cancelText: '削除しない', danger: true, strict: true }
+        );
+        if (!ok) deleteGuardDeclined = true;
+      }
+      skipDelete = deleteGuardDeclined;
+    }
+    if (skipDelete) {
+      stale.forEach(id => {
+        const js = (cloudIndex.get(id) || {}).json || '';
+        for (const mm of js.matchAll(REF_RE)) {
+          if (!images.has(mm[1])) images.set(mm[1], null);
+          if (cloudImages.has(mm[1])) manifest[mm[1]] = cloudImages.get(mm[1]);
+        }
+      });
+      failed++;
+    } else {
+      for (const id of stale) {
+        try { await fb.deleteDoc(fb.doc(scenCol(uid), id)); cloudIndex.delete(id); }
+        catch (e) { failed++; console.error('[cloud] シナリオ削除失敗:', id, e); }
+      }
+    }
+
+    // 3) 使われなくなった画像を削除
+    for (const [h, total] of [...cloudImages]) {
+      if (images.has(h)) continue;
+      try {
+        for (let i = 0; i < total; i++) await fb.deleteDoc(fb.doc(imgCol(uid), `${h}_${i}`));
+      } catch (e) { console.error('[cloud] 画像の削除に失敗:', e); }
+      cloudImages.delete(h);
+    }
+
+    // 4) 設定＋画像一覧（updatedAt は必ず Number 型ミリ秒タイムスタンプ）
+    const at = Date.now();
+    await fb.setDoc(settingsRef(uid), { json: restJson, images: manifest, updatedAt: at });
+    try { localStorage.setItem(lastKey(uid), String(at)); } catch (_) {}
+    markLastSyncAt(uid, at);
+    if (!failed) try { localStorage.removeItem(DIRTY_KEY); } catch (_) {}
+    return failed;
+  }
+
+  async function applyCloudAndReload(uid, snap) {
+    setStatus('🔄 読み込み中…', 'syncing');
+    const snapData = snap.data() || {};
+    const manifest = snapData.images || {};
+    const rawJson = snapData.json || '{}';
+    const need = new Set();
+    for (const mm of rawJson.matchAll(REF_RE)) need.add(mm[1]);
+    const imgMap = new Map();
+    for (const h of need) {
+      const d = await fetchCloudImage(uid, h, manifest[h]);
+      if (d) imgMap.set(h, d);
+    }
+    const rest = JSON.parse(rawJson.replace(REF_RE, (m, h) => imgMap.get(h) || ''));
+    try {
+      if (rest && rest.cloudSettings && typeof rest.cloudSettings === 'object') {
+        const prevRaw = localStorage.getItem('taku_kobo_cloud_settings_v1');
+        const prev = prevRaw ? JSON.parse(prevRaw) : {};
+        const mergedCs = Object.assign({}, rest.cloudSettings, {
+          folderSyncEnabled: !!prev.folderSyncEnabled,
+          localSyncPath: String(prev.localSyncPath || ''),
+          webDirName: String(prev.webDirName || '')
+        });
+        localStorage.setItem('taku_kobo_cloud_settings_v1', JSON.stringify(mergedCs));
+      }
+    } catch (_) {}
+    const list = [...cloudIndex.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const scenarios = list.map(v => JSON.parse(v.json));
+
+    if (typeof window.idbGetRaw === 'function' && typeof window.idbSetRaw === 'function') {
+      const old = (await window.idbGetRaw('state')) || localStorage.getItem('discord_forum_tool_data_v1');
+      if (old) await window.idbSetRaw('state_backup', old);
+      try {
+        const cur = window.getAppStateForSync && window.getAppStateForSync();
+        if (cur && typeof window.releasePdfAssets === 'function') (cur.scenarios || []).forEach(sc => window.releasePdfAssets(sc, scenarios));
+      } catch (e) { console.warn('[cloud] applyCloudAndReload.releasePdfAssets', e); }
+      await window.idbSetRaw('state', JSON.stringify({ ...rest, scenarios }));
+    }
+    try { localStorage.removeItem('discord_forum_tool_data_v1'); } catch (_) {}
+    try { localStorage.setItem(lastKey(uid), String(snapData.updatedAt || 0)); } catch (_) {}
+    markLastSyncAt(uid, snapData.updatedAt || Date.now());
+    try { localStorage.removeItem(DIRTY_KEY); } catch (_) {}
+    location.reload();
+  }
+
+  async function runSave(opts) {
+    const o = opts || {};
+    const cs = window.CloudSync && window.CloudSync.getSettings ? window.CloudSync.getSettings() : null;
+    if (cs && cs.syncFirestoreText === false) return { ok: true, skipped: true };
+    if (!currentUser || !fb || !fbDb || !cloudIndex) return { ok: true, skipped: true };
+    if (syncing) { pending = true; return { ok: true, pending: true }; }
+    syncing = true;
+    fbSyncError = false;
+    setStatus('🔄 同期中…', 'syncing');
+    let result = { ok: true };
+    try {
+      const failed = await pushToCloud();
+      if (failed === -1) {
+        setStatus('⚠️ 未同期（他端末で更新あり）', 'err');
+        result = { ok: false, blocked: true };
+      } else if (failed) {
+        fbSyncError = true;
+        setStatus('⚠️ 一部同期できず', 'err');
+        result = { ok: false, partial: true };
+      } else {
+        if (typeof window.fetchMissingImages === 'function') window.fetchMissingImages();
+        if (o.manual && !o.silentToast && typeof toast === 'function') toast('✅ クラウドと同期しました');
+      }
+    } catch (e) {
+      console.error('[cloud] sync error', e);
+      fbSyncError = true;
+      setStatus('⚠️ 同期エラー', 'err');
+      result = { ok: false, error: e };
+      if (o.manual && !o.silentToast && typeof toast === 'function') toast('❌ クラウド同期に失敗しました: ' + (e && e.message || e));
+    } finally {
+      syncing = false;
+      refreshAuthUi();
+    }
+    if (pending) { pending = false; void runSave(o); }
+    return result;
+  }
+
+  async function cloudOnLogin(user) {
+    syncBlocked = false; fbSyncError = false; deleteGuardDeclined = false; window.cloudImagesReady = false;
+    cloudIndex = null;
+    cloudImages = new Map();
+    if (window.CloudSync && typeof window.CloudSync.onAuthChanged === 'function') {
+      window.CloudSync.onAuthChanged(user);
+    }
+    setStatus('🔄 確認中…', 'syncing');
+    try {
+      if (window.appReady) await window.appReady;
+      if (!currentUser || currentUser.uid !== user.uid) return;
+      const owner = (() => { try { return localStorage.getItem(OWNER_KEY); } catch (_) { return null; } })();
+      if (owner && owner !== user.uid) {
+        const ok = typeof appConfirm === 'function'
+          ? await appConfirm(
+              'この端末には別のアカウントのデータが残っています。\n続けると、このアカウントのクラウドデータに切り替えます（端末の現在のデータはバックアップとして残します）。\n※クラウドに何もない場合は空の状態から始まります。',
+              { okText: '切り替える', cancelText: 'ログアウト', strict: true }
+            )
+          : true;
+        if (!ok) { try { await fb.signOut(fbAuth); } catch (_) {} return; }
+        if (typeof window.idbGetRaw === 'function' && typeof window.idbSetRaw === 'function') {
+          const oldData = await window.idbGetRaw('state');
+          if (oldData) await window.idbSetRaw('state_backup_' + owner, oldData);
+        }
+        try { localStorage.setItem(OWNER_KEY, user.uid); } catch (_) {}
+        await loadIndex(user.uid);
+        const st = await fb.getDoc(settingsRef(user.uid));
+        if (st.exists()) { await applyCloudAndReload(user.uid, st); return; }
+        try {
+          const cur = window.getAppStateForSync && window.getAppStateForSync();
+          if (cur && typeof window.releasePdfAssets === 'function') (cur.scenarios || []).forEach(sc => window.releasePdfAssets(sc, []));
+        } catch (e) { console.warn('[cloud] cloudOnLogin.releasePdfAssets', e); }
+        if (typeof window.idbSetRaw === 'function') {
+          await window.idbSetRaw('state', '{}');
+          await window.idbSetRaw('draft', '');
+        }
+        try { localStorage.removeItem(lastKey(user.uid)); } catch (_) {}
+        location.reload();
+        return;
+      }
+      try { localStorage.setItem(OWNER_KEY, user.uid); } catch (_) {}
+
+      await loadIndex(user.uid);
+      if (!currentUser || currentUser.uid !== user.uid) return;
+      const snap = await fb.getDoc(settingsRef(user.uid));
+      const isFileDirect = !isElectronRenderer && typeof location !== 'undefined' && location.protocol === 'file:';
+      let remoteBridgeCs = null;
+      if (snap.exists()) {
+        const sData = snap.data() || {};
+        cloudImages = new Map(Object.entries(sData.images || {}));
+        try {
+          const parsedRest = sData.json ? JSON.parse(sData.json) : null;
+          remoteBridgeCs = parsedRest && parsedRest.cloudSettings ? parsedRest.cloudSettings : null;
+          if (remoteBridgeCs && remoteBridgeCs.gdriveBridgeToken && Number(remoteBridgeCs.gdriveBridgeExpiresAt) > (Date.now() + 60 * 1000)) {
+            if (window.CloudSync && typeof window.CloudSync.setGDriveAccessToken === 'function') {
+              if (isFileDirect || !(window.CloudSync.isTokenUsable && window.CloudSync.isTokenUsable())) {
+                window.CloudSync.setGDriveAccessToken(remoteBridgeCs.gdriveBridgeToken, Date.now(), {
+                  expiresAt: Number(remoteBridgeCs.gdriveBridgeExpiresAt),
+                  email: remoteBridgeCs.gdriveBridgeEmail || '',
+                  skipRelaySave: true,
+                  skipAutoSync: true
+                });
+              }
+            }
+          }
+        } catch (_) {}
+      }
+      const last = Number((() => { try { return localStorage.getItem(lastKey(user.uid)); } catch (_) { return 0; } })() || 0);
+
+      if (!snap.exists()) {
+        await runSave({});
+      } else if ((snap.data() || {}).updatedAt === last) {
+        const dirty = (() => { try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch (_) { return false; } })();
+        const localCs = (window.CloudSync && window.CloudSync.getSettings) ? window.CloudSync.getSettings() : null;
+        const needsTokenRelay = !isFileDirect && localCs && localCs.gdriveBridgeToken && (!remoteBridgeCs || remoteBridgeCs.gdriveBridgeToken !== localCs.gdriveBridgeToken);
+        if (dirty || needsTokenRelay) await runSave({});
+      } else if (last) {
+        await runSave({});
+      } else {
+        const useCloud = typeof appConfirm === 'function'
+          ? await appConfirm(
+              'クラウドに保存されたデータがあります。\n\n「クラウドを読み込む」：この端末のデータは置き換わります（念のためバックアップを残します）。\n「この端末で上書き」：クラウドの内容がこの端末のデータで置き換わります。',
+              { okText: 'クラウドを読み込む', cancelText: 'この端末で上書き', strict: true }
+            )
+          : true;
+        if (useCloud) { await applyCloudAndReload(user.uid, snap); return; }
+        try { localStorage.setItem(lastKey(user.uid), String((snap.data() || {}).updatedAt || 0)); } catch (_) {}
+        await runSave({});
+      }
+      window.cloudImagesReady = true;
+      if (window.CloudSync && typeof window.CloudSync.pullManifestAndMeta === 'function') {
+        void window.CloudSync.pullManifestAndMeta({ silent: true });
+      }
+      if (typeof window.fetchMissingImages === 'function') window.fetchMissingImages();
+      if (typeof window.refreshThumbDomAll === 'function') window.refreshThumbDomAll();
+    } catch (e) {
+      console.error('[cloud] login sync error', e);
+      fbSyncError = true;
+      setStatus('⚠️ 同期エラー', 'err');
+    } finally {
+      refreshAuthUi();
+    }
+  }
+
+  function cloudOnLogout() {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+    fbSyncError = false;
+    cloudIndex = null;
+    cloudImages = new Map();
+    window.cloudImagesReady = false;
+    if (window.CloudSync && typeof window.CloudSync.onAuthChanged === 'function') {
+      window.CloudSync.onAuthChanged(null);
+    }
+    refreshAuthUi();
+  }
+
+  window.cloudScheduleSave = () => {
+    const cs = window.CloudSync && window.CloudSync.getSettings ? window.CloudSync.getSettings() : null;
+    if (cs && cs.syncFirestoreText === false) return;
+    if (!currentUser || !cloudIndex) return;
+    refreshAuthUi();
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => { syncTimer = null; void runSave({}); }, 1800);
+  };
+
+  window.cloudSyncNow = async (opts) => {
+    if (!currentUser || !fb || !fbDb) return { ok: true, skipped: true };
+    if (!cloudIndex) {
+      await cloudOnLogin(currentUser);
+      return { ok: !fbSyncError };
+    }
+    return await runSave(Object.assign({ manual: true }, opts || {}));
+  };
+
+  function authErrorMessage(e) {
+    const code = e && e.code ? String(e.code) : '';
+    if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found') return 'メールアドレスまたはパスワードが正しくありません。';
+    if (code === 'auth/email-already-in-use') return 'このメールアドレスはすでに登録されています。';
+    if (code === 'auth/weak-password') return 'パスワードは6文字以上で入力してください。';
+    if (code === 'auth/invalid-email') return 'メールアドレスの形式が正しくありません。';
+    if (code === 'auth/popup-closed-by-user') return 'ログイン画面が閉じられました。';
+    return (e && e.message) ? e.message : String(e);
+  }
+
+  window.openCloudAuthModal = openAuthModal;
+  window.cloudLogout = async () => {
+    clearTimeout(syncTimer);
+    if (window.CloudSync && typeof window.CloudSync.clearGDriveAuth === 'function') {
+      window.CloudSync.clearGDriveAuth();
+    }
+    if (fb && fbAuth) {
+      await fb.signOut(fbAuth);
+    }
+    refreshAuthUi();
+    if (typeof toast === 'function') toast('ログアウトしました');
+  };
+
+  document.addEventListener('DOMContentLoaded', () => {
+    $('authOpenBtn')?.addEventListener('click', openAuthModal);
+    $('authCloseBtn')?.addEventListener('click', closeAuthModal);
+    $('authOpenCloudSettingsBtn')?.addEventListener('click', () => {
+      closeAuthModal();
+      if (typeof openSettingsModal === 'function') openSettingsModal('cloud');
+    });
+    $('authModal')?.addEventListener('mousedown', e => { if (e.target === $('authModal')) closeAuthModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('authModal')?.style.display === 'flex') closeAuthModal(); });
+    $('authLogoutBtn')?.addEventListener('click', async () => {
+      await window.cloudLogout();
+    });
+
+    document.querySelectorAll('[data-auth-mode]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        authMode = btn.dataset.authMode === 'register' ? 'register' : 'login';
+        document.querySelectorAll('[data-auth-mode]').forEach(b => {
+          const on = b === btn;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-selected', String(on));
+        });
+        const sb = $('authSubmitBtn');
+        if (sb) sb.textContent = authMode === 'register' ? '✨ アカウントを作成して同期' : '☁️ ログインしてクラウド同期を開始';
+        const pw = $('authPassword');
+        if (pw) pw.setAttribute('autocomplete', authMode === 'register' ? 'new-password' : 'current-password');
+        setAuthMsg('');
+      });
+    });
+
+    $('authForm')?.addEventListener('submit', async e => {
+      e.preventDefault();
+      const email = ($('authEmail')?.value || '').trim();
+      const pass = $('authPassword')?.value || '';
+      setAuthMsg('接続中…', true);
+      try {
+        const sdk = await ensureFirebase();
+        if (authMode === 'register') await sdk.createUserWithEmailAndPassword(fbAuth, email, pass);
+        else await sdk.signInWithEmailAndPassword(fbAuth, email, pass);
+        if (typeof toast === 'function') toast('☁️ 同期を開始しました（保存範囲の変更は『⚙️ 設定 ＞ データ保存・同期』から行えます）');
+      } catch (err) { setAuthMsg(authErrorMessage(err)); }
+    });
+
+    $('authPwResetBtn')?.addEventListener('click', async () => {
+      const email = ($('authEmail')?.value || '').trim();
+      if (!email) {
+        setAuthMsg('再設定メールを送るメールアドレスを入力してください。');
+        $('authEmail')?.focus();
+        return;
+      }
+      setAuthMsg('再設定メールを送信しています…', true);
+      try {
+        const sdk = await ensureFirebase();
+        await sdk.sendPasswordResetEmail(fbAuth, email);
+        setAuthMsg('✅ パスワード再設定メールを送信しました（受信箱をご確認ください）', true);
+      } catch (err) { setAuthMsg(authErrorMessage(err)); }
+    });
+
+    async function runGoogleSignIn(opts) {
+      const o = opts || {};
+      const sdk = await ensureFirebase();
+      const ipc = getIpcRenderer();
+      if (ipc) {
+        const res = await ipc.invoke('auth:google-login', {
+          firebaseConfig: loadStoredConfig(),
+          silent: !!o.silent,
+          loginHint: o.loginHint || '',
+          prompt: o.prompt || ''
+        });
+        if (!res || !res.ok) {
+          const err = new Error((res && res.message) || 'Google認証に失敗しました。');
+          if (res && res.code) err.code = res.code;
+          throw err;
+        }
+        const mail = res.email || o.loginHint || (currentUser && currentUser.email) || '';
+        if (res.accessToken && window.CloudSync && typeof window.CloudSync.setGDriveAccessToken === 'function') {
+          window.CloudSync.setGDriveAccessToken(res.accessToken, res.obtainedAt || Date.now(), {
+            email: mail,
+            expiresIn: res.expiresIn || 3600
+          });
+        }
+        if (res.idToken || res.accessToken) {
+          const needFbSignIn = !currentUser || (mail && currentUser.email && mail.toLowerCase() !== currentUser.email.toLowerCase());
+          if (needFbSignIn) {
+            const cred = sdk.GoogleAuthProvider.credential(res.idToken || null, res.accessToken || null);
+            await sdk.signInWithCredential(fbAuth, cred);
+          }
+        }
+      } else {
+        if (o.silent) {
+          const err = new Error('ブラウザ環境ではサイレント認証は利用できません。');
+          err.code = 'auth/silent-unavailable';
+          throw err;
+        }
+        const provider = new sdk.GoogleAuthProvider();
+        provider.addScope('https://www.googleapis.com/auth/drive.file');
+        if (o.loginHint) provider.setCustomParameters({ login_hint: o.loginHint });
+        const result = await sdk.signInWithPopup(fbAuth, provider);
+        const cred = sdk.GoogleAuthProvider.credentialFromResult(result);
+        const mail = (result && result.user && result.user.email) || o.loginHint || '';
+        if (cred && cred.accessToken && window.CloudSync && typeof window.CloudSync.setGDriveAccessToken === 'function') {
+          window.CloudSync.setGDriveAccessToken(cred.accessToken, Date.now(), {
+            email: mail,
+            expiresIn: 3600
+          });
+        }
+      }
+    }
+
+    window.cloudReauthGDrive = async (opts) => {
+      const o = opts || {};
+      window._lastGDriveAuthError = '';
+      try {
+        await runGoogleSignIn(o);
+        if (!o.quiet && typeof toast === 'function') toast('✅ Googleドライブの認証を更新しました');
+        return true;
+      } catch (err) {
+        const msg = authErrorMessage(err);
+        window._lastGDriveAuthError = msg;
+        if (!o.quiet && typeof toast === 'function') toast('❌ Googleドライブ認証に失敗しました: ' + msg);
+        return false;
+      }
+    };
+
+    $('authGoogleBtn')?.addEventListener('click', async () => {
+      setAuthMsg('Google認証を開いています…', true);
+      try {
+        await runGoogleSignIn();
+        if (typeof toast === 'function') toast('☁️ 同期を開始しました（保存範囲の変更は『⚙️ 設定 ＞ データ保存・同期』から行えます）');
+      } catch (err) {
+        const code = err && err.code ? String(err.code) : '';
+        if (
+          code === 'auth/operation-not-supported-in-this-environment' ||
+          code === 'auth/unauthorized-domain' ||
+          (!canGoogle && code !== 'auth/popup-closed-by-user')
+        ) {
+          setAuthMsg(
+            '💡 Web版のGoogleログインと同じデータをデスクトップ版で同期する方法\n' +
+            '1. メールアドレス欄にその Gmailアドレス を入力します。\n' +
+            '2. 上の『🔑 パスワードを設定・忘れた場合（設定メールを送信）』を押すと、Gmailにパスワード設定リンクが届きます。\n' +
+            '3. パスワードを設定すると、Web版のGoogleログインとデスクトップ版のメールログインで同じクラウドデータ（同一アカウント）を双方向同期できます！',
+            true
+          );
+          if ($('authEmail') && !$('authEmail').value.trim()) $('authEmail').focus();
+        } else {
+          setAuthMsg(authErrorMessage(err));
+        }
+      }
+    });
+
+    $('firebaseCfgSaveBtn')?.addEventListener('click', async () => {
+      const cfg = parseFirebaseConfig($('firebaseCfgInput')?.value || '');
+      if (!cfg) return setAuthMsg('Firebase設定JSONの形式が正しくありません（apiKey と projectId が必要です）。');
+      try { localStorage.setItem(CFG_KEY, JSON.stringify(cfg)); } catch (_) {}
+      await resetFirebaseInstance();
+      setAuthMsg('Firebaseへ接続しています…', true);
+      try {
+        await ensureFirebase();
+        setAuthMsg('✅ 独自のFirebase設定を保存しました。ログインしてください。', true);
+        if ($('firebaseCfgDetails')) $('firebaseCfgDetails').open = false;
+        refreshAuthUi();
+      } catch (err) { setAuthMsg('Firebase初期化エラー: ' + authErrorMessage(err)); }
+    });
+
+    $('firebaseCfgClearBtn')?.addEventListener('click', async () => {
+      try { localStorage.removeItem(CFG_KEY); } catch (_) {}
+      if ($('firebaseCfgInput')) $('firebaseCfgInput').value = '';
+      await resetFirebaseInstance();
+      currentUser = null; window.cloudImagesReady = false;
+      try { await ensureFirebase(); } catch (_) {}
+      setAuthMsg('既定のFirebase設定に戻しました。', true);
+      if ($('firebaseCfgDetails')) $('firebaseCfgDetails').open = false;
+      refreshAuthUi();
+    });
+
+    refreshAuthUi();
+    void ensureFirebase().catch(e => console.warn('[cloud] init failed', e));
+  });
+
+  window.addEventListener('online', () => {
+    try {
+      if (currentUser && localStorage.getItem(DIRTY_KEY) === '1') {
+        if (cloudIndex) void runSave({});
+        else void cloudOnLogin(currentUser);
+      }
+    } catch (_) {}
+  });
+})();
+</script>
+</body>
+</html>
