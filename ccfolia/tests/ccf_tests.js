@@ -460,4 +460,112 @@ eq(T.toFullWidthAlnum(T.toHalfWidthAlnum('Ａ１ａ')), 'Ａ１ａ', '往復で�
   eq(p.cutins[0].visualType, 'video', 'sanitizeProject: cutin visualTypeとseVolumeを保持');
   eq(p.cutins[0].seVolume, 70, 'sanitizeProject: cutin seVolumeを保持');
 }
+
+// ===== 多段組PDF（2〜3段組・狭ガター・単一item内スペース分割・縦ブロック分離） =====
+{
+  // 1) 単一 item.str 内の2つ以上の連続スペースを glyphs 座標で分割し、wide(c) 誤認と横結合を防止
+  const singleItemCols = [
+    item('左列一行目      右列一行目', 40, 100, 320, 14),
+    item('左列二行目      右列二行目', 40, 120, 320, 14),
+    item('左列三行目      右列三行目', 40, 140, 320, 14)
+  ];
+  eq(
+    T.extractRectText(singleItemCols, VP, 1, { x: 30, y: 80, w: 360, h: 80 }, { pageW: 420 }),
+    '左列一行目\n左列二行目\n左列三行目\n右列一行目\n右列二行目\n右列三行目',
+    '単一item内の連続スペースを座標分割して左右2段を正しく分離'
+  );
+
+  // 2) 3段組キャラシート（全幅見出し＋左:ステータス／中:解説／右:技能）
+  const threeColItems = [
+    item('❏ 梅本 時雨（キャラクターシート）', 40, 60, 480, 16),
+    item('STR:11', 40, 100, 70, 12), item('新エネルギー開発の', 145, 100, 160, 12), item('《目星》60%', 340, 100, 110, 12),
+    item('CON:12', 40, 120, 70, 12), item('研究者として働く。', 145, 120, 160, 12), item('《図書館》70%', 340, 120, 110, 12),
+    item('POW:13', 40, 140, 70, 12), item('温厚な性格だが秘密', 145, 140, 160, 12), item('《回避》50%', 340, 140, 110, 12),
+    item('HP:12', 40, 160, 70, 12), item('を抱えている。', 145, 160, 140, 12), item('《こぶし》65%', 340, 160, 110, 12)
+  ];
+  eq(
+    T.extractRectText(threeColItems, VP, 1, { x: 30, y: 40, w: 520, h: 150 }, { pageW: 560 }),
+    '❏ 梅本 時雨（キャラクターシート）\nSTR:11\nCON:12\nPOW:13\nHP:12\n新エネルギー開発の\n研究者として働く。\n温厚な性格だが秘密\nを抱えている。\n《目星》60%\n《図書館》70%\n《回避》50%\n《こぶし》65%',
+    '3段組キャラシートを全幅見出し→左列→中列→右列の順に分離'
+  );
+
+  // 3) 狭ガター2段組（vw = 15px, bodyH = 12px → 1.25 * bodyH >= 1.1 * bodyH）
+  const narrowGutter = [
+    item('左側の狭い段の一行目', 40, 100, 180, 12), item('右側の狭い段の一行目', 235, 100, 180, 12),
+    item('左側の狭い段の二行目', 40, 120, 180, 12), item('右側の狭い段の二行目', 235, 120, 180, 12),
+    item('左側の狭い段の三行目', 40, 140, 180, 12), item('右側の狭い段の三行目', 235, 140, 180, 12)
+  ];
+  eq(
+    T.extractRectText(narrowGutter, VP, 1, { x: 30, y: 80, w: 420, h: 80 }, { pageW: 460 }),
+    '左側の狭い段の一行目\n左側の狭い段の二行目\n左側の狭い段の三行目\n右側の狭い段の一行目\n右側の狭い段の二行目\n右側の狭い段の三行目',
+    '狭ガター2段組も左右を横結合せず分離'
+  );
+
+  // 4) chunksToLines（twoColumn:false）での縦並び大ギャップ分離と、1行横並び表の保持
+  const vertCols = [
+    item('STR:10', 40, 100, 60, 12), item('目星:60%', 160, 100, 70, 12),
+    item('CON:12', 40, 120, 60, 12), item('聞き耳:50%', 160, 120, 80, 12)
+  ];
+  eq(
+    T.extractRectText(vertCols, VP, 1, { x: 30, y: 80, w: 260, h: 60 }, { pageW: 400, twoColumn: false }),
+    'STR:10\nCON:12\n目星:60%\n聞き耳:50%',
+    'chunksToLines: 2行以上に同じX位置で大ギャップがある縦カラムは左ブロック→右ブロックへ分離'
+  );
+  const oneRowTable = [
+    item('STR:10', 40, 100, 50, 12), item('DEX:12', 140, 100, 50, 12), item('INT:14', 240, 100, 50, 12)
+  ];
+  eq(
+    T.extractRectText(oneRowTable, VP, 1, { x: 30, y: 80, w: 300, h: 40 }, { pageW: 400 }),
+    'STR:10 DEX:12 INT:14',
+    '1行だけの横並びステータス表は従来どおり1行に保持'
+  );
+}
+
+// ===== NPC名の誤採用除外 & 「■本編での立ち回り」下の再掲ステータス自動統合 =====
+{
+  const badSamples = [
+    '名前', '氏名', 'NPC名', 'NPC名：', 'PC名', 'キャラクター名', 'キャラ名', '名称',
+    'NPC 能力値', 'NPC能力値', 'PC 技能値', '探索者 ステータス', 'キャラクター チャットパレット', 'パラメータ:',
+    '立ち回り', '本編での立ち回り', '行動指針', '戦闘方針', '戦闘パターン', '運用', '攻略', '役割', '関係性', '登場シーン', '出現場所', '本編での扱い',
+    '戦闘開始', '探索終了', '尋問前', '交渉後', '逃走中', '追跡開始', 'RPが終わったら', '失敗したら', '発狂の場合', '遭遇の時', '判定するとき', '行動する際', 'イベント後', '導入前'
+  ];
+  badSamples.forEach(s => {
+    eq(S.badName(s), true, 'badName除外: ' + s);
+  });
+
+  // ■本編での立ち回り / ■NPC 能力値 / ■戦闘開始 等が actAt（梅本 時雨）を上書きせず、下部ステータスに引き継ぐ＋1体へ統合
+  const umemotoPage = [
+    '❏ 梅本 時雨',
+    '年齢：38歳 職業：研究者',
+    'STR:11 CON:12 POW:13 DEX:12 APP:13 SIZ:11 INT:16 EDU:17',
+    'HP:12 MP:13 SAN:65 図書館 70%',
+    '',
+    '■ 本編での立ち回り',
+    '■ NPC 能力値',
+    '■ 戦闘開始',
+    '■ RPが終わったら',
+    'STR:11 CON:12 POW:13 DEX:12 APP:13 SIZ:11 INT:16 EDU:17',
+    'HP:15 MP:13 SAN:60 こぶし 65% 回避 50%'
+  ].join('\n');
+  const uBlocks = S.detectCocBlocks(umemotoPage, N);
+  eq(uBlocks.length, 2, '梅本 時雨: 上部紹介ステータスと下部立ち回りステータスを検出');
+  eq(uBlocks[0].name, '梅本 時雨', '上部ステータスの名前は 梅本 時雨');
+  eq(uBlocks[1].name, '梅本 時雨', '■本編での立ち回り等が actAt を上書きせず 梅本 時雨 を引き継ぐ');
+
+  const uRows = uBlocks.map(b => ({ pdf: 'sc.pdf', page: 49, name: b.name, text: b.text }));
+  const uMerged = S.mergeSameResults(uRows, txt => N.parseNpc(txt, { edition: 'auto', rollPrefix: 'CCB', abilityRolls: true, noAuto: true }));
+  eq(uMerged.results.length, 1, 'mergeSameResults: 紹介用ステータスと戦闘用ステータス（別形態ラベルなし）を1体に統合');
+  eq(uMerged.results[0].name, '梅本 時雨', '統合後のキャラ名は 梅本 時雨');
+  eq(uMerged.merged, 1, '統合件数 = 1');
+
+  // 見出しが誤採用ワードだけのブロックは名前に採用しない
+  const junkHeadPage = [
+    '■ NPC名',
+    '■ NPC 能力値',
+    'STR:10 CON:10 POW:10 DEX:10 HP:10 MP:10 SAN:50'
+  ].join('\n');
+  const jBlocks = S.detectCocBlocks(junkHeadPage, N);
+  eq(jBlocks.length, 1, '見出し誤採用ワードのみのブロックもステータス検出は維持');
+  eq(jBlocks[0].name, '', 'NPC名 / NPC 能力値 をキャラ名に採用しない');
+}
 console.log(`\n${ok} passed, ${ng} failed`); process.exit(ng ? 1 : 0);

@@ -173,6 +173,44 @@
     m1[0] * m2[2] + m1[2] * m2[3], m1[1] * m2[2] + m1[3] * m2[3],
     m1[0] * m2[4] + m1[2] * m2[5] + m1[4], m1[1] * m2[4] + m1[3] * m2[5] + m1[5]];
 
+  const isSpaceChar = ch => ch === ' ' || ch === '\u00A0' || ch === '\u3000' || ch === '\t';
+
+  /** glyph 列を「2つ以上の連続スペース（またはタブ）」または「h * 1.8 以上の文字間ジャンプ」で分割する */
+  function splitGlyphSegments(glyphs, h) {
+    if (!glyphs || !glyphs.length) return [];
+    const jumpThresh = (h || 1) * 1.8;
+    const segs = [];
+    let cur = [];
+    const flush = () => {
+      if (!cur.length) return;
+      if (cur.some(g => !isSpaceChar(g.ch))) segs.push(cur);
+      cur = [];
+    };
+    let i = 0;
+    while (i < glyphs.length) {
+      const g = glyphs[i];
+      if (isSpaceChar(g.ch)) {
+        let j = i;
+        while (j < glyphs.length && isSpaceChar(glyphs[j].ch)) j++;
+        if (j - i >= 2 || g.ch === '\t') {
+          flush();
+          i = j;
+          continue;
+        }
+      }
+      if (cur.length) {
+        const prev = cur[cur.length - 1];
+        if (Math.hypot(g.cx - prev.cx, g.cy - prev.cy) >= jumpThresh) {
+          flush();
+        }
+      }
+      cur.push(g);
+      i++;
+    }
+    flush();
+    return segs;
+  }
+
   /** pdf.js のテキストアイテムを、画面（ビューポート）座標の「1文字ごとの中心点」に展開する。
    *  items    : page.getTextContent().items（str / transform / width を使う）
    *  vpTrans  : viewport.transform（PDF座標→画面座標）
@@ -187,29 +225,67 @@
       const len = Math.hypot(tx[0], tx[1]) || 1, dx = tx[0] / len, dy = tx[1] / len;   // 文字の進行方向
       const ux = tx[2] / h, uy = tx[3] / h;                                              // 文字の「上」方向
       const horizontal = Math.abs(dy) < 0.2;
+      const step = (w > 0 && n > 0) ? (w / n) : (h * 0.5);
+      const halfW = Math.min(step, h * 1.2) * 0.5;
       const glyphs = chars.map((ch, i) => {
         const adv = w * (i + 0.5) / n;
         return { ch, cx: tx[4] + dx * adv + ux * h * 0.38, cy: tx[5] + dy * adv + uy * h * 0.38 };
       });
-      res.push({ str: it.str, x0: tx[4], x1: tx[4] + dx * w, y: glyphs[0].cy, h, glyphs, horizontal, hasEOL: !!it.hasEOL });
+      if (!horizontal) {
+        res.push({ str: it.str, x0: tx[4], x1: tx[4] + dx * w, y: glyphs[0].cy, h, step, glyphs, horizontal, hasEOL: !!it.hasEOL });
+        return;
+      }
+      const segs = splitGlyphSegments(glyphs, h);
+      segs.forEach((seg, si) => {
+        const str = seg.map(g => g.ch).join('');
+        const first = seg[0], last = seg[seg.length - 1];
+        const x0 = Math.min(first.cx, last.cx) - halfW;
+        const x1 = Math.max(first.cx, last.cx) + halfW;
+        res.push({
+          str, x0, x1, y: first.cy, h, step, glyphs: seg, horizontal,
+          hasEOL: !!it.hasEOL && si === segs.length - 1
+        });
+      });
     });
     return res;
   }
 
   /** 矩形 rect={x,y,w,h}（画面座標。配列なら複数の矩形のいずれか）の内側に中心がある文字だけを集め、読み順の文字列にする。
    *  opts.excludeRuby : 選択範囲の本文フォントサイズ（文字数で重み付けした中央値）の70%未満の極小文字（ルビ）を除外する
-   *  opts.twoColumn   : X座標の分布から左右2段組と判定したら「左段の上→下 ➡ 右段の上→下」の順に並べる（全幅の見出しは段組の区切りとして扱う） */
+   *  opts.twoColumn   : X座標の分布から多段組（2〜3段組）と判定したら「左段の上→下 ➡ 中段 ➡ 右段の上→下」の順に並べる（全幅の見出しは段組の区切りとして扱う） */
   function extractRectText(items, vpTrans, scale, rect, opts) {
     const o = Object.assign({ excludeRuby: false, twoColumn: true }, opts || {});
     const boxes = (Array.isArray(rect) ? rect : [rect]).map(r => ({ x1: Math.min(r.x, r.x + r.w), x2: Math.max(r.x, r.x + r.w), y1: Math.min(r.y, r.y + r.h), y2: Math.max(r.y, r.y + r.h) }));
     let chunks = [];
     layoutItems(items, vpTrans, scale).forEach(L => {
-      let s = '', first = null, last = null;
       const mx = L.h * 0.25;
+      const matched = [];
       L.glyphs.forEach(g => {
-        if (boxes.some(b => g.cx >= b.x1 - mx && g.cx <= b.x2 + mx && g.cy >= b.y1 && g.cy <= b.y2)) { if (!first) first = g; last = g; s += g.ch; }
+        if (boxes.some(b => g.cx >= b.x1 - mx && g.cx <= b.x2 + mx && g.cy >= b.y1 && g.cy <= b.y2)) {
+          matched.push(g);
+        }
       });
-      if (s) chunks.push({ str: s, x0: first.cx, x1: last.cx + L.h * 0.5, y: first.cy, h: L.h, horizontal: L.horizontal });
+      if (!matched.length) return;
+      if (!L.horizontal) {
+        const first = matched[0], last = matched[matched.length - 1];
+        const s = matched.map(g => g.ch).join('');
+        if (s) chunks.push({ str: s, x0: first.cx, x1: last.cx + L.h * 0.5, y: first.cy, h: L.h, horizontal: L.horizontal });
+        return;
+      }
+      const halfW = Math.min(L.step || L.h * 0.5, L.h * 1.2) * 0.5;
+      splitGlyphSegments(matched, L.h).forEach(seg => {
+        const s = seg.map(g => g.ch).join('');
+        if (!s.trim()) return;
+        const first = seg[0], last = seg[seg.length - 1];
+        chunks.push({
+          str: s,
+          x0: Math.min(first.cx, last.cx) - halfW,
+          x1: Math.max(first.cx, last.cx) + halfW,
+          y: first.cy,
+          h: L.h,
+          horizontal: L.horizontal
+        });
+      });
     });
     if (!chunks.length) return '';
     if (!chunks.every(c => c.horizontal)) return chunks.map(c => c.str).join('\n');   // 回転ページは PDF の順序のまま
@@ -233,54 +309,138 @@
     let acc = 0; for (const c of a) { acc += c.n; if (acc >= total / 2) return c.h; }
     return a[a.length - 1].h;
   }
+  /** チャンク群を同じY高さの行にまとめる */
+  function groupVisualRows(chunks) {
+    const rows = [];
+    chunks.slice().sort((a, b) => a.y - b.y).forEach(c => {
+      const ln = rows.find(r => Math.abs(r.y - c.y) <= Math.max(c.h, r.h) * 0.5);
+      if (ln) { ln.chunks.push(c); ln.y = (ln.y * (ln.chunks.length - 1) + c.y) / ln.chunks.length; ln.h = Math.max(ln.h, c.h); }
+      else rows.push({ y: c.y, h: c.h, chunks: [c] });
+    });
+    rows.sort((a, b) => a.y - b.y);
+    rows.forEach(r => r.chunks.sort((a, b) => Math.min(a.x0, a.x1) - Math.min(b.x0, b.x1)));
+    return rows;
+  }
   /** チャンク群（同じ段）を行にまとめ、上→下・左→右の文字列にする。
+   *  同じ高さに大きな水平ギャップ（>= max(l.h * 2.0, pageW * 0.03)）が2行以上ほぼ同じX位置で縦に並ぶ場合は、
+   *  左側縦ブロック（上→下）➡ 右側縦ブロック（上→下）に分離して出力する。
    *  同時に ① 行間のY座標ギャップ（通常の行送りの1.35倍以上）および ④ 行終端X座標（カラム最大endXより1.5文字以上手前）を記録する */
-  function chunksToLines(chunks, metaOut, pageWOpt) {
+  function chunksToLines(chunks, metaOut, pageWOpt, _depth) {
     if (!chunks || !chunks.length) return '';
+    const depth = _depth || 0;
     const loX = Math.min(...chunks.map(c => Math.min(c.x0, c.x1)));
     const hiX = Math.max(...chunks.map(c => Math.max(c.x0, c.x1)));
     const pageW = (pageWOpt && pageWOpt > 0) ? pageWOpt : Math.max(0, hiX - loX);
-    const sorted = chunks.slice().sort((a, b) => a.y - b.y), rawLines = [];
-    sorted.forEach(c => {
-      const ln = rawLines.find(l => Math.abs(l.y - c.y) <= Math.max(c.h, l.h) * 0.5);
-      if (ln) { ln.chunks.push(c); ln.y = (ln.y * (ln.chunks.length - 1) + c.y) / ln.chunks.length; ln.h = Math.max(ln.h, c.h); }
-      else rawLines.push({ y: c.y, h: c.h, chunks: [c] });
-    });
-    rawLines.sort((a, b) => a.y - b.y);
+    const rawLines = groupVisualRows(chunks);
     const medH = bodyHeight(chunks) || 10;
-    const lines = [];
-    rawLines.forEach(l => {
-      l.chunks.sort((a, b) => a.x0 - b.x0);
-      const splitGap = Math.max(l.h * 5.0, pageW * 0.12);
-      const groups = [];
-      let cur = [];
-      l.chunks.forEach((c, i) => {
-        if (i > 0 && rawLines.length >= 2) {
-          const gap = c.x0 - l.chunks[i - 1].x1;
-          if (gap > splitGap) {
-            if (cur.length) groups.push(cur);
-            cur = [c];
-            return;
+
+    // 2行以上にわたってほぼ同じX位置に大きな水平ギャップがある縦カラム群を左ブロック→右ブロックへ分離
+    if (depth < 4 && rawLines.length >= 2) {
+      const rowGaps = rawLines.map((l, rIdx) => {
+        const gapThresh = Math.max(l.h * 2.0, pageW * 0.03);
+        const gs = [];
+        for (let i = 1; i < l.chunks.length; i++) {
+          const v0 = Math.max(l.chunks[i - 1].x0, l.chunks[i - 1].x1);
+          const v1 = Math.min(l.chunks[i].x0, l.chunks[i].x1);
+          if (v1 - v0 >= gapThresh) gs.push({ rIdx, v0, v1, mid: (v0 + v1) / 2, gap: v1 - v0 });
+        }
+        return gs;
+      });
+      const allGaps = [].concat(...rowGaps);
+      if (allGaps.length >= 2) {
+        const candSet = new Set();
+        allGaps.forEach(g => candSet.add(Math.round(g.mid * 2) / 2));
+        for (let a = 0; a < allGaps.length; a++) {
+          for (let b = a + 1; b < allGaps.length; b++) {
+            if (allGaps[a].rIdx === allGaps[b].rIdx) continue;
+            const iv0 = Math.max(allGaps[a].v0, allGaps[b].v0);
+            const iv1 = Math.min(allGaps[a].v1, allGaps[b].v1);
+            if (iv0 <= iv1) candSet.add(Math.round(((iv0 + iv1) / 2) * 2) / 2);
           }
         }
-        cur.push(c);
+        let bestSplit = null;
+        for (const sx of candSet) {
+          const segs = [];
+          let curRows = [];
+          const flushSeg = () => {
+            if (!curRows.length) return;
+            let gappedRows = 0, minGap = Infinity, hasL = false, hasR = false;
+            curRows.forEach(rIdx => {
+              const r = rawLines[rIdx];
+              let rl = false, rr = false;
+              r.chunks.forEach(c => {
+                if ((c.x0 + c.x1) / 2 < sx) rl = true; else rr = true;
+              });
+              if (rl) hasL = true;
+              if (rr) hasR = true;
+              const hit = rowGaps[rIdx].find(g => g.v0 <= sx && g.v1 >= sx);
+              if (hit) { gappedRows++; if (hit.gap < minGap) minGap = hit.gap; }
+            });
+            segs.push({ rows: curRows, split: gappedRows >= 2 && hasL && hasR, gappedRows, minGap: isFinite(minGap) ? minGap : 0 });
+            curRows = [];
+          };
+          for (let rIdx = 0; rIdx < rawLines.length; rIdx++) {
+            const crosses = rawLines[rIdx].chunks.some(c => Math.min(c.x0, c.x1) < sx && Math.max(c.x0, c.x1) > sx);
+            if (crosses) {
+              flushSeg();
+              segs.push({ rows: [rIdx], split: false, gappedRows: 0, minGap: 0 });
+            } else {
+              curRows.push(rIdx);
+            }
+          }
+          flushSeg();
+          const totalGapped = segs.reduce((acc, sg) => acc + (sg.split ? sg.gappedRows : 0), 0);
+          if (totalGapped < 2) continue;
+          const minGap = segs.reduce((m, sg) => sg.split ? Math.min(m, sg.minGap) : m, Infinity);
+          if (
+            !bestSplit ||
+            totalGapped > bestSplit.totalGapped ||
+            (totalGapped === bestSplit.totalGapped && (minGap > bestSplit.minGap || (minGap === bestSplit.minGap && sx < bestSplit.sx)))
+          ) {
+            bestSplit = { sx, segs, totalGapped, minGap };
+          }
+        }
+        if (bestSplit) {
+          const parts = [];
+          const emitPart = s => { if (s) parts.push(s); };
+          bestSplit.segs.forEach(sg => {
+            const segChunks = [];
+            sg.rows.forEach(rIdx => segChunks.push(...rawLines[rIdx].chunks));
+            if (!segChunks.length) return;
+            if (sg.split) {
+              const left = segChunks.filter(c => (c.x0 + c.x1) / 2 < bestSplit.sx);
+              const right = segChunks.filter(c => (c.x0 + c.x1) / 2 >= bestSplit.sx);
+              emitPart(chunksToLines(left, metaOut, pageW, depth + 1));
+              emitPart(chunksToLines(right, metaOut, pageW, depth + 1));
+            } else if (segChunks.length < chunks.length) {
+              emitPart(chunksToLines(segChunks, metaOut, pageW, depth + 1));
+            } else {
+              emitPart(chunksToLines(segChunks, metaOut, pageW, 4));
+            }
+          });
+          return parts.join('\n');
+        }
+      }
+    }
+
+    const lines = rawLines.map(l => {
+      let s = '';
+      l.chunks.forEach((c, i) => {
+        if (i) {
+          const prevX1 = Math.max(l.chunks[i - 1].x0, l.chunks[i - 1].x1);
+          const curX0 = Math.min(c.x0, c.x1);
+          if (curX0 - prevX1 > l.h * 0.6) s += ' ';   // 離れている文字の間は空白（表の列など）
+        }
+        s += c.str;
       });
-      if (cur.length) groups.push(cur);
-      groups.forEach(g => {
-        let s = '';
-        g.forEach((c, i) => {
-          if (i) { const gap = c.x0 - g[i - 1].x1; if (gap > l.h * 0.6) s += ' '; }   // 離れている文字の間は空白（表の列など）
-          s += c.str;
-        });
-        lines.push({
-          y: l.y,
-          h: Math.max(...g.map(c => c.h)),
-          chunks: g,
-          str: s,
-          x0: Math.min(...g.map(c => Math.min(c.x0, c.x1))),
-          x1: Math.max(...g.map(c => Math.max(c.x0, c.x1)))
-        });
-      });
+      return {
+        y: l.y,
+        h: Math.max(...l.chunks.map(c => c.h)),
+        chunks: l.chunks,
+        str: s,
+        x0: Math.min(...l.chunks.map(c => Math.min(c.x0, c.x1))),
+        x1: Math.max(...l.chunks.map(c => Math.max(c.x0, c.x1)))
+      };
     });
     const maxEndX = lines.reduce((m, l) => Math.max(m, l.x1), 0);
     const dys = [];
@@ -307,18 +467,14 @@
     }
     return outLines.join('\n');
   }
-  /** 左右2段組か判定し、段の境目のX座標を返す（2段組でなければ null） */
-  function findGutter(chunks, bodyH) {
-    if (!chunks || chunks.length < 4 || !bodyH || bodyH <= 0) return null;
+  /** 多段組（2段・3段組）のガター（段の境目）を X軸ヒストグラム（STEP = 4）からすべて検出して左→右順に返す */
+  function findGutters(chunks, bodyH) {
+    if (!chunks || chunks.length < 4 || !bodyH || bodyH <= 0) return [];
     const xs = chunks.map(c => [Math.min(c.x0, c.x1), Math.max(c.x0, c.x1)]);
     const lo = Math.min(...xs.map(x => x[0])), hi = Math.max(...xs.map(x => x[1])), W = hi - lo;
-    if (W <= 0) return null;
-    const rows = [];
-    chunks.slice().sort((a, b) => a.y - b.y).forEach(c => {
-      const ln = rows.find(r => Math.abs(r.y - c.y) <= Math.max(c.h, r.h) * 0.5);
-      if (ln) { ln.chunks.push(c); ln.y = (ln.y * (ln.chunks.length - 1) + c.y) / ln.chunks.length; ln.h = Math.max(ln.h, c.h); }
-      else rows.push({ y: c.y, h: c.h, chunks: [c] });
-    });
+    if (W <= bodyH * 4) return [];
+    const rows = groupVisualRows(chunks);
+    if (rows.length < 2) return [];
     const STEP = 4;
     const nBins = Math.max(1, Math.ceil(W / STEP));
     const bins = new Int32Array(nBins);
@@ -328,53 +484,91 @@
       for (let b = b0; b <= b1; b++) bins[b]++;
     }
     const maxCross = chunks.length * 0.15;
-    const minVw = Math.max(bodyH * 1.4, W * 0.025);
+    const minVw = Math.max(bodyH * 1.1, W * 0.018);
     const center = lo + W * 0.5;
-    let best = null;
+    const cands = [];
     let i = 0;
     while (i < nBins) {
       if (bins[i] > maxCross) { i++; continue; }
       const vStart = i;
       while (i < nBins && bins[i] <= maxCross) i++;
       const vEnd = i - 1;
-      const v0 = lo + vStart * STEP, v1 = Math.min(hi, lo + (vEnd + 1) * STEP);
-      const vw = v1 - v0;
-      if (vw < minVw) continue;
+      const coarseV0 = lo + vStart * STEP, coarseV1 = Math.min(hi, lo + (vEnd + 1) * STEP);
+      const coarseMid = (coarseV0 + coarseV1) / 2;
+      if (coarseMid < lo + W * 0.12 || coarseMid > lo + W * 0.88) continue;
       let minCnt = bins[vStart];
       for (let b = vStart + 1; b <= vEnd; b++) if (bins[b] < minCnt) minCnt = bins[b];
-      const mid = (v0 + v1) / 2;
-      if (mid < lo + W * 0.25 || mid > lo + W * 0.75) continue;
-      let pairedRows = 0;
+
+      // STEP=4 のビン丸めによる実ギャップ幅の目減りを防ぐため、非横断チャンクの実座標から厳密な谷幅を算出
+      let leftRows = 0, rightRows = 0, pairedRows = 0;
+      let lMinY = Infinity, lMaxY = -Infinity, rMinY = Infinity, rMaxY = -Infinity;
+      let lMinX = Infinity, lMaxX = -Infinity, rMinX = Infinity, rMaxX = -Infinity;
+      let lChars = 0, rChars = 0;
       for (const r of rows) {
         let hasL = false, hasR = false;
         for (const c of r.chunks) {
           const cx0 = Math.min(c.x0, c.x1), cx1 = Math.max(c.x0, c.x1), cx = (cx0 + cx1) / 2;
-          if (cx < mid && cx1 <= v1) hasL = true;
-          else if (cx >= mid && cx0 >= v0) hasR = true;
+          if (cx0 < coarseV0 && cx1 > coarseV1) continue;   // ガターを跨ぐチャンクは除外
+          if (cx < coarseMid && cx1 <= coarseV1 + STEP) {
+            hasL = true;
+            if (cx0 < lMinX) lMinX = cx0;
+            if (cx1 > lMaxX) lMaxX = cx1;
+            lChars += Array.from(c.str).length;
+          } else if (cx >= coarseMid && cx0 >= coarseV0 - STEP) {
+            hasR = true;
+            if (cx0 < rMinX) rMinX = cx0;
+            if (cx1 > rMaxX) rMaxX = cx1;
+            rChars += Array.from(c.str).length;
+          }
         }
+        if (hasL) { leftRows++; if (r.y < lMinY) lMinY = r.y; if (r.y > lMaxY) lMaxY = r.y; }
+        if (hasR) { rightRows++; if (r.y < rMinY) rMinY = r.y; if (r.y > rMaxY) rMaxY = r.y; }
         if (hasL && hasR) pairedRows++;
       }
-      if (pairedRows < 3) continue;
-      const cnt = [0, 0], chars = [0, 0];
-      for (const c of chunks) {
-        const s = (c.x0 + c.x1) / 2 < mid ? 0 : 1;
-        cnt[s]++;
-        chars[s] += Array.from(c.str).length;
+      if (leftRows < 2 || rightRows < 2) continue;
+      if (lMaxY < rMinY - bodyH || rMaxY < lMinY - bodyH) continue;
+      if (lChars < 4 || rChars < 4) continue;
+      const v0 = isFinite(lMaxX) ? lMaxX : coarseV0;
+      const v1 = isFinite(rMinX) ? rMinX : coarseV1;
+      const vw = v1 - v0;
+      if (vw < minVw) continue;
+      const mid = (v0 + v1) / 2;
+      if (mid < lo + W * 0.12 || mid > lo + W * 0.88) continue;
+      const leftW = Math.max(0, lMaxX - lMinX), rightW = Math.max(0, rMaxX - rMinX);
+      if (pairedRows < 3 && vw < bodyH * 2.0 && (leftW < bodyH * 3.0 || rightW < bodyH * 3.0)) continue;
+      cands.push({ v0, v1, mid, minCnt, vw, dist: Math.abs(mid - center) });
+    }
+    if (cands.length <= 1) return cands;
+
+    // 隣接する谷のあいだにも2行以上のカラムが存在するか検証（ノイズ谷を除外し2〜3段組を確定）
+    const better = (a, b) =>
+      a.minCnt < b.minCnt ||
+      (a.minCnt === b.minCnt && (a.vw > b.vw || (a.vw === b.vw && a.dist < b.dist)));
+    const kept = [cands[0]];
+    for (let ci = 1; ci < cands.length; ci++) {
+      const prev = kept[kept.length - 1], cand = cands[ci];
+      let midRows = 0, midChars = 0;
+      for (const r of rows) {
+        let hasM = false;
+        for (const c of r.chunks) {
+          const cx0 = Math.min(c.x0, c.x1), cx1 = Math.max(c.x0, c.x1), cx = (cx0 + cx1) / 2;
+          if ((cx0 < prev.v0 && cx1 > prev.v1) || (cx0 < cand.v0 && cx1 > cand.v1)) continue;
+          if (cx >= prev.mid && cx < cand.mid) {
+            hasM = true;
+            midChars += Array.from(c.str).length;
+          }
+        }
+        if (hasM) midRows++;
       }
-      const tot = chars[0] + chars[1];
-      if (!(tot > 0 && cnt[0] >= 2 && cnt[1] >= 2 && chars[0] >= tot * 0.2 && chars[1] >= tot * 0.2)) continue;
-      const cand = { mid, minCnt, vw, dist: Math.abs(mid - center) };
-      if (
-        !best ||
-        cand.minCnt < best.minCnt ||
-        (cand.minCnt === best.minCnt && (cand.vw > best.vw || (cand.vw === best.vw && cand.dist < best.dist)))
-      ) {
-        best = cand;
+      if (midRows >= 2 && midChars >= 4) {
+        kept.push(cand);
+      } else if (better(cand, prev)) {
+        kept[kept.length - 1] = cand;
       }
     }
-    return best ? best.mid : null;
+    return kept;
   }
-  /** 全幅の見出し（段をまたぐ長い行）で区切った帯ごとに、2段組を判定して並べる */
+  /** 全幅の見出し（段をまたぐ長い行）で区切った帯ごとに、多段組（2〜3段組）を判定して左→右・上→下に並べる */
   function orderBands(chunks, metaOut, pageWOpt) {
     if (!chunks || !chunks.length) return '';
     const lo = Math.min(...chunks.map(c => Math.min(c.x0, c.x1)));
@@ -382,59 +576,78 @@
     const W = hi - lo, lineW = (pageWOpt && pageWOpt > 0) ? pageWOpt : W, bodyH = bodyHeight(chunks);
     const wide = c => {
       const cx0 = Math.min(c.x0, c.x1), cx1 = Math.max(c.x0, c.x1);
-      return W > 0 && (cx1 - cx0) >= W * 0.58 && cx0 < lo + W * 0.35 && cx1 > lo + W * 0.65;
+      return W > 0 && (cx1 - cx0) >= W * 0.65 && cx0 < lo + W * 0.25 && cx1 > lo + W * 0.75;
     };
     const sorted = chunks.slice().sort((a, b) => a.y - b.y), out = []; let band = [];
-    // 動的ガター検出：ページ全体で縦の空白帯が無くても、全幅見出しで区切った帯ごとに判定する。
-    // さらに帯の中に「ガターを大きく跨ぐ行」があれば、独立見出しとして出力し前後の左右段を分離する
+    // 動的ガター検出：全幅行の有無にかかわらず、ページ全体・非wide群・各帯から2〜3段組ガターを検出する
     const bands = []; { let b = []; sorted.forEach(c => { if (wide(c)) { if (b.length) bands.push(b); b = []; } else b.push(c); }); if (b.length) bands.push(b); }
-    if (findGutter(chunks.filter(c => !wide(c)), bodyH) == null && !bands.some(b => findGutter(b, bodyH) != null)) {
-      return chunksToLines(chunks, metaOut, lineW);   // 2段組でなければ従来どおり
+    const hasGutter =
+      findGutters(chunks, bodyH).length > 0 ||
+      findGutters(chunks.filter(c => !wide(c)), bodyH).length > 0 ||
+      bands.some(b => findGutters(b, bodyH).length > 0);
+    if (!hasGutter) {
+      return chunksToLines(chunks, metaOut, lineW);   // 多段組でなければ従来どおり
     }
     const pushPart = s => {
       if (!s) return;
       out.push(s);
     };
-    const emitSubBand = (sub, g) => {
-      if (!sub.length) return;
-      pushPart(chunksToLines(sub.filter(c => (c.x0 + c.x1) / 2 < g), metaOut, lineW));
-      pushPart(chunksToLines(sub.filter(c => (c.x0 + c.x1) / 2 >= g), metaOut, lineW));
+    const processBand = (subChunks, depth) => {
+      if (!subChunks || !subChunks.length) return;
+      const gs = findGutters(subChunks, bodyH);
+      if (!gs.length) {
+        pushPart(chunksToLines(subChunks, metaOut, lineW));
+        return;
+      }
+      const emitSubBand = sub => {
+        if (!sub.length) return;
+        const cols = Array.from({ length: gs.length + 1 }, () => []);
+        sub.forEach(c => {
+          const cx = (c.x0 + c.x1) / 2;
+          let colIdx = gs.length;
+          for (let gi = 0; gi < gs.length; gi++) {
+            if (cx < gs[gi].mid) { colIdx = gi; break; }
+          }
+          cols[colIdx].push(c);
+        });
+        cols.forEach(col => {
+          if (!col.length) return;
+          if (depth < 3 && col.length < subChunks.length) processBand(col, depth + 1);
+          else pushPart(chunksToLines(col, metaOut, lineW));
+        });
+      };
+      const rows = groupVisualRows(subChunks);
+      let sub = [];
+      rows.forEach(r => {
+        const crosses = r.chunks.some(c => {
+          const cx0 = Math.min(c.x0, c.x1), cx1 = Math.max(c.x0, c.x1);
+          return gs.some(g => cx0 < g.v0 && cx1 > g.v1);
+        });
+        if (crosses) {
+          emitSubBand(sub);
+          sub = [];
+          let lineStr = '';
+          r.chunks.forEach((c, idx) => {
+            if (idx) {
+              const prevX1 = Math.max(r.chunks[idx - 1].x0, r.chunks[idx - 1].x1);
+              const curX0 = Math.min(c.x0, c.x1);
+              if (curX0 - prevX1 > r.h * 0.6) lineStr += ' ';
+            }
+            lineStr += c.str;
+          });
+          if (lineStr) {
+            out.push(lineStr);
+            if (Array.isArray(metaOut)) metaOut.push({ shortEndX: true, yGapBreak: true });
+          }
+        } else {
+          sub.push(...r.chunks);
+        }
+      });
+      emitSubBand(sub);
     };
     const flush = () => {
       if (!band.length) return;
-      const g = findGutter(band, bodyH);
-      if (g == null) {
-        pushPart(chunksToLines(band, metaOut, lineW));
-      } else {
-        const rows = [];
-        band.forEach(c => {
-          const ln = rows.find(r => Math.abs(r.y - c.y) <= Math.max(c.h, r.h) * 0.5);
-          if (ln) { ln.chunks.push(c); ln.y = (ln.y * (ln.chunks.length - 1) + c.y) / ln.chunks.length; ln.h = Math.max(ln.h, c.h); }
-          else rows.push({ y: c.y, h: c.h, chunks: [c] });
-        });
-        rows.sort((a, b) => a.y - b.y);
-        let sub = [];
-        rows.forEach(r => {
-          const crosses = r.chunks.some(c => Math.min(c.x0, c.x1) < g - bodyH * 1.5 && Math.max(c.x0, c.x1) > g + bodyH * 1.5);
-          if (crosses) {
-            emitSubBand(sub, g);
-            sub = [];
-            r.chunks.sort((a, b) => a.x0 - b.x0);
-            let lineStr = '';
-            r.chunks.forEach((c, idx) => {
-              if (idx && c.x0 - r.chunks[idx - 1].x1 > r.h * 0.6) lineStr += ' ';
-              lineStr += c.str;
-            });
-            if (lineStr) {
-              out.push(lineStr);
-              if (Array.isArray(metaOut)) metaOut.push({ shortEndX: true, yGapBreak: true });
-            }
-          } else {
-            sub.push(...r.chunks);
-          }
-        });
-        emitSubBand(sub, g);
-      }
+      processBand(band, 0);
       band = [];
     };
     sorted.forEach(c => {

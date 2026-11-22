@@ -385,7 +385,8 @@ input:focus, textarea:focus, select:focus { outline: 2px solid rgba(79,107,237,.
 
 /* ===== ギャラリー・資料ファイル・履歴モーダル ===== */
 .edit-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px dashed var(--dc-border); } .edit-sname { font-weight: 700; font-size: 0.9rem; color: var(--dc-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.edit-bottom { margin-top: 16px; display: grid; gap: 16px; }
+.edit-bottom { margin-top: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.edit-bottom > .card { min-width: 0; }
 .gal-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; } .gal-hint { font-size: 0.75rem; font-weight: 400; color: var(--dc-text-muted); } .gal-note, .gal-empty { font-size: 0.82rem; color: var(--dc-text-muted); padding: 10px 0; }
 .gal-cats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; } .gal-cat { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--dc-border); background: #fff; border-radius: 999px; padding: 4px 10px; font-size: 0.82rem; cursor: pointer; } .gal-cat.on { background: var(--dc-accent); border-color: var(--dc-accent); color: #fff; } .gal-cat small { opacity: .75; }
 .gal-mini { border: none; background: transparent; color: inherit; cursor: pointer; font-size: 0.8rem; padding: 0 2px; opacity: .75; } .gal-mini:hover { opacity: 1; } .gal-rename { width: 140px; padding: 2px 6px; font-size: 0.82rem; }
@@ -2959,7 +2960,7 @@ summary {
 /* ===== 5. 右ペイン 2段アコーディオン構造（Discordプレビュー ＋ シナリオ資料ビューワ） ===== */
 .workspace {
   grid-template-columns: minmax(0, 1fr) minmax(420px, 46%);
-  align-items: stretch;
+  align-items: start;
 }
 .form-area {
   min-width: 0;
@@ -2983,14 +2984,17 @@ summary {
 }
 @media (min-width: 901px) {
   .preview-area {
+    align-self: start;
     position: sticky;
     top: calc(var(--app-header-h, 64px) + 8px);
-    max-height: calc(100vh - var(--app-header-h, 64px) - 18px);
+    height: calc(100vh - var(--app-header-h, 64px) - 20px);
+    max-height: calc(100vh - var(--app-header-h, 64px) - 20px);
   }
 }
 @media (max-width: 900px) {
   .preview-area {
     position: static;
+    height: auto;
     max-height: none;
   }
 }
@@ -3206,6 +3210,7 @@ summary {
 
 /* 拡大表示時・シナリオウィンドウ時の調整 */
 .preview-area.zoomed {
+  height: auto;
   max-height: none;
 }
 .preview-area.zoomed #previewAccPanel {
@@ -3973,6 +3978,28 @@ summary {
   flex-shrink: 0;
 }
 
+#scenarioGallery .gal-split {
+  max-height: 320px;
+}
+#scenarioGallery .gal-tree-pane {
+  max-height: 320px;
+}
+#scenarioGallery .gal-main-pane {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  min-height: 0;
+}
+#scenarioGallery .gal-bulkbar,
+#scenarioGallery .gal-substrip {
+  flex-shrink: 0;
+}
+#scenarioGallery .gal-drop {
+  flex: 1 1 auto;
+  min-height: 110px;
+  overflow-y: auto;
+}
+
 @media (max-width: 960px) {
   .gal-split {
     flex-direction: column;
@@ -3981,5 +4008,13 @@ summary {
     width: 100%;
     flex: 0 0 auto;
     max-height: 190px;
+  }
+  #scenarioGallery .gal-tree-pane {
+    max-height: 115px;
+  }
+  #scenarioGallery .gal-main-pane {
+    width: 100%;
+    flex: 1 1 0;
+    min-height: 0;
   }
 }

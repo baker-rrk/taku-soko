@@ -312,7 +312,10 @@
   const RE_INLINE = new RegExp('^\\s*(.{1,40}?)\\s*[/:]\\s*(?=(?:' + P_LABELS + ')(?![A-Za-z])\\s*[:=]?\\s*(?:\\d|\\(\\s*\\d))', 'i');
   const RE_SEP = /^[\s\-=_/*#~・.―ー─━+|]*$/;
   const RE_HEAD_JUNK = /【\s*(?:能力値|技能値|チャットパレット|ステータス)|チャットパレット|×\s*n\s*】|】\s*-{2,}|■\s*ステータス傾向|ステータス傾向|^\s*[【\[]?\s*技能\s*[】\]]?\s*$/;
-  const RE_BAD_NAME_PREFIX = /^(?:ステータス|能力値|種族?|所属|性別|年齢|武器|技能|所持品|職業|出身|国籍|身長|体重|備考|特徴|設定|解説|概要|描写|プロフィール|データ|詳細|行動|戦術|攻撃|特殊攻撃|魔術|呪文|【人物像】|【使用魔術】|【過去背景】|【経緯】|【能力値|【技能値|【ステータス|【技能|【武器|【所持品|【データ|【備考|【特徴|【解説|【行動|【魔術|【呪文)/;
+  const RE_BAD_NAME_PREFIX = /^(?:ステータス|能力値|技能値|チャットパレット|パラメータ|(?:NPC|PC|探索者|キャラクター)\s*(?:能力値|技能値|ステータス|チャットパレット|パラメータ)|種族?|所属|性別|年齢|武器|技能|所持品|職業|出身|国籍|身長|体重|備考|特徴|設定|解説|概要|描写|プロフィール|データ|詳細|行動|戦術|攻撃|特殊攻撃|魔術|呪文|【人物像】|【使用魔術】|【過去背景】|【経緯】|【能力値|【技能値|【ステータス|【技能|【武器|【所持品|【データ|【備考|【特徴|【解説|【行動|【魔術|【呪文)/i;
+  const RE_LABEL_ONLY = /^(?:名前|氏名|NPC名|PC名|キャラクター名|キャラ名|名称)\s*[:：]?$/i;
+  const RE_STAT_HEAD = /^(?:NPC|PC|探索者|キャラクター)?\s*(?:能力値|技能値|ステータス|チャットパレット|パラメータ)\s*[:：]?$/i;
+  const RE_TIMING_HEAD = /^(?:戦闘|探索|尋問|交渉|逃走|追跡)(?:開始|終了|前|後|中)$|(?:終わったら|したら|の場合|の時|するとき|する際|後|前)$/;
   const SYM_ALL = '\\uE000-\\uF8FF\\u25A0-\\u25FF\\u2600-\\u27BF❏❐❑■□◆◇●○◯〇▼▽▶▷★☆❖✦✧※†‡・';
   const SYM_HEAD = '\\uE000-\\uF8FF\\u25A0-\\u25FF\\u2600-\\u27BF❏❐❑■□◆◇●○◯〇▼▽▶▷★☆❖✦✧';
   const HEAD_SYM = new RegExp('^[' + SYM_HEAD + ']+\\s*(.+)$');
@@ -323,7 +326,7 @@
     const t = String(c == null ? '' : c).normalize('NFKC');
     return PROSE_WORDS.test(t) || (t.length >= 15 && !/[(（]/.test(t) && /[はがをにでともへのや]|から|ので|だが|です|ます/.test(t));
   };
-  const RE_SECTION_HEAD = /^(?:導入|イントロダクション|あらすじ|背景|概要|真相|結末|エンディング|クライマックス|登場人物|登場NPC|NPC一覧|キャラクター(?:一覧)?|推奨技能|プレイ人数|プレイ時間|ロスト率|注意事項?|目次|はじめに|おわりに|あとがき|クレジット|ハンドアウト|第\s*[0-9一二三四五六七八九十百]+\s*[章話部幕節]|(?:シーン|場面|Chapter|Section|Phase|Part)\s*[0-9０-９一二三四五六七八九十]+)/i;
+  const RE_SECTION_HEAD = /^(?:導入|イントロダクション|あらすじ|背景|概要|真相|結末|エンディング|クライマックス|登場人物|登場NPC|NPC一覧|キャラクター(?:一覧)?|推奨技能|プレイ人数|プレイ時間|ロスト率|注意事項?|目次|はじめに|おわりに|あとがき|クレジット|ハンドアウト|(?:本編での)?立ち回り$|(?:行動|戦闘)(?:指針|方針|パターン)$|運用$|攻略$|役割$|関係性$|登場シーン$|出現場所$|本編での.*$|第\s*[0-9一二三四五六七八九十百]+\s*[章話部幕節]|(?:シーン|場面|Chapter|Section|Phase|Part)\s*[0-9０-９一二三四五六七八九十]+)/i;
   const RE_FORM_HEAD = new RegExp('^\\s*[' + SYM_HEAD + '\\[【]?\\s*(?:ステータス|能力値|形態|フォーム)\\s*[:：]\\s*([^】\\]\\n]{1,20}?)\\s*[】\\]]?\\s*$');
   const RE_SKILL_HEAD = /^\s*[【\[]?\s*(?:技能|戦闘技能|探索技能|行動技能|知識技能|交渉技能|武器|武装|攻撃|攻撃方法|魔法|魔術|呪文|スキル|Skills?)\s*[】\]]?\s*[:：]?\s*$/i;
   const RE_AGE_SEX = /^(?:[\d\s]{1,4}[歳才]?|男性?|女性?|年齢[:\s]*\d*[歳才]?|性別[:\s]*[男女]?性?|[\s/・,:()（）])+$/;
@@ -337,9 +340,14 @@
   const trimNm = trimName;
   /** 名前遡り用：この行を名前候補にしてはいけないか */
   function badName(raw) {
-    const r = String(raw || '').trim(), s = trimNm(r);
+    const r = NF(raw).trim(), s = trimNm(r);
     if (!s || s.length > (/[（(]/.test(s) ? 38 : 25)) return true;
-    if (RE_BAD_NAME_PREFIX.test(r) || RE_BAD_NAME_PREFIX.test(s) || RE_FORM_HEAD.test(r) || RE_SKILL_HEAD.test(r)) return true;
+    const unbrk = s.replace(/^[【\[]+|[】\]]+$/g, '').trim();
+    if (RE_BAD_NAME_PREFIX.test(r) || RE_BAD_NAME_PREFIX.test(s) || RE_BAD_NAME_PREFIX.test(unbrk) || RE_FORM_HEAD.test(r) || RE_SKILL_HEAD.test(r)) return true;
+    if (RE_LABEL_ONLY.test(r) || RE_LABEL_ONLY.test(s) || RE_LABEL_ONLY.test(unbrk)) return true;
+    if (RE_STAT_HEAD.test(r) || RE_STAT_HEAD.test(s) || RE_STAT_HEAD.test(unbrk)) return true;
+    if (RE_SECTION_HEAD.test(r) || RE_SECTION_HEAD.test(s) || RE_SECTION_HEAD.test(unbrk)) return true;
+    if (RE_TIMING_HEAD.test(r) || RE_TIMING_HEAD.test(s) || RE_TIMING_HEAD.test(unbrk)) return true;
     if (/[「」『』]/.test(r) || RE_HEAD_JUNK.test(r) || RE_SEP.test(s)) return true;
     if (/[】]|^[\-=]{2,}|-{3,}/.test(r) && !/【/.test(r)) return true;
     if (/\d*[dD]\d+|CCB?\s*<=|<=/.test(s) || pairsOf(s).length || isSkillLine(s)) return true;
@@ -350,7 +358,7 @@
     return false;
   }
   const headNameOf = (line, origLine) => {
-    const t = String(line || '').trim();
+    const t = NF(line).trim();
     if (!t || pairsOf(t).length || isSkillLine(t) || isTerm(t)) return '';
     if (RE_FORM_HEAD.test(t) || RE_SKILL_HEAD.test(t) || PROFILE_ATTR.test(t)) return '';
     let cand = '';
@@ -362,10 +370,18 @@
     }
     if (!cand) return '';
     const inner = cand.trim();
-    if (RE_BAD_NAME_PREFIX.test(t) || RE_BAD_NAME_PREFIX.test(inner) || RE_SECTION_HEAD.test(inner)) return '';
+    if (
+      RE_BAD_NAME_PREFIX.test(t) || RE_BAD_NAME_PREFIX.test(inner) ||
+      RE_LABEL_ONLY.test(inner) || RE_STAT_HEAD.test(inner) ||
+      RE_SECTION_HEAD.test(inner) || RE_TIMING_HEAD.test(inner)
+    ) return '';
     if (badName(cand) || proseLike(cand)) return '';
     let nm = trimNm(cand);
-    if (!nm || RE_BAD_NAME_PREFIX.test(nm) || RE_SECTION_HEAD.test(nm) || badName(nm) || proseLike(nm)) return '';
+    if (
+      !nm || RE_BAD_NAME_PREFIX.test(nm) || RE_LABEL_ONLY.test(nm) ||
+      RE_STAT_HEAD.test(nm) || RE_SECTION_HEAD.test(nm) || RE_TIMING_HEAD.test(nm) ||
+      badName(nm) || proseLike(nm)
+    ) return '';
     if (origLine && /＝/.test(origLine)) nm = nm.replace(/=/g, '＝');
     return nm;
   };
@@ -537,7 +553,10 @@
       }
       if (!name) {
         const lab = bodyLines.map(l => /^\s*(?:名前|氏名|NPC名|名称)\s*[:=]\s*(.+?)\s*$/.exec(l)).find(Boolean);
-        if (lab) { name = trimNm(lab[1]); if (name) lastUsedAct = null; }
+        if (lab) {
+          const cn = trimNm(lab[1]);
+          if (cn && !badName(cn)) { name = cn; lastUsedAct = null; }
+        }
       }
       if (!name) {
         // 直前の形態見出し（ステータス：通常時 / ステータス：本来の姿）を検出
@@ -557,6 +576,11 @@
         if (!name) {
           name = findHeadName(s, prevEnd, formAt, formLabel);
           if (name) lastUsedAct = null;
+        }
+        // 直前ステータスとの間に別キャラ名や有効な見出しが無く、同一ページの人物見出し（actAt）が継続していれば引き継ぐ（例：■本編での立ち回り下の再掲ステータス）
+        if (!name && act && lastUsedAct === act) {
+          name = formLabel ? act.name + '（' + formLabel + '）' : act.name;
+          lastUsedAct = act;
         }
         if (name) bodyLines.unshift('名前: ' + name);
       } else if (!c.inline && !bodyLines.some(l => /^\s*(?:名前|氏名|NPC名|名称)\s*[:=]/.test(l))) {
@@ -782,7 +806,11 @@
       items.sort((a, b) => b.rich - a.rich || (a.r.noStats ? 1 : 0) - (b.r.noStats ? 1 : 0) || a.r.page - b.r.page || a.idx - b.idx);
       const kept = [];
       items.forEach(it => {
-        const base = kept.find(k => k.simple || it.simple || !(k.solid && it.solid && conflicts(k, it) > 0));
+        const base = kept.find(k =>
+          k.simple || it.simple ||
+          (!formOf(k.r.name) && !formOf(it.r.name)) ||
+          !(k.solid && it.solid && conflicts(k, it) > 0)
+        );
         if (!base) { kept.push(it); return; }
         absorb(base, it);
       });

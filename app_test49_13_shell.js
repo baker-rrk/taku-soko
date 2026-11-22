@@ -329,7 +329,10 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
         if (playFilter === 'unset' ? !!ps : ps !== playFilter) continue;
       }
       if (chf && !(sc.postedChannels || []).includes(chf.slice(2))) continue;
-      if (typeof dbTagSel !== 'undefined' && dbTagSel.size && !(sc.tags || []).some(t => dbTagSel.has(t))) continue;
+      if (typeof dbTagSel !== 'undefined' && dbTagSel.size) {
+        const scTags = sc.tags || [];
+        if (![...dbTagSel].every(sel => scTags.includes(sel))) continue;
+      }
       if (!matchQuery(sc, terms)) continue;
       filtered.push({ sc, index });
     }

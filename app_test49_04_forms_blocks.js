@@ -368,6 +368,9 @@
     updateTagCheckboxes(); renderBlockUI(); checkDuplicateStatus(); renderPreview();
     if (typeof updateEditScenarioBanner === 'function') updateEditScenarioBanner();
     if (typeof refreshPostDocList === 'function') refreshPostDocList({ autoOpen: true });
+    if (window.CCF && CCF.assets && CCF.assets.invalidateUnified && currentScenarioId) CCF.assets.invalidateUnified(String(currentScenarioId), false);
+    if (typeof window.resetScenarioGalleryView === 'function') window.resetScenarioGalleryView();
+    if (typeof renderGalleryAll === 'function') renderGalleryAll(true);
   }
 
   function getBlockVal(id) { const item = blockOrder.find(b => b.id === id); return item ? item.val : ""; }
@@ -399,6 +402,9 @@
     setHOs([]); activeTagNames.clear(); updateTagCheckboxes(); renderBlockUI(); checkDuplicateStatus(); renderPreview();
     if (typeof updateEditScenarioBanner === 'function') updateEditScenarioBanner();
     if (typeof refreshPostDocList === 'function') refreshPostDocList({ clear: true });
+    if (window.CCF && CCF.assets && CCF.assets.invalidateUnified && currentScenarioId) CCF.assets.invalidateUnified(String(currentScenarioId), false);
+    if (typeof window.resetScenarioGalleryView === 'function') window.resetScenarioGalleryView();
+    if (typeof renderGalleryAll === 'function') renderGalleryAll(true);
   }
   async function resetForm() {
     if (!(await appConfirm('入力中のフォームをクリアしますか？', { okText: 'クリア', danger: true }))) return; currentScenarioId = null; setHOs([]);
@@ -410,6 +416,9 @@
     selectedChannelCols.clear(); activeTagNames.clear(); renderChannelCheckboxes(); updateTagCheckboxes(); renderBlockUI(); checkDuplicateStatus(); renderPreview();
     if (typeof updateEditScenarioBanner === 'function') updateEditScenarioBanner();
     if (typeof refreshPostDocList === 'function') refreshPostDocList({ clear: true });
+    if (window.CCF && CCF.assets && CCF.assets.invalidateUnified && currentScenarioId) CCF.assets.invalidateUnified(String(currentScenarioId), false);
+    if (typeof window.resetScenarioGalleryView === 'function') window.resetScenarioGalleryView();
+    if (typeof renderGalleryAll === 'function') renderGalleryAll(true);
   }
 
   function checkDuplicateStatus() {
