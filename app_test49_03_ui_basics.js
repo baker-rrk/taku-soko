@@ -489,6 +489,9 @@ function autoSyncToDBOnPost(title, targetChannelIds, opts) {
     saveState(); populateScenarioDBSelect(); renderDBView();
     updateEditScenarioBanner();
     if (typeof refreshPostDocList === 'function') refreshPostDocList({ autoOpen: false });
+    if (window.CCF && CCF.assets && CCF.assets.invalidateUnified && currentScenarioId) CCF.assets.invalidateUnified(String(currentScenarioId), false);
+    if (typeof window.resetScenarioGalleryView === 'function') window.resetScenarioGalleryView();
+    if (typeof renderGalleryAll === 'function') renderGalleryAll(true);
   }
 
   async function removePostedChannel(scenarioIdx, entryIdx) {

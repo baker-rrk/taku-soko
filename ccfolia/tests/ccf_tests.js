@@ -460,4 +460,322 @@ eq(T.toFullWidthAlnum(T.toHalfWidthAlnum('Ａ１ａ')), 'Ａ１ａ', '往復で�
   eq(p.cutins[0].visualType, 'video', 'sanitizeProject: cutin visualTypeとseVolumeを保持');
   eq(p.cutins[0].seVolume, 70, 'sanitizeProject: cutin seVolumeを保持');
 }
+
+// ===== 多段組PDF（2〜3段組・狭ガター・単一item内スペース分割・縦ブロック分離） =====
+{
+  // 1) 単一 item.str 内の2つ以上の連続スペースを glyphs 座標で分割し、wide(c) 誤認と横結合を防止
+  const singleItemCols = [
+    item('左列一行目      右列一行目', 40, 100, 320, 14),
+    item('左列二行目      右列二行目', 40, 120, 320, 14),
+    item('左列三行目      右列三行目', 40, 140, 320, 14)
+  ];
+  eq(
+    T.extractRectText(singleItemCols, VP, 1, { x: 30, y: 80, w: 360, h: 80 }, { pageW: 420 }),
+    '左列一行目\n左列二行目\n左列三行目\n右列一行目\n右列二行目\n右列三行目',
+    '単一item内の連続スペースを座標分割して左右2段を正しく分離'
+  );
+
+  // 2) 3段組キャラシート（全幅見出し＋左:ステータス／中:解説／右:技能）
+  const threeColItems = [
+    item('❏ 梅本 時雨（キャラクターシート）', 40, 60, 480, 16),
+    item('STR:11', 40, 100, 70, 12), item('新エネルギー開発の', 145, 100, 160, 12), item('《目星》60%', 340, 100, 110, 12),
+    item('CON:12', 40, 120, 70, 12), item('研究者として働く。', 145, 120, 160, 12), item('《図書館》70%', 340, 120, 110, 12),
+    item('POW:13', 40, 140, 70, 12), item('温厚な性格だが秘密', 145, 140, 160, 12), item('《回避》50%', 340, 140, 110, 12),
+    item('HP:12', 40, 160, 70, 12), item('を抱えている。', 145, 160, 140, 12), item('《こぶし》65%', 340, 160, 110, 12)
+  ];
+  eq(
+    T.extractRectText(threeColItems, VP, 1, { x: 30, y: 40, w: 520, h: 150 }, { pageW: 560 }),
+    '❏ 梅本 時雨（キャラクターシート）\nSTR:11\nCON:12\nPOW:13\nHP:12\n新エネルギー開発の\n研究者として働く。\n温厚な性格だが秘密\nを抱えている。\n《目星》60%\n《図書館》70%\n《回避》50%\n《こぶし》65%',
+    '3段組キャラシートを全幅見出し→左列→中列→右列の順に分離'
+  );
+
+  // 3) 狭ガター2段組（vw = 15px, bodyH = 12px → 1.25 * bodyH >= 1.1 * bodyH）
+  const narrowGutter = [
+    item('左側の狭い段の一行目', 40, 100, 180, 12), item('右側の狭い段の一行目', 235, 100, 180, 12),
+    item('左側の狭い段の二行目', 40, 120, 180, 12), item('右側の狭い段の二行目', 235, 120, 180, 12),
+    item('左側の狭い段の三行目', 40, 140, 180, 12), item('右側の狭い段の三行目', 235, 140, 180, 12)
+  ];
+  eq(
+    T.extractRectText(narrowGutter, VP, 1, { x: 30, y: 80, w: 420, h: 80 }, { pageW: 460 }),
+    '左側の狭い段の一行目\n左側の狭い段の二行目\n左側の狭い段の三行目\n右側の狭い段の一行目\n右側の狭い段の二行目\n右側の狭い段の三行目',
+    '狭ガター2段組も左右を横結合せず分離'
+  );
+
+  // 4) chunksToLines（twoColumn:false）での縦並び大ギャップ分離と、1行横並び表の保持
+  const vertCols = [
+    item('STR:10', 40, 100, 60, 12), item('目星:60%', 160, 100, 70, 12),
+    item('CON:12', 40, 120, 60, 12), item('聞き耳:50%', 160, 120, 80, 12)
+  ];
+  eq(
+    T.extractRectText(vertCols, VP, 1, { x: 30, y: 80, w: 260, h: 60 }, { pageW: 400, twoColumn: false }),
+    'STR:10\nCON:12\n目星:60%\n聞き耳:50%',
+    'chunksToLines: 2行以上に同じX位置で大ギャップがある縦カラムは左ブロック→右ブロックへ分離'
+  );
+  const oneRowTable = [
+    item('STR:10', 40, 100, 50, 12), item('DEX:12', 140, 100, 50, 12), item('INT:14', 240, 100, 50, 12)
+  ];
+  eq(
+    T.extractRectText(oneRowTable, VP, 1, { x: 30, y: 80, w: 300, h: 40 }, { pageW: 400 }),
+    'STR:10 DEX:12 INT:14',
+    '1行だけの横並びステータス表は従来どおり1行に保持'
+  );
+
+  // 5) 狭ガター（約8px）2段組で左段「劇団員」「織田」、右段「津島」「HO1 秘匿」が同Y座標に並ぶケースの完全分離
+  const narrow8pxTwoCol = [
+    item('劇団員', 40, 100, 36, 12), item('津島', 228, 100, 24, 12),
+    item('劇団の舞台を支える団員たち。', 40, 120, 180, 12), item('津島は静かに微笑んでいる。', 228, 120, 180, 12),
+    item('織田', 40, 140, 24, 12), item('HO1 秘匿', 228, 140, 56, 12),
+    item('織田は古書店で働く青年だ。', 40, 160, 180, 12), item('あなただけが知る秘密がある。', 228, 160, 180, 12)
+  ];
+  eq(
+    T.extractRectText(narrow8pxTwoCol, VP, 1, { x: 30, y: 80, w: 400, h: 100 }, { pageW: 460 }),
+    '劇団員\n劇団の舞台を支える団員たち。\n織田\n織田は古書店で働く青年だ。\n津島\n津島は静かに微笑んでいる。\nHO1 秘匿\nあなただけが知る秘密がある。',
+    '狭ガター（約8px）2段組で左「劇団員」「織田」と右「津島」「HO1 秘匿」が同Y座標でも混ざらず完全分離'
+  );
+
+  // 6) 部分狭ガター2段組（chunksToLines: twoColumn:false でも2行以上の狭ギャップ縦カラムを分離）
+  const partialNarrowCols = [
+    item('■ 登場人物と秘匿情報の一覧まとめ（全幅見出し）', 40, 80, 360, 12),
+    item('劇団員の説明文', 40, 100, 110, 12), item('津島の説明文', 161, 100, 110, 12),
+    item('織田の説明文', 40, 120, 110, 12), item('HO1 秘匿の案内', 161, 120, 110, 12)
+  ];
+  eq(
+    T.extractRectText(partialNarrowCols, VP, 1, { x: 30, y: 60, w: 390, h: 80 }, { pageW: 420, twoColumn: false }),
+    '■ 登場人物と秘匿情報の一覧まとめ（全幅見出し）\n劇団員の説明文\n織田の説明文\n津島の説明文\nHO1 秘匿の案内',
+    'chunksToLines: 部分狭ガター2段組でも2行以上の縦空白帯を左ブロック→右ブロックへ分離'
+  );
+
+  // 7) 3列×3行の横並び能力値表の直下に「技能」見出しがあるレイアウトで縦分裂しないこと
+  const statTableWithSkill = [
+    item('STR:8', 40, 100, 42, 12), item('DEX:14', 102, 100, 48, 12), item('INT:14', 170, 100, 46, 12),
+    item('APP:14', 40, 120, 48, 12), item('SIZ:11', 102, 120, 44, 12), item('EDU:18', 170, 120, 48, 12),
+    item('SAN:21', 40, 140, 48, 12), item('HP:9', 102, 140, 34, 12), item('MP:16', 170, 140, 42, 12),
+    item('技能', 40, 162, 26, 12),
+    item('《目星》(60)', 40, 182, 72, 12), item('《聞き耳》(50)', 124, 182, 84, 12)
+  ];
+  const expectedStatTable = 'STR:8 DEX:14 INT:14\nAPP:14 SIZ:11 EDU:18\nSAN:21 HP:9 MP:16\n技能\n《目星》(60) 《聞き耳》(50)';
+  eq(
+    T.extractRectText(statTableWithSkill, VP, 1, { x: 30, y: 80, w: 220, h: 120 }, { pageW: 260 }),
+    expectedStatTable,
+    '3列×3行の横並び能力値表＋直下の技能見出し：縦分裂せず能力値表を行結合した上で技能より前に出力（twoColumn:true）'
+  );
+  eq(
+    T.extractRectText(statTableWithSkill, VP, 1, { x: 30, y: 80, w: 220, h: 120 }, { pageW: 260, twoColumn: false }),
+    expectedStatTable,
+    '3列×3行の横並び能力値表＋直下の技能見出し：chunksToLinesでも縦分裂せず正しく行結合'
+  );
+}
+
+// ===== NPC名の誤採用除外 & 「■本編での立ち回り」下の再掲ステータス自動統合 =====
+{
+  const badSamples = [
+    '名前', '氏名', 'NPC名', 'NPC名：', 'PC名', 'キャラクター名', 'キャラ名', '名称',
+    'NPC 能力値', 'NPC能力値', 'PC 技能値', '探索者 ステータス', 'キャラクター チャットパレット', 'パラメータ:',
+    '立ち回り', '本編での立ち回り', '行動指針', '戦闘方針', '戦闘パターン', '運用', '攻略', '役割', '関係性', '登場シーン', '出現場所', '本編での扱い',
+    '戦闘開始', '探索終了', '尋問前', '交渉後', '逃走中', '追跡開始', 'RPが終わったら', '失敗したら', '発狂の場合', '遭遇の時', '判定するとき', '行動する際', 'イベント後', '導入前'
+  ];
+  badSamples.forEach(s => {
+    eq(S.badName(s), true, 'badName除外: ' + s);
+  });
+
+  // ■本編での立ち回り / ■NPC 能力値 / ■戦闘開始 等が actAt（梅本 時雨）を上書きせず、下部ステータスに引き継ぐ＋1体へ統合
+  const umemotoPage = [
+    '❏ 梅本 時雨',
+    '年齢：38歳 職業：研究者',
+    'STR:11 CON:12 POW:13 DEX:12 APP:13 SIZ:11 INT:16 EDU:17',
+    'HP:12 MP:13 SAN:65 図書館 70%',
+    '',
+    '■ 本編での立ち回り',
+    '■ NPC 能力値',
+    '■ 戦闘開始',
+    '■ RPが終わったら',
+    'STR:11 CON:12 POW:13 DEX:12 APP:13 SIZ:11 INT:16 EDU:17',
+    'HP:15 MP:13 SAN:60 こぶし 65% 回避 50%'
+  ].join('\n');
+  const uBlocks = S.detectCocBlocks(umemotoPage, N);
+  eq(uBlocks.length, 2, '梅本 時雨: 上部紹介ステータスと下部立ち回りステータスを検出');
+  eq(uBlocks[0].name, '梅本 時雨', '上部ステータスの名前は 梅本 時雨');
+  eq(uBlocks[1].name, '梅本 時雨', '■本編での立ち回り等が actAt を上書きせず 梅本 時雨 を引き継ぐ');
+
+  const uRows = uBlocks.map(b => ({ pdf: 'sc.pdf', page: 49, name: b.name, text: b.text }));
+  const uMerged = S.mergeSameResults(uRows, txt => N.parseNpc(txt, { edition: 'auto', rollPrefix: 'CCB', abilityRolls: true, noAuto: true }));
+  eq(uMerged.results.length, 1, 'mergeSameResults: 紹介用ステータスと戦闘用ステータス（別形態ラベルなし）を1体に統合');
+  eq(uMerged.results[0].name, '梅本 時雨', '統合後のキャラ名は 梅本 時雨');
+  eq(uMerged.merged, 1, '統合件数 = 1');
+
+  // 見出しが誤採用ワードだけのブロックは名前に採用しない
+  const junkHeadPage = [
+    '■ NPC名',
+    '■ NPC 能力値',
+    'STR:10 CON:10 POW:10 DEX:10 HP:10 MP:10 SAN:50'
+  ].join('\n');
+  const jBlocks = S.detectCocBlocks(junkHeadPage, N);
+  eq(jBlocks.length, 1, '見出し誤採用ワードのみのブロックもステータス検出は維持');
+  eq(jBlocks[0].name, '', 'NPC名 / NPC 能力値 をキャラ名に採用しない');
+}
+
+// ===== 精度改善3点：HO見出し除外・完全一致sig統合・ページまたぎ引き継ぎ・複数形態の右段技能合流 =====
+{
+  // 1-1) HO/秘匿/公開見出しの badName 除外
+  const hoBadSamples = [
+    'HO3 秘匿', 'HO1', 'ＨＯ２ 公開', 'PC1 導入', 'PL向け', 'KP情報', 'GM用', 'HO A 共通',
+    '秘匿', '秘匿情報', '公開', '公開情報', '秘匿ハンドアウト', '公開HO', '■ HO3 秘匿', '【HO1 個別】'
+  ];
+  hoBadSamples.forEach(s => {
+    eq(S.badName(s), true, 'badName除外(HO/秘匿見出し): ' + s);
+  });
+  const hoPage = [
+    '■ HO3 秘匿',
+    'STR:12 CON:11 POW:13 DEX:12 HP:12 MP:13 SAN:65',
+    '目星 60%'
+  ].join('\n');
+  const hoBlocks = S.detectCocBlocks(hoPage, N);
+  eq(hoBlocks.length, 1, 'HO3 秘匿ページでもステータス検出は維持');
+  eq(hoBlocks[0].name, '', 'HO3 秘匿 をNPC名に誤採用しない');
+
+  // 1-2) 複数資料横断での完全一致sig（conflicts===0 && np+ns>=3）スマート統合
+  const parseNoAuto = txt => N.parseNpc(txt, { edition: 'auto', rollPrefix: 'CCB', abilityRolls: true, noAuto: true });
+  const crossDocRows = [
+    { pdf: 'honbun.txt', path: '/sc/honbun.txt', page: 1, name: '', text: 'STR:13 CON:10 DEX:14 HP:13 MP:12\n目星 60% 聞き耳 55%' },
+    { pdf: 'honbun.txt', path: '/sc/honbun.txt', page: 2, name: '謎の男', text: 'STR:16 CON:15 POW:10 DEX:12 HP:15 MP:10\nこぶし 65%' },
+    { pdf: 'main.pdf', path: '/sc/main.pdf', page: 12, name: '織田 作之助(オダ サクノスケ)', fromHead: true, text: '名前: 織田 作之助(オダ サクノスケ)\nSTR:13 CON:10 DEX:14 HP:13 MP:12\n目星 60% 聞き耳 55%' },
+    { pdf: 'main.pdf', path: '/sc/main.pdf', page: 18, name: '坂崎 和也(サカザキ カズヤ)', fromHead: true, text: '名前: 坂崎 和也(サカザキ カズヤ)\nSTR:16 CON:15 POW:10 DEX:12 HP:15 MP:10\nこぶし 65%' },
+    { pdf: 'main.pdf', path: '/sc/main.pdf', page: 20, name: '警備員A', text: '名前: 警備員A\nSTR:12 CON:12 DEX:11 HP:12' },
+    { pdf: 'main.pdf', path: '/sc/main.pdf', page: 20, name: '警備員B', text: '名前: 警備員B\nSTR:12 CON:12 DEX:11 HP:12' }
+  ];
+  const crossMerged = S.mergeSameResults(crossDocRows, parseNoAuto);
+  eq(
+    crossMerged.results.map(r => r.name),
+    ['織田 作之助(オダ サクノスケ)', '坂崎 和也(サカザキ カズヤ)', '警備員A', '警備員B'],
+    'mergeSameResults: 複数資料で完全一致sigの無名/汎用名候補を正規人物名側へ統合し、同一資料の番号付きモブは維持'
+  );
+  eq(crossMerged.merged, 2, 'mergeSameResults: 2件統合');
+
+  // 2) PDFページまたぎ：前ページ末尾見出し（■織田）→次ページ先頭ステータス、および次ページ先頭への技能はみ出し結合
+  const p111 = [
+    '物語は終盤へ向かう。',
+    '■織田'
+  ].join('\n');
+  const p112 = [
+    'HP13/DEX14/CON10',
+    '目星 60%'
+  ].join('\n');
+  const directCross = S.detectCocBlocks(p112, N, { prevPageTail: ['■織田'] });
+  eq(directCross.length, 1, 'prevPageTail: 次ページ先頭ステータスを検出');
+  eq(directCross[0].name, '織田', 'prevPageTail: 前ページ末尾の ■織田 をページまたぎ見出しとして自動採用');
+
+  const multiPages = S.scanPagesForNpcBlocks([
+    { page: 111, text: p111 },
+    { page: 112, text: p112 },
+    { page: 113, text: 'CCB<=65 【こぶし】 1D3+db\n〈回避〉(50)\n\n■ 次キャラ\nSTR:11 CON:11 POW:11 HP:11' },
+    { page: 114, text: 'STR:10 CON:10 POW:10 HP:10' }
+  ], 'coc6', N);
+  eq(multiPages.length, 3, 'scanPagesForNpcBlocks: ページまたぎ＋次ページ技能はみ出しを含め3体を検出');
+  eq(multiPages[0].name, '織田', 'p.111末尾 ■織田 → p.112先頭 HP13/DEX14/CON10 の名前を補完');
+  t(multiPages[0].text.includes('CCB<=65 【こぶし】') && multiPages[0].text.includes('〈回避〉(50)'), 'p.113先頭にはみ出した独立技能・攻撃ブロックを前ページ最後の織田へ結合');
+  eq(multiPages[1].name, '次キャラ', 'p.113後半の新キャラを正常検出');
+  eq(multiPages[2].name, '', 'p.113で既に使用済みの見出し（次キャラ）をp.114の無名ブロックへ誤流用しない');
+
+  // 3) 段またぎ：RE_SKILL_HEAD拡張（「技能：通常時 or 本来の姿」）＋複数形態への右段技能ブロック合流・振り分け
+  const sakazakiOrPage = [
+    '❏ 坂崎 和也',
+    'ステータス：人間変貌時・通常時',
+    'STR:14 CON:13 POW:12 DEX:13 APP:12 SIZ:14 INT:14 EDU:14 HP:14 MP:12',
+    '',
+    'ステータス：本来の姿',
+    'STR:25 CON:20 POW:16 DEX:18 APP:5 SIZ:22 INT:14 EDU:14 HP:21 MP:16',
+    '',
+    '技能：通常時 or 本来の姿',
+    '〈目星〉(65) 〈聞き耳〉(60) 〈回避〉(55)',
+    '武器',
+    '爪 75% 1D6+db'
+  ].join('\n');
+  const sOrBlocks = S.detectCocBlocks(sakazakiOrPage, N);
+  eq(sOrBlocks.length, 2, '坂崎 和也(複数形態+技能or): 2形態を検出');
+  eq(sOrBlocks.map(b => b.name), ['坂崎 和也（人間変貌時・通常時）', '坂崎 和也（本来の姿）'], '2形態の名前を正しく結合');
+  t(sOrBlocks[0].text.includes('〈目星〉(65)') && sOrBlocks[0].text.includes('爪 75%'), '第1形態へ「技能：通常時 or 本来の姿」と共通武器を合流');
+  t(sOrBlocks[1].text.includes('〈目星〉(65)') && sOrBlocks[1].text.includes('爪 75%'), '第2形態へも「技能：通常時 or 本来の姿」と共通武器を合流');
+
+  const sakazakiSplitPage = [
+    '❏ 坂崎 和也',
+    'ステータス：人間変貌時・通常時',
+    'STR:14 CON:13 POW:12 DEX:13 HP:14 MP:12',
+    '',
+    'ステータス：本来の姿',
+    'STR:25 CON:20 POW:16 DEX:18 HP:21 MP:16',
+    '',
+    '彼は普段は温厚だが、戦闘時に変貌する。',
+    '',
+    '技能：通常時 or 本来の姿',
+    '〈目星〉(65)',
+    '技能：通常時',
+    '〈図書館〉(70)',
+    '技能：本来の姿',
+    '〈こぶし〉(85) 1D6+db'
+  ].join('\n');
+  const sSplitBlocks = S.detectCocBlocks(sakazakiSplitPage, N);
+  eq(sSplitBlocks.length, 2, '坂崎 和也(共通+形態別技能): 2形態を検出');
+  t(sSplitBlocks[0].text.includes('〈目星〉(65)') && sSplitBlocks[0].text.includes('〈図書館〉(70)') && !sSplitBlocks[0].text.includes('〈こぶし〉(85)'), '通常時形態へ共通技能＋通常時専用技能のみ振り分け');
+  t(sSplitBlocks[1].text.includes('〈目星〉(65)') && sSplitBlocks[1].text.includes('〈こぶし〉(85)') && !sSplitBlocks[1].text.includes('〈図書館〉(70)'), '本来の姿形態へ共通技能＋本来の姿専用技能のみ振り分け');
+
+  // 4) 複数形態の右段技能ブロック途中に武器・ダメージ解説文（1〜5行）が挟まっても末尾の形態技能まで合流
+  const sakazakiNotesPage = [
+    '❏ 坂崎 和也',
+    'ステータス：人間変貌時・通常時',
+    'STR:14 CON:13 POW:12 DEX:13 HP:14 MP:12',
+    '',
+    'ステータス：本来の姿',
+    'STR:25 CON:20 POW:16 DEX:18 HP:21 MP:16',
+    '',
+    '技能：通常時 or 本来の姿',
+    '通常時',
+    '〈目星〉(65) 〈聞き耳〉(60)',
+    '武器',
+    'ナイフ 50% 1D4+db',
+    '（聞き耳）は 50% ダメージ。',
+    '命中した対象は衝撃で転倒し、次のラウンドは行動できない。',
+    '※装甲による軽減は無効となる。',
+    '本来の姿',
+    '武器',
+    '〈爪〉(85) 1D8+db',
+    '〈回避〉(70)'
+  ].join('\n');
+  const sNotesBlocks = S.detectCocBlocks(sakazakiNotesPage, N);
+  eq(sNotesBlocks.length, 2, '坂崎 和也(解説文挟み複数形態技能): 2形態を検出');
+  t(
+    sNotesBlocks[0].text.includes('〈目星〉(65)') && sNotesBlocks[0].text.includes('ナイフ 50%') && !sNotesBlocks[0].text.includes('〈爪〉(85)'),
+    '通常時へ通常時技能・武器を合流し、本来の姿の技能は混入しない',
+    sNotesBlocks[0].text
+  );
+  t(
+    sNotesBlocks[1].text.includes('〈爪〉(85)') && sNotesBlocks[1].text.includes('〈回避〉(70)') && !sNotesBlocks[1].text.includes('ナイフ 50%'),
+    '解説文を挟んだ後の本来の姿の技能・武器も打ち切らず最後まで合流',
+    sNotesBlocks[1].text
+  );
+
+  // 5) 技能間の地の文ブリッジ制限：句点「。」や35文字超の本文は跨がずNPCテキストに混入させない
+  const proseBetweenSkills = [
+    '❏ 霧島 蓮',
+    'STR:10 CON:11 POW:12 DEX:13 APP:12 SIZ:12 INT:14 EDU:15 HP:12 MP:12',
+    '技能',
+    '《目星》(65)',
+    '装甲: 2 / 射程タッチ',
+    '《聞き耳》(55)',
+    '彼はかつて古い図書館で奇妙な魔導書を見つけたことがある。',
+    'その影響で今も夜な夜な悪夢にうなされており探索者たちへ協力を求めている',
+    '《オカルト》(70)'
+  ].join('\n');
+  const pBlocks = S.detectCocBlocks(proseBetweenSkills, N);
+  eq(pBlocks.length, 1, '霧島 蓮: 1体検出');
+  t(
+    pBlocks[0].text.includes('《目星》(65)') && pBlocks[0].text.includes('装甲: 2 / 射程タッチ') && pBlocks[0].text.includes('《聞き耳》(55)'),
+    '短い補足行（装甲・射程等）は技能間で許容される',
+    pBlocks[0].text
+  );
+  t(
+    !pBlocks[0].text.includes('奇妙な魔導書を見つけた') && !pBlocks[0].text.includes('夜な夜な悪夢にうなされており'),
+    '句点「。」を含む行や35文字超の地の文はNPCテキストに混入しない',
+    pBlocks[0].text
+  );
+}
 console.log(`\n${ok} passed, ${ng} failed`); process.exit(ng ? 1 : 0);

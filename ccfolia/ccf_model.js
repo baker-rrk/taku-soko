@@ -69,22 +69,48 @@
       createdAt: num(s.createdAt, Date.now())
     };
   }
-  const isSafeImgSrc = v => /^(?:data:image\/|file:\/\/|https?:\/\/|zipview:\/\/|blob:)/i.test(str(v).trim());
+  const isSafeImgSrc = v => /^(?:@img:[a-z0-9]+|data:image\/|file:\/\/|https?:\/\/|zipview:\/\/|blob:)/i.test(str(v).trim());
   const isUnsafeImg = v => /^(?:javascript|vbscript|data:(?!image\/))/i.test(str(v).trim());
+  function normalizeImgRef(v) {
+    const s = str(v).trim();
+    if (!s || isUnsafeImg(s)) return '';
+    if (/^blob:/i.test(s) && typeof window !== 'undefined' && typeof window.urlToRef === 'function') {
+      try {
+        const ref = window.urlToRef(s);
+        if (typeof ref === 'string' && ref && !/^blob:/i.test(ref)) return ref;
+      } catch (_) { }
+      return '';
+    }
+    return s;
+  }
   function normalizeNpcImageItem(x) {
     if (typeof x === 'string') {
       const s = x.trim();
       if (!s || isUnsafeImg(s)) return null;
-      if (isSafeImgSrc(s)) return { id: newId(), path: '', filePath: '', dataUrl: s, assetId: '', label: '', name: '' };
+      if (isSafeImgSrc(s)) {
+        const cleaned = normalizeImgRef(s);
+        if (!cleaned) return null;
+        return { id: newId(), path: '', filePath: '', dataUrl: cleaned, assetId: '', label: '', name: '' };
+      }
       return { id: newId(), path: s, filePath: s, dataUrl: '', assetId: '', label: '', name: '' };
     }
     if (!x || typeof x !== 'object') return null;
     let dataUrl = [x.dataUrl, x.url, x.src, x.iconUrl].map(v => str(v).trim()).find(isSafeImgSrc) || '';
+    dataUrl = normalizeImgRef(dataUrl);
     let p = str(x.path || x.filePath).trim();
     if (isUnsafeImg(p)) p = '';
-    if (!dataUrl && isSafeImgSrc(p)) { dataUrl = p; p = ''; }
+    if (!dataUrl && isSafeImgSrc(p)) { dataUrl = normalizeImgRef(p); p = ''; }
+    else if (/^blob:/i.test(p)) {
+      const pRef = normalizeImgRef(p);
+      if (/^@img:/i.test(pRef)) { if (!dataUrl) dataUrl = pRef; p = ''; }
+      else p = pRef;
+    }
     let fp = str(x.filePath || p).trim();
     if (isUnsafeImg(fp)) fp = '';
+    if (/^blob:/i.test(fp)) {
+      const fpRef = normalizeImgRef(fp);
+      fp = /^@img:/i.test(fpRef) ? '' : fpRef;
+    }
     const assetId = str(x.assetId).trim();
     if (!dataUrl && !p && !fp && !assetId) return null;
     return { id: str(x.id) || newId(), path: p, filePath: fp, dataUrl, assetId, label: str(x.label || x.name), name: str(x.name || x.label) };
@@ -112,7 +138,7 @@
     const head = images[0] || null;
     const headSrc = head ? (head.dataUrl || head.path || head.filePath || null) : null;
     const headPath = head ? (head.filePath || head.path || head.dataUrl || '') : '';
-    const iconDataUrl = head && head.dataUrl ? head.dataUrl : (isSafeImgSrc(headSrc) ? headSrc : (isSafeImgSrc(n.iconDataUrl) ? str(n.iconDataUrl).trim() : null));
+    const iconDataUrl = head && head.dataUrl ? head.dataUrl : (isSafeImgSrc(headSrc) ? (normalizeImgRef(headSrc) || null) : (isSafeImgSrc(n.iconDataUrl) ? (normalizeImgRef(n.iconDataUrl) || null) : null));
     const iconName = head ? (head.label || head.name || str(n.iconName)) : str(n.iconName);
     return {
       id: str(n.id) || newId(), name: str(n.name, '名称未設定NPC'), memo: str(n.memo), initiative: num(n.initiative, 0), externalUrl: str(n.externalUrl),
@@ -556,10 +582,14 @@
     const w = Math.max(16, Math.min(4000, num(item.width, defW)));
     const h = Math.max(16, Math.min(4000, num(item.height, defH)));
     const defZ = k === 'bg' ? 0 : k === 'screen' ? 10 : k === 'marker' ? 20 : k === 'piece' ? 30 : 40;
-    let dataUrl = str(item.dataUrl).trim();
-    if (isUnsafeImg(dataUrl)) dataUrl = '';
+    let dataUrl = normalizeImgRef(item.dataUrl);
     let p = str(item.path).trim();
     if (isUnsafeImg(p)) p = '';
+    if (/^blob:/i.test(p)) {
+      const pRef = normalizeImgRef(p);
+      if (/^@img:/i.test(pRef)) { if (!dataUrl) dataUrl = pRef; p = ''; }
+      else p = pRef;
+    }
     const out = {
       id: str(item.id) || newId(),
       syncId: str(item.syncId),
@@ -706,13 +736,19 @@
   function sanitizeCutin(c) {
     if (!c || typeof c !== 'object') return null;
     const vt = c.visualType === 'video' ? 'video' : 'image';
-    let visualDataUrl = str(c.visualDataUrl).trim();
-    if (isUnsafeImg(visualDataUrl)) visualDataUrl = '';
+    let visualDataUrl = normalizeImgRef(c.visualDataUrl);
+    let visualPath = str(c.visualPath).trim();
+    if (isUnsafeImg(visualPath)) visualPath = '';
+    if (/^blob:/i.test(visualPath)) {
+      const vpRef = normalizeImgRef(visualPath);
+      if (/^@img:/i.test(vpRef)) { if (!visualDataUrl) visualDataUrl = vpRef; visualPath = ''; }
+      else visualPath = vpRef;
+    }
     return {
       id: str(c.id) || newId(),
       name: str(c.name, '新規カットイン').trim() || '新規カットイン',
       visualType: vt,
-      visualPath: str(c.visualPath).trim(),
+      visualPath,
       visualDataUrl,
       visualName: str(c.visualName),
       visualUid: str(c.visualUid),

@@ -68,25 +68,34 @@
   const roomContainerCache = new Map();
   CCF.invalidateRoomCache = k => { if (k == null) roomContainerCache.clear(); else roomContainerCache.delete(String(k || '_default')); };
 
+  function hydrateRoomContainer(container) {
+    try {
+      if (container && typeof window !== 'undefined' && typeof window.hydrateRefs === 'function') {
+        window.hydrateRefs(container);
+      }
+    } catch (_) { }
+    return container;
+  }
+
   function getRoomContainer(k) {
     k = k || '_default';
     const sc = scenarioObj(k);
     if (sc && Array.isArray(sc.ccfRooms) && sc.ccfRooms.length) {
-      return M.sanitizeRoomContainer({
+      return hydrateRoomContainer(M.sanitizeRoomContainer({
         version: 2,
         activeRoomId: sc.ccfActiveRoomId,
         rooms: sc.ccfRooms
-      });
+      }));
     }
     if (k === '_default' && typeof appState !== 'undefined' && Array.isArray(appState.unlinkedCcfRooms) && appState.unlinkedCcfRooms.length) {
-      return M.sanitizeRoomContainer({
+      return hydrateRoomContainer(M.sanitizeRoomContainer({
         version: 2,
         activeRoomId: appState.unlinkedCcfActiveRoomId,
         rooms: appState.unlinkedCcfRooms
-      });
+      }));
     }
     const ck = String(k);
-    if (roomContainerCache.has(ck)) return roomContainerCache.get(ck);
+    if (roomContainerCache.has(ck)) return hydrateRoomContainer(roomContainerCache.get(ck));
     let raw = null;
     try {
       if (IS_ELECTRON) {
@@ -100,13 +109,26 @@
       console.warn('[ccf] 保存データを読めませんでした', e);
     }
     // 読み取り関数なので saveState() は呼ばない（保存は saveRoomContainer のみ）。結果はメモリにキャッシュして再読込を防ぐ
-    const container = M.sanitizeRoomContainer(raw);
+    const container = hydrateRoomContainer(M.sanitizeRoomContainer(raw));
     roomContainerCache.set(ck, container);
     return container;
   }
 
-  /** JSON 化・複製用：先頭が _ の親参照キー（_rooms / _currentRoom など）を除外して循環参照を切る */
-  const ccfReplacer = (key, v) => (typeof key === 'string' && key.charAt(0) === '_') ? undefined : v;
+  /** JSON 化・複製用：先頭が _ の親参照キー（_rooms / _currentRoom など）を除外し、blob:/data:image/ を @img:<hash> へ永続化変換 */
+  const ccfReplacer = (key, v) => {
+    if (typeof key === 'string' && key.charAt(0) === '_') return undefined;
+    if (typeof v === 'string' && /^(?:blob:|data:image\/)/i.test(v)) {
+      if (typeof window !== 'undefined' && typeof window.urlToRef === 'function') {
+        try {
+          const ref = window.urlToRef(v);
+          if (typeof ref === 'string' && ref && !/^blob:/i.test(ref)) return ref;
+        } catch (_) { }
+        return /^blob:/i.test(v) ? '' : v;
+      }
+      return /^blob:/i.test(v) ? '' : v;
+    }
+    return v;
+  };
   const ccfClone = x => JSON.parse(JSON.stringify(x, ccfReplacer));
   CCF.ccfReplacer = ccfReplacer; CCF.ccfClone = ccfClone;
 

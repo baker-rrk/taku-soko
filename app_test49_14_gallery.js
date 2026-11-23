@@ -706,20 +706,104 @@ const docFileExt = d => {
     const m = /\.([a-z0-9]{1,6})$/i.exec(base);
     if (m && /[a-z]/i.test(m[1])) return m[1].toUpperCase();
   }
+  if (d.ext) return String(d.ext).replace(/^\./, '').toUpperCase();
   return 'DOC';
 };
+
+function getScenarioDocsUnified(sc) {
+  if (!sc) return [];
+  const normP = p => String(p || '').replace(/\\/g, '/').trim().toLowerCase();
+  const docNameKey = (obj, fallbackExt) => {
+    const raw = String((obj && (obj.origName || obj.name)) || '').normalize('NFKC').trim().toLowerCase();
+    if (!raw) return '';
+    if (/\.[a-z0-9]{1,6}$/i.test(raw)) return raw;
+    const ext = String((obj && obj.ext) || fallbackExt || '').replace(/^\./, '').toLowerCase();
+    return ext ? `${raw}.${ext}` : raw;
+  };
+  const out = [];
+  const byUid = new Map(), byPath = new Map(), byName = new Map();
+  const bindEntry = (entry, fp, nk) => {
+    (entry.uids || []).forEach(u => { if (u) byUid.set(u, entry); });
+    if (fp) byPath.set(normP(fp), entry);
+    if (nk && !byName.has(nk)) byName.set(nk, entry);
+  };
+
+  (sc.docs || []).forEach((d, idx) => {
+    if (!d) return;
+    const id = String(d.id || ('doc_' + idx));
+    const uid = 'doc:' + id;
+    const fp = docFilePath(d);
+    const nk = docNameKey(d, d.ext === 'pdf' ? 'pdf' : '');
+    const entry = {
+      id,
+      uid,
+      uids: [uid],
+      docObj: d,
+      name: d.name || d.origName || 'doc',
+      origName: d.origName || d.name || '',
+      path: d.path || '',
+      ref: d.ref || '',
+      rel: d.rel || '',
+      ext: d.ext || ''
+    };
+    out.push(entry);
+    bindEntry(entry, fp, nk);
+  });
+
+  if (sc.id && window.CCF && CCF.assets && typeof CCF.assets.getUnifiedItems === 'function') {
+    const unified = CCF.assets.getUnifiedItems(String(sc.id)) || [];
+    unified.forEach(it => {
+      if (!it || (it.type !== 'pdf' && it.type !== 'doc')) return;
+      const allUids = [...new Set([it.uid, ...(Array.isArray(it.mergedUids) ? it.mergedUids : [])].filter(Boolean))];
+      const fp = it.path || '';
+      const pk = fp ? normP(fp) : '';
+      const nk = docNameKey(it, it.type === 'pdf' ? 'pdf' : '');
+      let ex = null;
+      for (const u of allUids) { if (byUid.has(u)) { ex = byUid.get(u); break; } }
+      if (!ex && pk && byPath.has(pk)) ex = byPath.get(pk);
+      if (!ex && nk && byName.has(nk)) ex = byName.get(nk);
+      if (ex) {
+        allUids.forEach(u => { if (!ex.uids.includes(u)) ex.uids.push(u); });
+        if (!ex.path && fp) ex.path = fp;
+        if (!ex.origName && it.origName) ex.origName = it.origName;
+        if (!ex.ext && it.type === 'pdf') ex.ext = 'pdf';
+        bindEntry(ex, fp, nk);
+        return;
+      }
+      const uid = String(it.uid || '');
+      if (!uid) return;
+      const entry = {
+        id: uid,
+        uid,
+        uids: allUids.length ? allUids : [uid],
+        docObj: null,
+        name: it.name || it.origName || 'doc',
+        origName: it.origName || it.name || '',
+        path: fp,
+        ref: (it.raw && it.raw.ref) || '',
+        rel: (it.raw && it.raw.rel) || '',
+        ext: it.type === 'pdf' ? 'pdf' : ((it.raw && it.raw.ext) || ''),
+        missing: !!it.missing
+      };
+      out.push(entry);
+      bindEntry(entry, fp, nk);
+    });
+  }
+  return out;
+}
 
 function docsHtml() {
   const sc = appState.scenarios.find(s => s.id === currentScenarioId);
   if (!sc) return '<div class="gal-note">※ このシナリオを先にDBに保存すると、資料ファイルを登録できます</div>';
-  const docs = sc.docs || [], chkN = docs.filter(d => galChk.doc.has(d.id)).length;
+  const docs = getScenarioDocsUnified(sc), chkN = docs.filter(d => galChk.doc.has(d.id)).length;
   const rows = docs.map(d => {
     const fp = docFilePath(d);
+    const isLocal = !!(fp && !/^cloud-asset:/i.test(fp));
     return `<div class="doc-row" data-did="${escapeHTML(d.id)}">
     <input type="checkbox" class="gal-chk" data-gal-docchk="${escapeHTML(d.id)}" ${galChk.doc.has(d.id) ? 'checked' : ''} title="選択">
     <span class="doc-ext">${escapeHTML(docFileExt(d))}</span>
-    <span class="doc-name" title="${escapeHTML(fp || d.name)}">${escapeHTML(d.name)}</span>
-    ${IS_ELECTRON && fp ? `<button type="button" class="btn-sort" data-doc="open">開く</button><button type="button" class="btn-sort" data-doc="reveal">場所</button>` : ''}
+    <span class="doc-name" title="${escapeHTML(fp || d.name)}">${escapeHTML(d.name)}${d.missing ? ' ⚠️' : ''}</span>
+    ${IS_ELECTRON && isLocal ? `<button type="button" class="btn-sort" data-doc="open">開く</button><button type="button" class="btn-sort" data-doc="reveal">場所</button>` : ''}
     <button type="button" class="btn-sort btn-danger" data-doc="del">🗑️</button></div>`;
   }).join('')
     || '<div class="gal-empty">PDF / HTML / テキストファイルをここにドラッグ＆ドロップ（PC内の別場所へ複製保存されます）</div>';
@@ -883,6 +967,20 @@ function flushGalleryOnTabSwitch() {
     }
   }
 }
+function resetScenarioGalleryView() {
+  galSel.scenario = GAL_ALL;
+  galFilter.scenario = { q: '', tags: [], sort: 'manual', type: '' };
+  galAnchor.scenario = '';
+  galTagPickerOpen.scenario = null;
+  if (galEdit && galEdit.scope === 'scenario') galEdit = null;
+  galChk.doc.clear();
+  for (const u of [...galChk.img]) {
+    if (!String(u).startsWith('cimg:') && !String(u).startsWith('lib:')) galChk.img.delete(u);
+  }
+  galKept.scenario.clear();
+  galCollapsed.scenario.clear();
+}
+window.resetScenarioGalleryView = resetScenarioGalleryView;
 window.flushGalleryOnTabSwitch = flushGalleryOnTabSwitch;
 
 async function dataUrlFromPath(fp, name) {
@@ -1685,18 +1783,63 @@ function galAskText(title, def) {
     if (db) {
       const sc = appState.scenarios.find(s => s.id === currentScenarioId); if (!sc) return;
       const k = db.dataset.docBulk;
-      if (k === 'sel-all') { const all = (sc.docs || []).length > 0 && (sc.docs || []).every(d => galChk.doc.has(d.id)); (sc.docs || []).forEach(d => all ? galChk.doc.delete(d.id) : galChk.doc.add(d.id)); renderGalleryAll(); return; }
-      if (k === 'bulk-del') { const sel = (sc.docs || []).filter(d => galChk.doc.has(d.id)); if (!sel.length) return; if (!(await appConfirm('資料 ' + sel.length + '件を一覧から削除しますか？\n（コピー保存済みの資料ファイルも削除されます）', { okText: '削除', danger: true }))) return; galChkPt('シナリオ資料を削除'); sel.forEach(x => { const abs = x.rel ? docsAbs(x.rel) : ''; try { if (abs && fs.existsSync(abs)) fs.unlinkSync(abs); } catch (er) { logSoft('doc', er); } galChk.doc.delete(x.id); }); sc.docs = sc.docs.filter(d => !sel.includes(d)); saveState(); renderGalleryAll(); toast('✅ ' + sel.length + '件の資料を削除しました'); return; }
+      const docs = getScenarioDocsUnified(sc);
+      if (k === 'sel-all') { const all = docs.length > 0 && docs.every(d => galChk.doc.has(d.id)); docs.forEach(d => all ? galChk.doc.delete(d.id) : galChk.doc.add(d.id)); renderGalleryAll(); return; }
+      if (k === 'bulk-del') {
+        const sel = docs.filter(d => galChk.doc.has(d.id));
+        if (!sel.length) return;
+        if (!(await appConfirm('資料 ' + sel.length + '件を一覧から削除しますか？\n（コピー保存済みの資料ファイルも削除されます）', { okText: '削除', danger: true }))) return;
+        galChkPt('シナリオ資料を削除');
+        const docObjSet = new Set();
+        const rmUids = new Set();
+        sel.forEach(x => {
+          const abs = x.rel ? docsAbs(x.rel) : '';
+          try { if (abs && fs && fs.existsSync && fs.existsSync(abs)) fs.unlinkSync(abs); } catch (er) { logSoft('doc', er); }
+          galChk.doc.delete(x.id);
+          if (x.docObj) docObjSet.add(x.docObj);
+          (x.uids && x.uids.length ? x.uids : (x.uid ? [x.uid] : [])).forEach(u => { if (u) rmUids.add(u); });
+        });
+        let syncedByAssets = false;
+        if (rmUids.size && window.CCF && CCF.assets && typeof CCF.assets.removeScenarioItems === 'function') {
+          CCF.assets.removeScenarioItems(String(sc.id), [...rmUids]);
+          syncedByAssets = true;
+        }
+        if (docObjSet.size && Array.isArray(sc.docs) && sc.docs.some(d => docObjSet.has(d))) {
+          sc.docs = sc.docs.filter(d => !docObjSet.has(d));
+          syncedByAssets = false;
+        }
+        if (!syncedByAssets) { saveState(); renderGalleryAll(); }
+        toast('✅ ' + sel.length + '件の資料を削除しました');
+        return;
+      }
     }
 
     const d = e.target.closest('[data-doc]');
     if (d) {
       const sc = appState.scenarios.find(s => s.id === currentScenarioId), row = d.closest('[data-did]');
-      const x = sc && (sc.docs || []).find(v => v.id === (row && row.dataset.did));
+      const docs = getScenarioDocsUnified(sc);
+      const x = docs.find(v => v.id === (row && row.dataset.did));
       const relAbs = x && x.rel ? docsAbs(x.rel) : '';
       const fp = docFilePath(x);
       if (!x) return; const k = d.dataset.doc;
-      if (k === 'del') { if (!(await appConfirm('資料「' + x.name + '」を一覧から削除しますか？' + (relAbs ? '\nPCに複製保存したファイルも削除されます。' : ''), { okText: '削除', danger: true }))) return; galChkPt('シナリオ資料を削除'); try { if (relAbs && fs.existsSync(relAbs)) fs.unlinkSync(relAbs); } catch (er) { logSoft('doc', er); } sc.docs = sc.docs.filter(v => v !== x); saveState(); renderGalleryAll(); return; }
+      if (k === 'del') {
+        if (!(await appConfirm('資料「' + x.name + '」を一覧から削除しますか？' + (relAbs ? '\nPCに複製保存したファイルも削除されます。' : ''), { okText: '削除', danger: true }))) return;
+        galChkPt('シナリオ資料を削除');
+        try { if (relAbs && fs && fs.existsSync && fs.existsSync(relAbs)) fs.unlinkSync(relAbs); } catch (er) { logSoft('doc', er); }
+        galChk.doc.delete(x.id);
+        const rmUids = (x.uids && x.uids.length) ? x.uids : (x.uid ? [x.uid] : []);
+        let syncedByAssets = false;
+        if (rmUids.length && window.CCF && CCF.assets && typeof CCF.assets.removeScenarioItems === 'function') {
+          CCF.assets.removeScenarioItems(String(sc.id), rmUids);
+          syncedByAssets = true;
+        }
+        if (x.docObj && Array.isArray(sc.docs) && sc.docs.includes(x.docObj)) {
+          sc.docs = sc.docs.filter(v => v !== x.docObj);
+          syncedByAssets = false;
+        }
+        if (!syncedByAssets) { saveState(); renderGalleryAll(); }
+        return;
+      }
       if (!fp || (fs && fs.existsSync && !fs.existsSync(fp))) return toast('❌ ファイルが見つかりません');
       if (k === 'open') shell.openPath(fp); else if (k === 'reveal') shell.showItemInFolder(fp);
       return;

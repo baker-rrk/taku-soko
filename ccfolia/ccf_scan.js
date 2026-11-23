@@ -312,7 +312,10 @@
   const RE_INLINE = new RegExp('^\\s*(.{1,40}?)\\s*[/:]\\s*(?=(?:' + P_LABELS + ')(?![A-Za-z])\\s*[:=]?\\s*(?:\\d|\\(\\s*\\d))', 'i');
   const RE_SEP = /^[\s\-=_/*#~・.―ー─━+|]*$/;
   const RE_HEAD_JUNK = /【\s*(?:能力値|技能値|チャットパレット|ステータス)|チャットパレット|×\s*n\s*】|】\s*-{2,}|■\s*ステータス傾向|ステータス傾向|^\s*[【\[]?\s*技能\s*[】\]]?\s*$/;
-  const RE_BAD_NAME_PREFIX = /^(?:ステータス|能力値|種族?|所属|性別|年齢|武器|技能|所持品|職業|出身|国籍|身長|体重|備考|特徴|設定|解説|概要|描写|プロフィール|データ|詳細|行動|戦術|攻撃|特殊攻撃|魔術|呪文|【人物像】|【使用魔術】|【過去背景】|【経緯】|【能力値|【技能値|【ステータス|【技能|【武器|【所持品|【データ|【備考|【特徴|【解説|【行動|【魔術|【呪文)/;
+  const RE_BAD_NAME_PREFIX = /^(?:ステータス|能力値|技能値|チャットパレット|パラメータ|(?:NPC|PC|探索者|キャラクター)\s*(?:能力値|技能値|ステータス|チャットパレット|パラメータ)|種族?|所属|性別|年齢|武器|技能|所持品|職業|出身|国籍|身長|体重|備考|特徴|設定|解説|概要|描写|プロフィール|データ|詳細|行動|戦術|攻撃|特殊攻撃|魔術|呪文|【人物像】|【使用魔術】|【過去背景】|【経緯】|【能力値|【技能値|【ステータス|【技能|【武器|【所持品|【データ|【備考|【特徴|【解説|【行動|【魔術|【呪文)/i;
+  const RE_LABEL_ONLY = /^(?:名前|氏名|NPC名|PC名|キャラクター名|キャラ名|名称)\s*[:：]?$/i;
+  const RE_STAT_HEAD = /^(?:NPC|PC|探索者|キャラクター)?\s*(?:能力値|技能値|ステータス|チャットパレット|パラメータ)\s*[:：]?$/i;
+  const RE_TIMING_HEAD = /^(?:戦闘|探索|尋問|交渉|逃走|追跡)(?:開始|終了|前|後|中)$|(?:終わったら|したら|の場合|の時|するとき|する際|後|前)$/;
   const SYM_ALL = '\\uE000-\\uF8FF\\u25A0-\\u25FF\\u2600-\\u27BF❏❐❑■□◆◇●○◯〇▼▽▶▷★☆❖✦✧※†‡・';
   const SYM_HEAD = '\\uE000-\\uF8FF\\u25A0-\\u25FF\\u2600-\\u27BF❏❐❑■□◆◇●○◯〇▼▽▶▷★☆❖✦✧';
   const HEAD_SYM = new RegExp('^[' + SYM_HEAD + ']+\\s*(.+)$');
@@ -323,9 +326,10 @@
     const t = String(c == null ? '' : c).normalize('NFKC');
     return PROSE_WORDS.test(t) || (t.length >= 15 && !/[(（]/.test(t) && /[はがをにでともへのや]|から|ので|だが|です|ます/.test(t));
   };
-  const RE_SECTION_HEAD = /^(?:導入|イントロダクション|あらすじ|背景|概要|真相|結末|エンディング|クライマックス|登場人物|登場NPC|NPC一覧|キャラクター(?:一覧)?|推奨技能|プレイ人数|プレイ時間|ロスト率|注意事項?|目次|はじめに|おわりに|あとがき|クレジット|ハンドアウト|第\s*[0-9一二三四五六七八九十百]+\s*[章話部幕節]|(?:シーン|場面|Chapter|Section|Phase|Part)\s*[0-9０-９一二三四五六七八九十]+)/i;
+  const RE_SECTION_HEAD = /^(?:導入|イントロダクション|あらすじ|背景|概要|真相|結末|エンディング|クライマックス|登場人物|登場NPC|NPC一覧|キャラクター(?:一覧)?|推奨技能|プレイ人数|プレイ時間|ロスト率|注意事項?|目次|はじめに|おわりに|あとがき|クレジット|ハンドアウト|(?:本編での)?立ち回り$|(?:行動|戦闘)(?:指針|方針|パターン)$|運用$|攻略$|役割$|関係性$|登場シーン$|出現場所$|本編での.*$|第\s*[0-9一二三四五六七八九十百]+\s*[章話部幕節]|(?:シーン|場面|Chapter|Section|Phase|Part)\s*[0-9０-９一二三四五六七八九十]+|(?:HO|ＨＯ|PC|ＰＣ|PL|ＰＬ|KP|ＫＰ|GM|ＧＭ)\s*[0-9０-９一二三四五六七八九十A-Za-zＡ-Ｚａ-ｚ]?(?:\s*[:：・/\-]?\s*(?:秘匿|公開|導入|個別|ハンドアウト|情報|向け|用|共通)){0,2}$|(?:秘匿|公開)(?:情報|ハンドアウト|HO|ＨＯ)?$)/i;
   const RE_FORM_HEAD = new RegExp('^\\s*[' + SYM_HEAD + '\\[【]?\\s*(?:ステータス|能力値|形態|フォーム)\\s*[:：]\\s*([^】\\]\\n]{1,20}?)\\s*[】\\]]?\\s*$');
-  const RE_SKILL_HEAD = /^\s*[【\[]?\s*(?:技能|戦闘技能|探索技能|行動技能|知識技能|交渉技能|武器|武装|攻撃|攻撃方法|魔法|魔術|呪文|スキル|Skills?)\s*[】\]]?\s*[:：]?\s*$/i;
+  const RE_SKILL_HEAD = /^\s*[【\[]?\s*(?:技能|戦闘技能|探索技能|行動技能|知識技能|交渉技能|武器|武装|攻撃|攻撃方法|魔法|魔術|呪文|スキル|Skills?)\s*[】\]]?\s*(?:[:：]\s*[^\n]{0,30}|[（(][^）)\n]{1,25}[）)]\s*[:：]?)?$/i;
+  const RE_PAGE_NUM_LINE = /^\s*(?:p\.?\s*\d+|-\s*\d+\s*-|—\s*\d+\s*—|\d{1,4})\s*$/i;
   const RE_AGE_SEX = /^(?:[\d\s]{1,4}[歳才]?|男性?|女性?|年齢[:\s]*\d*[歳才]?|性別[:\s]*[男女]?性?|[\s/・,:()（）])+$/;
   const RE_PARTICLE_END = /(?:は|が|を|へ|から|ので|より|まで|です|ます|である)$/;
   const pairsOf = l => { const o = []; String(l).replace(RE_PAIR, (m, k) => { o.push(String(k).toUpperCase()); return m; }); return o; };
@@ -337,9 +341,14 @@
   const trimNm = trimName;
   /** 名前遡り用：この行を名前候補にしてはいけないか */
   function badName(raw) {
-    const r = String(raw || '').trim(), s = trimNm(r);
+    const r = NF(raw).trim(), s = trimNm(r);
     if (!s || s.length > (/[（(]/.test(s) ? 38 : 25)) return true;
-    if (RE_BAD_NAME_PREFIX.test(r) || RE_BAD_NAME_PREFIX.test(s) || RE_FORM_HEAD.test(r) || RE_SKILL_HEAD.test(r)) return true;
+    const unbrk = s.replace(/^[【\[]+|[】\]]+$/g, '').trim();
+    if (RE_BAD_NAME_PREFIX.test(r) || RE_BAD_NAME_PREFIX.test(s) || RE_BAD_NAME_PREFIX.test(unbrk) || RE_FORM_HEAD.test(r) || RE_SKILL_HEAD.test(r)) return true;
+    if (RE_LABEL_ONLY.test(r) || RE_LABEL_ONLY.test(s) || RE_LABEL_ONLY.test(unbrk)) return true;
+    if (RE_STAT_HEAD.test(r) || RE_STAT_HEAD.test(s) || RE_STAT_HEAD.test(unbrk)) return true;
+    if (RE_SECTION_HEAD.test(r) || RE_SECTION_HEAD.test(s) || RE_SECTION_HEAD.test(unbrk)) return true;
+    if (RE_TIMING_HEAD.test(r) || RE_TIMING_HEAD.test(s) || RE_TIMING_HEAD.test(unbrk)) return true;
     if (/[「」『』]/.test(r) || RE_HEAD_JUNK.test(r) || RE_SEP.test(s)) return true;
     if (/[】]|^[\-=]{2,}|-{3,}/.test(r) && !/【/.test(r)) return true;
     if (/\d*[dD]\d+|CCB?\s*<=|<=/.test(s) || pairsOf(s).length || isSkillLine(s)) return true;
@@ -350,7 +359,7 @@
     return false;
   }
   const headNameOf = (line, origLine) => {
-    const t = String(line || '').trim();
+    const t = NF(line).trim();
     if (!t || pairsOf(t).length || isSkillLine(t) || isTerm(t)) return '';
     if (RE_FORM_HEAD.test(t) || RE_SKILL_HEAD.test(t) || PROFILE_ATTR.test(t)) return '';
     let cand = '';
@@ -362,10 +371,18 @@
     }
     if (!cand) return '';
     const inner = cand.trim();
-    if (RE_BAD_NAME_PREFIX.test(t) || RE_BAD_NAME_PREFIX.test(inner) || RE_SECTION_HEAD.test(inner)) return '';
+    if (
+      RE_BAD_NAME_PREFIX.test(t) || RE_BAD_NAME_PREFIX.test(inner) ||
+      RE_LABEL_ONLY.test(inner) || RE_STAT_HEAD.test(inner) ||
+      RE_SECTION_HEAD.test(inner) || RE_TIMING_HEAD.test(inner)
+    ) return '';
     if (badName(cand) || proseLike(cand)) return '';
     let nm = trimNm(cand);
-    if (!nm || RE_BAD_NAME_PREFIX.test(nm) || RE_SECTION_HEAD.test(nm) || badName(nm) || proseLike(nm)) return '';
+    if (
+      !nm || RE_BAD_NAME_PREFIX.test(nm) || RE_LABEL_ONLY.test(nm) ||
+      RE_STAT_HEAD.test(nm) || RE_SECTION_HEAD.test(nm) || RE_TIMING_HEAD.test(nm) ||
+      badName(nm) || proseLike(nm)
+    ) return '';
     if (origLine && /＝/.test(origLine)) nm = nm.replace(/=/g, '＝');
     return nm;
   };
@@ -378,8 +395,124 @@
     }
     return false;
   };
-  /** 本文（1ページ分）から NPC ブロックを検出（CoC6/7・汎用向け）。戻り値：[{ text, name, score, line, inline }] */
-  function detectCocBlocks(text, N) {
+  const formTokensOf = label => {
+    const raw = NF(label || '').trim();
+    if (!raw) return [];
+    const parts = raw.split(/[・/／,、\s（）()【】\[\]]+/).map(x => x.trim()).filter(x => x.length >= 2);
+    return [...new Set([raw, ...parts])];
+  };
+  const matchFormTargets = (line, groupItems) => {
+    const t = NF(line || '').trim();
+    if (!t) return null;
+    if (/(?:^|[\s:：・/／(（【\[])(?:or|OR|ＯＲ|または|もしくは|共通|全形態)(?:$|[\s:：・/／)）】\]])/i.test(t) || /\bor\b/i.test(t)) {
+      return groupItems;
+    }
+    const matched = groupItems.filter(it => formTokensOf(it.formLabel).some(tok => t.includes(tok)));
+    if (matched.length > 0) return matched;
+    return null;
+  };
+  const isFormSubheadOfGroup = (line, groupItems) => {
+    if (!groupItems || groupItems.length < 2) return false;
+    const t = NF(line || '').trim();
+    if (!t || t.length > 30 || pairsOf(t).length || isSkillLine(t) || isTerm(t) || /[。！？]/.test(t)) return false;
+    const unbrk = trimNm(t).replace(/^[【\[\(（]+|[】\]\)）]+$/g, '').trim();
+    if (!unbrk || proseLike(unbrk)) return false;
+    const allToks = [...new Set(groupItems.flatMap(it => formTokensOf(it.formLabel)))];
+    if (!allToks.length) return false;
+    const cleaned = unbrk.replace(/(?:^|\s)(?:or|OR|または|もしくは)(?:\s|$)/gi, ' ').replace(/[・/／,、\s:：用向け]+/g, ' ').trim();
+    const parts = cleaned.split(/\s+/).filter(Boolean);
+    return parts.length > 0 && parts.every(p => allToks.some(tok => p === tok || (p.length >= 2 && tok.includes(p))));
+  };
+  function findPrevPageTailName(prevPageTail, formLabel) {
+    const rawArr = Array.isArray(prevPageTail)
+      ? prevPageTail
+      : (typeof prevPageTail === 'string' ? String(prevPageTail).replace(/\r\n?/g, '\n').split('\n') : []);
+    const tail = rawArr
+      .map(l => String(l == null ? '' : l).trim())
+      .filter(l => l && !RE_SEP.test(NF(l)) && !RE_PAGE_NUM_LINE.test(NF(l)))
+      .slice(-8);
+    if (!tail.length) return null;
+    let fl = formLabel || '';
+    for (let k = tail.length - 1; k >= 0; k--) {
+      const nt = NF(tail[k]).trim();
+      const fm = RE_FORM_HEAD.exec(nt);
+      if (fm && !fl) { fl = fm[1].trim(); continue; }
+      break;
+    }
+    for (let k = tail.length - 1; k >= 0; k--) {
+      const origLine = tail[k], nt = NF(origLine).trim();
+      if (pairsOf(nt).length || isSkillLine(nt)) break;
+      const hn = headNameOf(nt, origLine);
+      if (hn) return { baseName: hn, name: fl ? hn + '（' + fl + '）' : hn, fromHead: true, formLabel: fl };
+    }
+    for (let k = tail.length - 1; k >= 0; k--) {
+      const origLine = tail[k], nt = NF(origLine).trim();
+      if (pairsOf(nt).length || isSkillLine(nt) || isTerm(nt)) break;
+      if (RE_FORM_HEAD.test(nt) || RE_SKILL_HEAD.test(nt) || PROFILE_ATTR.test(nt)) continue;
+      if (badName(nt) || proseLike(nt)) continue;
+      const lm = /^\s*(?:名前|氏名|NPC名|名称)\s*[:=]\s*(.+?)\s*$/.exec(nt);
+      let cand = trimNm(lm ? lm[1] : nt);
+      if (!cand || badName(cand) || proseLike(cand)) continue;
+      if (/＝/.test(origLine)) cand = cand.replace(/=/g, '＝');
+      return { baseName: cand, name: fl ? cand + '（' + fl + '）' : cand, fromHead: false, formLabel: fl };
+    }
+    return null;
+  }
+  function extractPageTailInfo(text, N, blocks) {
+    const rawLines = NF(text).split('\n');
+    const raw0 = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    const lines = N && N.foldTables ? N.foldTables(rawLines.slice()) : rawLines;
+    const orig = lines.length === raw0.length ? raw0 : null;
+    const list = Array.isArray(blocks) ? blocks : [];
+    const lastEnd = list.length ? Math.max(...list.map(b => (typeof b.endLine === 'number' ? b.endLine : b.line))) : -1;
+    const after = [];
+    let hasNewHead = false, hasTermAfter = false;
+    for (let i = lastEnd + 1; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (!t || RE_SEP.test(t) || RE_PAGE_NUM_LINE.test(t)) continue;
+      if (headNameOf(t, orig ? orig[i] : null) || RE_FORM_HEAD.test(t)) hasNewHead = true;
+      if (isTerm(t)) hasTermAfter = true;
+      after.push(orig ? orig[i].trim() : t);
+    }
+    return {
+      tailLines: after.slice(-8),
+      endsWithStats: list.length > 0 && !hasNewHead && !hasTermAfter && after.length <= 3
+    };
+  }
+  function extractLeadingSkillOverflow(text, N, firstBlockLine) {
+    const rawLines = NF(text).split('\n');
+    const lines = N && N.foldTables ? N.foldTables(rawLines.slice()) : rawLines;
+    const limit = (typeof firstBlockLine === 'number' && firstBlockLine >= 0) ? Math.min(firstBlockLine, lines.length) : lines.length;
+    if (limit <= 0) return null;
+    let start = 0;
+    while (start < limit) {
+      const t = lines[start].trim();
+      if (!t || RE_SEP.test(t) || RE_PAGE_NUM_LINE.test(t)) { start++; continue; }
+      break;
+    }
+    if (start >= limit) return null;
+    const first = lines[start];
+    if (pairsOf(first).length || headNameOf(first) || RE_FORM_HEAD.test(first) || isTerm(first)) return null;
+    if (!(RE_SKILL_HEAD.test(first) || isSkillLine(first))) return null;
+    let bEnd = start, bSkills = isSkillLine(first) ? 1 : 0;
+    for (let m = start + 1; m < limit; m++) {
+      const lm = lines[m], tm = lm.trim();
+      if (pairsOf(lm).length || headNameOf(lm) || RE_FORM_HEAD.test(lm) || isTerm(lm)) break;
+      if (isSkillLine(lm)) { bEnd = m; bSkills++; }
+      else if (RE_SKILL_HEAD.test(lm)) { bEnd = m; }
+      else if (/(?:ダメージ|ビルド|ダメボ|装甲|移動|DB|DMG|1D\d|\d+D\d)/i.test(lm) && tm.length <= 45) { bEnd = m; }
+      else if (!tm || RE_SEP.test(lm)) {
+        const ahead = lines.slice(m + 1, Math.min(limit, m + 3)).some(x => isSkillLine(x) || RE_SKILL_HEAD.test(x));
+        if (!ahead) break;
+      } else if (tm.length <= 28 && !/[。！？]/.test(lm) && lines.slice(m + 1, Math.min(limit, m + 3)).some(x => isSkillLine(x) || /\d*[dD]\d+/.test(x))) {
+        bEnd = m;
+      } else break;
+    }
+    if (bSkills < 1) return null;
+    return { text: lines.slice(start, bEnd + 1).join('\n').trim(), skills: bSkills, endLine: bEnd };
+  }
+  /** 本文（1ページ分）から NPC ブロックを検出（CoC6/7・汎用向け）。戻り値：[{ text, name, score, line, endLine, inline, fromHead }] */
+  function detectCocBlocks(text, N, opts) {
     const rawLines = NF(text).split('\n');
     const raw0 = String(text || '').replace(/\r\n?/g, '\n').split('\n');
     const lines = N && N.foldTables ? N.foldTables(rawLines.slice()) : rawLines;
@@ -467,7 +600,7 @@
         const t = lines[k]; if (!t.trim() || info[k].sep) continue; n++;
         if (info[k].bulletName) {
           const bn = info[k].bulletName;
-          return formLabel ? bn + '（' + formLabel + '）' : bn;
+          return { name: formLabel ? bn + '（' + formLabel + '）' : bn, fromHead: true };
         }
         if (info[k].term) { hitTerm = true; break; }
         if (belowAttr(lines, k)) continue;
@@ -476,7 +609,7 @@
         let cand = trimNm(lm ? lm[1] : t);
         if (!cand || badName(cand) || proseLike(cand)) continue;
         if (orig && /＝/.test(orig[k])) cand = cand.replace(/=/g, '＝');
-        return formLabel ? cand + '（' + formLabel + '）' : cand;
+        return { name: formLabel ? cand + '（' + formLabel + '）' : cand, fromHead: false };
       }
       if (hitTerm) {
         for (let k = start, steps = 0; k > floor && steps < limit; k--) {
@@ -484,64 +617,36 @@
           steps++;
           if (info[k].bulletName) {
             const bn = info[k].bulletName;
-            return formLabel ? bn + '（' + formLabel + '）' : bn;
+            return { name: formLabel ? bn + '（' + formLabel + '）' : bn, fromHead: true };
           }
         }
       }
-      return '';
+      return { name: '', fromHead: false };
     };
-    validClusters.forEach((vc, vi) => {
-      const { c, s, e } = vc;
-      let skills = vc.skills;
-      const nextBoundary = vi + 1 < validClusters.length ? validClusters[vi + 1].s : lines.length;
-      const bodyLines = lines.slice(s, e + 1);
-      // 同一セクション内で離れて置かれた右カラムの「技能」「武器」ブロック（ステータス無し）を自動合流
-      let scanLimit = nextBoundary;
-      for (let k = e + 1; k < nextBoundary; k++) {
-        if (info[k].bulletName || info[k].formHead || info[k].inline) { scanLimit = k; break; }
-      }
-      let extraEnd = e;
-      for (let k = e + 1; k < scanLimit; k++) {
-        const f = info[k];
-        if (!(f.skillHead || f.skill)) continue;
-        // 技能・武器ブロックの開始を検出
-        let bEnd = k, bSkills = f.skill ? 1 : 0;
-        for (let m = k + 1; m < scanLimit; m++) {
-          const fm = info[m];
-          if (fm.pairs.length || fm.bulletName || fm.formHead || fm.inline || fm.term) break;
-          if (fm.skill) { bEnd = m; bSkills++; }
-          else if (fm.skillHead) { bEnd = m; }
-          else if (/(?:ダメージ|DMG|1D\d|\d+D\d)/i.test(lines[m]) && lines[m].trim().length <= 45) { bEnd = m; }
-          else if (fm.blank || fm.sep) {
-            const ahead = info.slice(m + 1, Math.min(scanLimit, m + 3)).some(x => x.skill || x.skillHead);
-            if (!ahead) break;
-          } else if (lines[m].trim().length <= 28 && !/[。！？]/.test(lines[m]) && info.slice(m + 1, Math.min(scanLimit, m + 3)).some(x => x.skill || /\d*[dD]\d+/.test(lines[x ? m + 1 : m]))) {
-            bEnd = m;
-          } else break;
-        }
-        if (bSkills >= 1) {
-          bodyLines.push(...lines.slice(k, bEnd + 1));
-          skills += bSkills;
-          extraEnd = bEnd;
-          k = bEnd;
-        }
-      }
 
-      let name = '';
+    // Phase 1: 各クラスタの名前・形態見出し・act 記憶を確定（先頭付近は prevPageTail 引き継ぎ）
+    const recs = validClusters.map((vc, vi) => {
+      const { c, s, e } = vc;
+      const bodyLines = lines.slice(s, e + 1);
+      let name = '', formLabel = '', usedAct = null, fromHead = false, inlineValid = false;
       if (c.inline) {
-        const ln = lines[c.inlineAt], m = info[c.inlineAt].inline; name = trimNm(m[1]);
+        const m = info[c.inlineAt].inline;
+        name = trimNm(m[1]);
         if (orig && /＝/.test(orig[c.inlineAt])) name = name.replace(/=/g, '＝');
-        if (c.inlineAt >= s && c.inlineAt <= e) bodyLines[c.inlineAt - s] = ln.slice(m[0].length);
+        if (c.inlineAt >= s && c.inlineAt <= e) inlineValid = !!name;
         else name = '';
-        if (name) { bodyLines.unshift('名前: ' + name); lastUsedAct = null; }
+        if (name) lastUsedAct = null;
       }
       if (!name) {
         const lab = bodyLines.map(l => /^\s*(?:名前|氏名|NPC名|名称)\s*[:=]\s*(.+?)\s*$/.exec(l)).find(Boolean);
-        if (lab) { name = trimNm(lab[1]); if (name) lastUsedAct = null; }
+        if (lab) {
+          const cn = trimNm(lab[1]);
+          if (cn && !badName(cn)) { name = cn; lastUsedAct = null; }
+        }
       }
       if (!name) {
         // 直前の形態見出し（ステータス：通常時 / ステータス：本来の姿）を検出
-        let formAt = -1, formLabel = '';
+        let formAt = -1;
         for (let k = s - 1, nb = 0; k > prevEnd && nb < 4; k--) {
           if (!lines[k].trim() || info[k].sep) continue;
           nb++;
@@ -552,18 +657,239 @@
         const act = actAt[formAt >= 0 ? formAt : s];
         if (act && (act.idx > prevEnd || (formLabel && lastUsedAct === act))) {
           name = formLabel ? act.name + '（' + formLabel + '）' : act.name;
-          lastUsedAct = act;
+          lastUsedAct = act; usedAct = act; fromHead = true;
         }
         if (!name) {
-          name = findHeadName(s, prevEnd, formAt, formLabel);
-          if (name) lastUsedAct = null;
+          const fh = findHeadName(s, prevEnd, formAt, formLabel);
+          if (fh.name) {
+            name = fh.name;
+            fromHead = fh.fromHead;
+            lastUsedAct = null;
+          }
         }
-        if (name) bodyLines.unshift('名前: ' + name);
-      } else if (!c.inline && !bodyLines.some(l => /^\s*(?:名前|氏名|NPC名|名称)\s*[:=]/.test(l))) {
-        bodyLines.unshift('名前: ' + name);
+        // 直前ステータスとの間に別キャラ名や有効な見出しが無く、同一ページの人物見出し（actAt）が継続していれば引き継ぐ（例：■本編での立ち回り下の再掲ステータス）
+        if (!name && act && lastUsedAct === act) {
+          name = formLabel ? act.name + '（' + formLabel + '）' : act.name;
+          lastUsedAct = act; usedAct = act; fromHead = true;
+        }
+        // ページ先頭付近で同ページ内に見出しが無い場合は、前ページ末尾（prevPageTail）から引き継ぐ
+        if (!name && vi === 0 && opts && opts.prevPageTail && (s <= 3 || (s <= 6 && lines.slice(0, s).filter(l => l.trim()).length <= 2))) {
+          const tailHit = findPrevPageTailName(opts.prevPageTail, formLabel);
+          if (tailHit) {
+            name = tailHit.name;
+            fromHead = tailHit.fromHead;
+            if (!formLabel && tailHit.formLabel) formLabel = tailHit.formLabel;
+            lastUsedAct = { name: tailHit.baseName, idx: -1, fromPrevPage: true };
+            usedAct = lastUsedAct;
+          }
+        }
+        // 前ページ末尾から引き継いだキャラの2つ目以降の形態見出しも継続
+        if (!name && !act && formLabel && lastUsedAct && lastUsedAct.fromPrevPage) {
+          name = lastUsedAct.name + '（' + formLabel + '）';
+          usedAct = lastUsedAct; fromHead = true;
+        }
       }
-      prevEnd = Math.max(e, extraEnd);
-      out.push({ text: bodyLines.join('\n').trim(), name, score: c.labels.size + skills, line: s, inline: !!c.inline });
+      prevEnd = e;
+      return { vc, vi, c, s, e, endLine: e, skills: vc.skills, bodyLines, name, formLabel, usedAct, fromHead, inline: inlineValid };
+    });
+
+    // Phase 2: 同一キャラクターの連続クラスタ（複数形態）をまとめ、右カラムの独立技能・武器ブロックを全形態へ合流
+    const isSkillSectionBoundary = line => {
+      const t = NF(line || '').trim();
+      if (!t) return false;
+      if (/《[^》]*ルール[^》]*》/.test(t)) return true;
+      const body = trimNm(t).replace(/^[【\[]+|[】\]]+$/g, '').trim();
+      return (HEAD_SYM.test(t) || HEAD_BRK.test(t)) && (RE_SECTION_HEAD.test(body) || RE_TIMING_HEAD.test(body));
+    };
+    const mergeSkillRange = (scanStart, scanLimit, targetGroup) => {
+      const hasSkillContinuationAhead = (fromIdx, maxBridgeLines) => {
+        let bridge = 0, blanks = 0;
+        for (let p = fromIdx; p < scanLimit; p++) {
+          const fp = info[p], lp = lines[p];
+          const subP = targetGroup.length >= 2 && isFormSubheadOfGroup(lp, targetGroup);
+          if (fp.pairs.length || fp.formHead || fp.inline || isSkillSectionBoundary(lp)) return false;
+          if (fp.bulletName && !subP) return false;
+          if (fp.skill) return true;
+          if (fp.skillHead || subP) {
+            for (let q = p + 1, qb = 0; q < scanLimit && qb <= 3; q++) {
+              const fq = info[q], lq = lines[q];
+              const subQ = targetGroup.length >= 2 && isFormSubheadOfGroup(lq, targetGroup);
+              if (fq.pairs.length || fq.formHead || fq.inline || isSkillSectionBoundary(lq)) break;
+              if (fq.bulletName && !subQ) break;
+              if (fq.skill || fq.skillHead || subQ) return true;
+              if (!fq.blank && !fq.sep) {
+                const tq = lq.trim();
+                if (fq.term || /。/.test(tq) || tq.length > 35) break;
+                qb++;
+              }
+            }
+            return false;
+          }
+          if (fp.blank || fp.sep) {
+            blanks++;
+            if (blanks > 2) return false;
+            continue;
+          }
+          const tp = lp.trim();
+          if (fp.term || /。/.test(tp) || tp.length > 35) return false;
+          bridge++;
+          if (bridge > maxBridgeLines) return false;
+        }
+        return false;
+      };
+
+      let extraEnd = scanStart - 1;
+      for (let k = scanStart; k < scanLimit; k++) {
+        const f = info[k];
+        const isStartSub = targetGroup.length >= 2 && isFormSubheadOfGroup(lines[k], targetGroup) &&
+          hasSkillContinuationAhead(k + 1, 5);
+        if (!(f.skillHead || f.skill || isStartSub)) continue;
+
+        const segments = [];
+        const initTargets = (targetGroup.length >= 2 && (f.skillHead || isStartSub))
+          ? (matchFormTargets(lines[k], targetGroup) || targetGroup)
+          : targetGroup;
+        let curSeg = { start: k, end: k, skills: f.skill ? 1 : 0, targets: initTargets };
+        let bEnd = k;
+
+        const flushSeg = () => {
+          if (curSeg && curSeg.skills >= 1) segments.push(curSeg);
+        };
+
+        for (let m = k + 1; m < scanLimit; m++) {
+          const fm = info[m];
+          const isSub = targetGroup.length >= 2 && isFormSubheadOfGroup(lines[m], targetGroup);
+          if (fm.pairs.length || fm.formHead || fm.inline || isSkillSectionBoundary(lines[m])) break;
+          if (fm.bulletName && !isSub) break;
+
+          if (fm.skillHead || isSub) {
+            const nextTargets = targetGroup.length >= 2
+              ? (matchFormTargets(lines[m], targetGroup) || curSeg.targets)
+              : targetGroup;
+            if (curSeg.skills >= 1) {
+              flushSeg();
+              curSeg = { start: m, end: m, skills: 0, targets: nextTargets };
+            } else {
+              // 直前が「技能」だけの空見出しなら、形態サブ見出しのターゲットへ切り替え
+              curSeg.targets = nextTargets;
+              curSeg.end = m;
+            }
+            bEnd = m;
+          } else if (fm.skill) {
+            curSeg.end = m; curSeg.skills++; bEnd = m;
+          } else if (/(?:ダメージ|DMG|1D\d|\d+D\d)/i.test(lines[m]) && lines[m].trim().length <= 45) {
+            curSeg.end = m; bEnd = m;
+          } else if (fm.blank || fm.sep) {
+            if (!hasSkillContinuationAhead(m + 1, 5)) break;
+          } else if (hasSkillContinuationAhead(m, 5)) {
+            curSeg.end = m; bEnd = m;
+          } else if (!fm.term && lines[m].trim().length <= 28 && !/[。！？]/.test(lines[m]) &&
+            info.slice(m + 1, Math.min(scanLimit, m + 3)).some((x, off) => x.skill || /\d*[dD]\d+/.test(lines[m + 1 + off]))) {
+            curSeg.end = m; bEnd = m;
+          } else {
+            break;
+          }
+        }
+        flushSeg();
+        if (segments.length) {
+          segments.forEach(seg => {
+            const segLines = lines.slice(seg.start, seg.end + 1);
+            seg.targets.forEach(tRec => {
+              tRec.bodyLines.push(...segLines);
+              tRec.skills += seg.skills;
+            });
+            if (seg.end > extraEnd) extraEnd = seg.end;
+          });
+          k = bEnd;
+        }
+      }
+      return extraEnd;
+    };
+
+    const charGroups = [];
+    recs.forEach(rec => {
+      const prevGrp = charGroups.length ? charGroups[charGroups.length - 1] : null;
+      const prevRec = prevGrp ? prevGrp[prevGrp.length - 1] : null;
+      let sameChar = false;
+      if (prevRec) {
+        if (prevRec.usedAct && rec.usedAct && prevRec.usedAct === rec.usedAct) {
+          sameChar = true;
+        } else if ((prevRec.formLabel || rec.formLabel) && prevRec.name && rec.name) {
+          const pb = nameKey(baseOf(prevRec.name)), cb = nameKey(baseOf(rec.name));
+          if (pb && pb === cb) {
+            const hasNewBullet = info.slice(prevRec.e + 1, rec.s).some(x => x.bulletName);
+            if (!hasNewBullet) sameChar = true;
+          }
+        }
+      }
+      if (sameChar) prevGrp.push(rec);
+      else charGroups.push([rec]);
+    });
+
+    charGroups.forEach(group => {
+      const lastRec = group[group.length - 1];
+      const nextRec = lastRec.vi + 1 < recs.length ? recs[lastRec.vi + 1] : null;
+      const nextBoundary = nextRec ? nextRec.s : lines.length;
+
+      // 複数形態グループの中間クラスタ直後にある専属技能ブロックがあれば当該形態のみへ合流
+      for (let gi = 0; gi < group.length - 1; gi++) {
+        const curRec = group[gi], nxtRec = group[gi + 1];
+        let midLimit = nxtRec.s;
+        for (let k = curRec.e + 1; k < nxtRec.s; k++) {
+          if (info[k].bulletName || info[k].formHead || info[k].inline) { midLimit = k; break; }
+        }
+        const midEnd = mergeSkillRange(curRec.e + 1, midLimit, [curRec]);
+        if (midEnd > curRec.endLine) curRec.endLine = midEnd;
+      }
+
+      // 複数形態グループの末尾クラスタが直下の「技能：通常時 or 本来の姿」等を lastDn で取り込んでいた場合は、見出し位置から全形態へ再配分する
+      let scanStart = lastRec.e + 1;
+      if (group.length >= 2 && lastRec.e > lastRec.c.e) {
+        let splitAt = -1;
+        for (let j = lastRec.c.e + 1; j <= lastRec.e; j++) {
+          if (info[j].skillHead || isFormSubheadOfGroup(lines[j], group)) { splitAt = j; break; }
+        }
+        if (splitAt > lastRec.c.e) {
+          let trimEnd = splitAt - 1;
+          while (trimEnd > lastRec.c.e && (!lines[trimEnd].trim() || info[trimEnd].sep)) trimEnd--;
+          lastRec.bodyLines = lines.slice(lastRec.s, trimEnd + 1);
+          let keptSkills = 0;
+          for (let j = lastRec.s; j <= trimEnd; j++) if (info[j].skill) keptSkills++;
+          lastRec.skills = keptSkills;
+          lastRec.e = trimEnd;
+          lastRec.endLine = trimEnd;
+          scanStart = splitAt;
+        }
+      }
+
+      let scanLimit = nextBoundary;
+      for (let k = scanStart; k < nextBoundary; k++) {
+        if (info[k].inline || info[k].formHead) { scanLimit = k; break; }
+        if (info[k].bulletName && !(group.length >= 2 && isFormSubheadOfGroup(lines[k], group))) {
+          scanLimit = k; break;
+        }
+      }
+      const grpEnd = mergeSkillRange(scanStart, scanLimit, group);
+      if (grpEnd > lastRec.endLine) lastRec.endLine = grpEnd;
+    });
+
+    recs.forEach(rec => {
+      if (rec.inline && rec.c.inlineAt >= rec.s && rec.c.inlineAt <= rec.e) {
+        const ln = lines[rec.c.inlineAt], m = info[rec.c.inlineAt].inline;
+        rec.bodyLines[rec.c.inlineAt - rec.s] = ln.slice(m[0].length);
+        rec.bodyLines.unshift('名前: ' + rec.name);
+      } else if (rec.name && !rec.bodyLines.some(l => /^\s*(?:名前|氏名|NPC名|名称)\s*[:=]/.test(l))) {
+        rec.bodyLines.unshift('名前: ' + rec.name);
+      }
+      out.push({
+        text: rec.bodyLines.join('\n').trim(),
+        name: rec.name,
+        score: rec.c.labels.size + rec.skills,
+        line: rec.s,
+        endLine: rec.endLine,
+        inline: !!rec.inline,
+        fromHead: !!rec.fromHead
+      });
     });
     return out;
   }
@@ -727,6 +1053,7 @@
     }).filter(o => o.count > 0).sort((a, b) => b.count - a.count);
   }
   const READING_RE = /([^)）\s])\s*[(（][ぁ-んァ-ヶー・\s]+[)）]/g;
+  const HAS_READING_RE = /([^)）\s])\s*[(（][ぁ-んァ-ヶー・\s]+[)）]/;
   const nameKey = n => String(n == null ? '' : n).normalize('NFKC').replace(/\s+/g, '').toLowerCase();
   // 「氷鞠(ヒマリ)（通常時）」→「氷鞠通常時」、「一式 若葉(イッシキ ワカバ)」→「一式若葉」で完全一致させる
   const cmpName = n => String(trimName(n)).normalize('NFKC').replace(READING_RE, '$1').replace(/[()（）\[\]【】「」『』\s・＝=]/g, '').toLowerCase();
@@ -749,7 +1076,8 @@
   }
 
   /** 一括スキャン候補の統合（必ず autoFillStats 前に実行）：
-   *  (1) cmpName 一致を richOf 最大側へ合体し、(2) 簡易再掲データ（isSimple）等をフルネーム側へ吸収 */
+   *  (1) cmpName 一致を richOf 最大側へ合体し、(2) 簡易再掲データ（isSimple）等をフルネーム側へ吸収、
+   *  (3) 複数資料横断等で名前が不完全・異なっても能力値・ステータス・技能 sig が3項目以上かつ100%完全一致する候補を正規名側へ統合 */
   function mergeSameResults(results, parseFn) {
     const cloned = (results || []).map((r, idx) => Object.assign({ r: Object.assign({}, r), idx }, buildSig(r, parseFn)));
     const groups = new Map(), order = [];
@@ -782,7 +1110,11 @@
       items.sort((a, b) => b.rich - a.rich || (a.r.noStats ? 1 : 0) - (b.r.noStats ? 1 : 0) || a.r.page - b.r.page || a.idx - b.idx);
       const kept = [];
       items.forEach(it => {
-        const base = kept.find(k => k.simple || it.simple || !(k.solid && it.solid && conflicts(k, it) > 0));
+        const base = kept.find(k =>
+          k.simple || it.simple ||
+          (!formOf(k.r.name) && !formOf(it.r.name)) ||
+          !(k.solid && it.solid && conflicts(k, it) > 0)
+        );
         if (!base) { kept.push(it); return; }
         absorb(base, it);
       });
@@ -808,7 +1140,7 @@
         if (sf && of && sf !== of) return false;
         const toks = ob.normalize('NFKC').trim().split(/\s+/).map(nameKey).filter(t => t.length >= 2);
         if (!(toks.includes(sk) || ok.startsWith(sk) || ok.endsWith(sk))) return false;
-        const canAbsorb = sm.simple || (READING_RE.test(o.r.name) && !sf && !of && conflicts(o, sm) === 0 && o.rich > sm.rich);
+        const canAbsorb = sm.simple || (HAS_READING_RE.test(o.r.name) && !sf && !of && conflicts(o, sm) === 0 && o.rich > sm.rich);
         if (!canAbsorb) return false;
         return !o.simple || o.rich > sm.rich || (o.rich === sm.rich && o.idx < sm.idx);
       });
@@ -817,15 +1149,120 @@
       absorb(cands[0], sm);
       absorbed.add(sm);
     });
-    return { results: step1.filter(x => !absorbed.has(x)).map(x => x.r), merged };
+    // Step 3: 能力値・ステータス・技能シグネチャ（sig）が3項目以上かつ100%完全一致（conflicts === 0 && np + ns >= 3）の候補を正規名側へ自動統合
+    const step2 = step1.filter(x => !absorbed.has(x));
+    const nameQuality = it => {
+      const raw = String(it.r.name || '').trim();
+      const ck = cmpName(raw);
+      if (!ck || ck === '名称未設定npc' || ck === '新しいnpc' || badName(raw)) return 0;
+      const b = baseOf(raw);
+      if (!b || badName(b) || isGenericRoleName(b)) return 1;
+      let q = 10;
+      if (HAS_READING_RE.test(raw)) q += 6;
+      if (it.r.fromHead) q += 4;
+      if (formOf(raw)) q += 2;
+      if (/\s/.test(b) || b.length >= 4) q += 2;
+      q += Math.min(b.length, 15) * 0.1;
+      return q;
+    };
+    const exactSigMatch = (a, b) => {
+      if (a.r.noStats || b.r.noStats) return false;
+      if (a.np + a.ns < 3 || b.np + b.ns < 3) return false;
+      if (a.sig.size < 3 || b.sig.size < 3) return false;
+      if (conflicts(a, b) > 0) return false;
+      const small = a.sig.size <= b.sig.size ? a : b;
+      const large = small === a ? b : a;
+      let shared = 0, sharedCore = 0;
+      small.sig.forEach((v, k) => {
+        if (large.sig.has(k) && large.sig.get(k) === v) {
+          shared++;
+          if (k.startsWith('p:') || k.startsWith('s:')) sharedCore++;
+        }
+      });
+      return shared === small.sig.size && shared >= 3 && sharedCore >= 3;
+    };
+    const isSameDoc = (a, b) => {
+      const pa = a.r.path || a.r.pdf || '', pb = b.r.path || b.r.pdf || '';
+      return !!(pa && pb && pa === pb);
+    };
+    const isNumberedPair = (a, b) => {
+      const ka = cmpName(baseOf(a.r.name)), kb = cmpName(baseOf(b.r.name));
+      if (!ka || !kb || ka === kb) return false;
+      const ma = /^(.+?)([0-9a-z])$/.exec(ka), mb = /^(.+?)([0-9a-z])$/.exec(kb);
+      return !!(ma && mb && ma[1].length >= 2 && ma[1] === mb[1] && ma[2] !== mb[2]);
+    };
+    const ranked = step2.slice().sort((a, b) =>
+      nameQuality(b) - nameQuality(a) || b.rich - a.rich || (a.r.noStats ? 1 : 0) - (b.r.noStats ? 1 : 0) || a.idx - b.idx
+    );
+    const kept3 = [];
+    ranked.forEach(it => {
+      const base = kept3.find(k => {
+        if (!exactSigMatch(k, it)) return false;
+        const fk = formOf(k.r.name), fi = formOf(it.r.name);
+        if (fk && fi && fk !== fi) return false;
+        if (isSameDoc(k, it) && isNumberedPair(k, it)) return false;
+        return true;
+      });
+      if (!base) { kept3.push(it); return; }
+      absorb(base, it);
+    });
+    kept3.sort((a, b) => a.idx - b.idx);
+    return { results: kept3.map(x => x.r), merged };
   }
 
-  function detectNpcBlocks(text, sysId, N) {
+  function detectNpcBlocks(text, sysId, N, opts) {
     const NON_COC = ['sw25', 'dx3', 'emoklore', 'twod6', 'futari', 'stratera', 'madamis'];
-    return NON_COC.includes(sysId) ? detectLegacy(text, sysId, N) : detectCocBlocks(text, N);
+    return NON_COC.includes(sysId) ? detectLegacy(text, sysId, N) : detectCocBlocks(text, N, opts);
+  }
+  function createPageScanner(sysId, N) {
+    const NON_COC = ['sw25', 'dx3', 'emoklore', 'twod6', 'futari', 'stratera', 'madamis'];
+    const isCoc = !NON_COC.includes(sysId);
+    let prevPageTail = [];
+    let prevLastResult = null;
+    let prevTailHasStats = false;
+    return {
+      reset() { prevPageTail = []; prevLastResult = null; prevTailHasStats = false; },
+      step(text, onBlock) {
+        const blocks = detectNpcBlocks(text, sysId, N, isCoc ? { prevPageTail } : null);
+        if (isCoc && prevLastResult && prevTailHasStats) {
+          const firstLine = blocks.length ? blocks[0].line : -1;
+          const ov = extractLeadingSkillOverflow(text, N, firstLine);
+          if (ov && ov.text && !String(prevLastResult.text || '').includes(ov.text)) {
+            prevLastResult.text = String(prevLastResult.text || '').trimEnd() + '\n' + ov.text;
+            prevLastResult.score = (prevLastResult.score || 0) + ov.skills;
+          }
+        }
+        let lastRes = null;
+        blocks.forEach(b => {
+          const r = onBlock(b);
+          if (r) lastRes = r;
+        });
+        if (isCoc) {
+          const tailInfo = extractPageTailInfo(text, N, blocks);
+          prevPageTail = tailInfo.tailLines;
+          prevLastResult = lastRes;
+          prevTailHasStats = !!(lastRes && tailInfo.endsWithStats);
+        }
+        return blocks;
+      }
+    };
+  }
+  function scanPagesForNpcBlocks(pages, sysId, N) {
+    const out = [];
+    const scanner = createPageScanner(sysId, N);
+    (pages || []).forEach((pg, idx) => {
+      const pageNum = (pg && typeof pg === 'object' && pg.page != null) ? pg.page : (idx + 1);
+      const text = (pg && typeof pg === 'object') ? (pg.text || '') : String(pg || '');
+      scanner.step(text, b => {
+        const rec = { page: pageNum, name: b.name, text: b.text, score: b.score, line: b.line, endLine: b.endLine, inline: !!b.inline, fromHead: !!b.fromHead };
+        out.push(rec);
+        return rec;
+      });
+    });
+    return out;
   }
 
-  const api = { pickMainPdf, pickTitleFromItems, isBoilerTitle, extractSpec, mergeSpecs, grabSynopsis, decodeTextBytes, cleanExtractedText, isMojibakeText, isValidSynopsisText, classifySynopsisDocs, detectNpcBlocks, detectCocBlocks, detectPortraitNpcs, nameFromImageFile, splitImageName, isGenericRoleName, badName, trimName, proseLike, belowAttr, cmpName, formOf, baseOf, isSimple, mergeSameResults, SYS_KEYS };
+  const api = { pickMainPdf, pickTitleFromItems, isBoilerTitle, extractSpec, mergeSpecs, grabSynopsis, decodeTextBytes, cleanExtractedText, isMojibakeText, isValidSynopsisText, classifySynopsisDocs, detectNpcBlocks, detectCocBlocks, extractPageTailInfo, extractLeadingSkillOverflow, scanPagesForNpcBlocks, detectPortraitNpcs, nameFromImageFile, splitImageName, isGenericRoleName, badName, trimName, proseLike, belowAttr, cmpName, formOf, baseOf, isSimple, mergeSameResults, SYS_KEYS };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (typeof window === 'undefined' || !window.CCF || typeof document === 'undefined') return;
 
@@ -1113,7 +1550,7 @@
         for (let k = 0, n = 1; k < chunk.length; k += per - 10, n++) {
           out.push({ page: n, text: chunk.slice(k, k + per).join('\n') });
         }
-        return out;
+        return { paged: false, segs: out };
       }
       const out = [];
       for (let i = 0; i < matches.length; i++) {
@@ -1124,22 +1561,28 @@
         const body = text.slice(start, end).trim();
         if (body) out.push({ page: pg, text: body });
       }
-      return out;
+      return { paged: true, segs: out };
     };
     for (let t = 0; t < targets.length && !W.cancel; t++) {
       let doc = null;
       try {
         if (targets[t].docText) {
-          const segs = splitDocTextPages(targets[t].docText.text);
+          const { paged, segs } = splitDocTextPages(targets[t].docText.text);
+          const scanner = paged ? createPageScanner(sysId, N) : null;
           for (let i = 0; i < segs.length && !W.cancel; i++) {
             const seg = segs[i];
             msg(`🔎 ${t + 1}/${targets.length}　${targets[t].name}（同期テキスト）　p.${seg.page}（候補 ${W.results.length}件）`);
             pages++;
-            detectNpcBlocks(seg.text, sysId, N).forEach(b => {
+            const pushBlock = b => {
               if (!W.results.some(r => r.path === targets[t].path && r.page === seg.page && r.text === b.text)) {
-                W.results.push({ pdf: targets[t].name, path: targets[t].path, page: seg.page, name: b.name, text: b.text, score: b.score, checked: true });
+                const row = { pdf: targets[t].name, path: targets[t].path, page: seg.page, name: b.name, text: b.text, score: b.score, checked: true, fromHead: !!b.fromHead };
+                W.results.push(row);
+                return row;
               }
-            });
+              return null;
+            };
+            if (scanner) scanner.step(seg.text, pushBlock);
+            else detectNpcBlocks(seg.text, sysId, N).forEach(pushBlock);
             addPortraits(seg.text, targets[t], seg.page);
             if (i % 10 === 9) { renderResults(); await new Promise(r2 => setTimeout(r2, 0)); }
           }
@@ -1150,16 +1593,21 @@
           const tx = T.loadTextDoc(scanBaseName(targets[t].path), rawBytes).text, chunk = tx.split('\n'), per = 120;
           for (let k = 0, n = 1; k < chunk.length && !W.cancel; k += per - 10, n++) {
             const seg = chunk.slice(k, k + per).join('\n'); pages++;
-            detectNpcBlocks(seg, sysId, N).forEach(b => { if (!W.results.some(r => r.path === targets[t].path && r.text === b.text)) W.results.push({ pdf: targets[t].name, path: targets[t].path, page: n, name: b.name, text: b.text, score: b.score, checked: true }); });
+            detectNpcBlocks(seg, sysId, N).forEach(b => { if (!W.results.some(r => r.path === targets[t].path && r.text === b.text)) W.results.push({ pdf: targets[t].name, path: targets[t].path, page: n, name: b.name, text: b.text, score: b.score, checked: true, fromHead: !!b.fromHead }); });
             addPortraits(seg, targets[t], n);
           }
           continue;
         }
         doc = await openDoc(targets[t].path);
+        const scanner = createPageScanner(sysId, N);
         for (let n = 1; n <= doc.numPages && !W.cancel; n++) {
           msg(`🔎 ${t + 1}/${targets.length}　${targets[t].name}　${n}/${doc.numPages}ページ（候補 ${W.results.length}件）`);
           const r = await pageText(doc, n); pages++;
-          detectNpcBlocks(r.text, sysId, N).forEach(b => W.results.push({ pdf: targets[t].name, path: targets[t].path, page: n, name: b.name, text: b.text, score: b.score, checked: true }));
+          scanner.step(r.text, b => {
+            const row = { pdf: targets[t].name, path: targets[t].path, page: n, name: b.name, text: b.text, score: b.score, checked: true, fromHead: !!b.fromHead };
+            W.results.push(row);
+            return row;
+          });
           addPortraits(r.text, targets[t], n);
           if (n % 5 === 0) { renderResults(); await new Promise(r2 => setTimeout(r2, 0)); }
         }

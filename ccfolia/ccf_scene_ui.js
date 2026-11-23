@@ -5,25 +5,229 @@
   const { $, esc, say, S } = CCF;
   const M = window.CCFModel, T = window.CCFText, SM = window.CCFSceneMatch;
   const cp = lbl => { try { if (window.AppHistory && typeof window.AppHistory.checkpoint === 'function') window.AppHistory.checkpoint(lbl); } catch (_) { } };
+  const pendingImgHashes = new Set();
+  const brokenBlobUrls = new Set();
+  let _imgHydrateRefreshTimer = null;
+  let _inAssetRecover = false;
+
+  const scheduleImgHydrateRefresh = () => {
+    if (_imgHydrateRefreshTimer) return;
+    _imgHydrateRefreshTimer = setTimeout(() => {
+      _imgHydrateRefreshTimer = null;
+      try {
+        if (S && S.view === 'scene' && (UI.subView === 'board' || UI.modalOpen)) {
+          refreshBoardContainers();
+        }
+      } catch (_) { }
+    }, 30);
+  };
+
+  const resolveImgRef = val => {
+    const s = String(val || '').trim();
+    if (!/^@img:[a-z0-9]+$/i.test(s)) return '';
+    const h = s.slice(5);
+    if (typeof window !== 'undefined' && typeof window.getLocalImageBlobUrl === 'function') {
+      try {
+        const live = window.getLocalImageBlobUrl(h);
+        if (live) return live;
+      } catch (_) { }
+    }
+    if (typeof window !== 'undefined' && typeof window.ensureLocalImageByHash === 'function' && !pendingImgHashes.has(h)) {
+      pendingImgHashes.add(h);
+      try {
+        Promise.resolve(window.ensureLocalImageByHash(h))
+          .then(url => {
+            const ok = url || (typeof window.getLocalImageBlobUrl === 'function' && window.getLocalImageBlobUrl(h));
+            if (ok) scheduleImgHydrateRefresh();
+          })
+          .catch(() => { })
+          .finally(() => { pendingImgHashes.delete(h); });
+      } catch (_) {
+        pendingImgHashes.delete(h);
+      }
+    }
+    return '';
+  };
+
+  const resolveLocalFilePath = p => {
+    const sp = String(p || '').trim();
+    if (!sp || !IS_ELECTRON) return '';
+    try {
+      let full = sp;
+      if (typeof path !== 'undefined' && path && typeof DATA_ROOT !== 'undefined' && DATA_ROOT && !path.isAbsolute(full)) {
+        full = path.resolve(DATA_ROOT, full);
+      }
+      return require('url').pathToFileURL(full).href;
+    } catch (_) { return sp; }
+  };
+
   const fileUrl = p => {
     if (!p) return '';
-    if (window.WebBridge && WebBridge.isAssetRef(p)) return WebBridge.peekAssetUrl(p) || '';
-    if (/^(?:data:|file:|https?:|blob:|zipview:)/i.test(p)) return p;
+    const sp = String(p).trim();
+    if (!sp) return '';
+    if (/^@img:[a-z0-9]+$/i.test(sp)) return resolveImgRef(sp);
+    if (window.WebBridge && WebBridge.isAssetRef(sp)) return WebBridge.peekAssetUrl(sp) || '';
+    if (/^blob:/i.test(sp)) {
+      if (brokenBlobUrls.has(sp)) return '';
+      if (typeof window !== 'undefined' && typeof window.urlToRef === 'function') {
+        try {
+          const ref = window.urlToRef(sp);
+          if (typeof ref === 'string' && /^@img:[a-z0-9]+$/i.test(ref)) {
+            return resolveImgRef(ref) || sp;
+          }
+          return '';
+        } catch (_) { }
+      }
+      return sp;
+    }
+    if (/^(?:data:|file:|https?:|zipview:)/i.test(sp)) return sp;
     if (!IS_ELECTRON) return '';
-    try { return require('url').pathToFileURL(p).href; } catch (_) { return p; }
+    return resolveLocalFilePath(sp);
   };
+
+  const directAssetSrc = a => {
+    if (!a) return '';
+    const d = String(a.dataUrl || '').trim();
+    if (d) {
+      const resolved = fileUrl(d);
+      if (resolved) return resolved;
+    }
+    if (a.path) {
+      const pu = fileUrl(a.path);
+      if (pu) return pu;
+    }
+    return '';
+  };
+
+  const normAssetMatchName = s => String(s || '').normalize('NFKC').trim().toLowerCase();
+  const isGenericPanelName = s => /^(?:素材|パネル|要素|名称未設定|(?:スクリーンパネル|マーカーパネル)(?:\s*\d+)?)$/i.test(String(s || '').trim());
+
+  const recoverItemFromAssets = (item, failedSrc) => {
+    if (!item || _inAssetRecover) return '';
+    const uid = String(item.assetUid || '').trim();
+    const rawName = String(item.name || '').trim();
+    const nameKey = (!isGenericPanelName(rawName) && rawName) ? normAssetMatchName(rawName) : '';
+    const origNameKey = (item._origName && !isGenericPanelName(item._origName)) ? normAssetMatchName(item._origName) : '';
+    const pathBase = item.path ? normAssetMatchName(String(item.path).split(/[\\/]/).pop()) : '';
+    if (!uid && !nameKey && !origNameKey && !pathBase) return '';
+
+    _inAssetRecover = true;
+    try {
+      const pools = [];
+      if (CCF.assets && typeof CCF.assets.getUnifiedItems === 'function') {
+        try { pools.push(...(CCF.assets.getUnifiedItems(S.key) || [])); } catch (_) { }
+      }
+      if (typeof window !== 'undefined' && window.CommonAssets && typeof window.CommonAssets.getAll === 'function') {
+        try { pools.push(...(window.CommonAssets.getAll() || [])); } catch (_) { }
+      }
+      if (!pools.length) return '';
+
+      const tryList = list => {
+        for (const a of list) {
+          if (!a || a === item) continue;
+          const src = directAssetSrc(a);
+          if (!src || (failedSrc && src === failedSrc)) continue;
+          if (a.dataUrl) item.dataUrl = a.dataUrl;
+          else if (failedSrc && item.dataUrl === failedSrc) item.dataUrl = '';
+          if (a.path) item.path = a.path;
+          if (a.uid && !item.assetUid) item.assetUid = a.uid;
+          return src;
+        }
+        return '';
+      };
+
+      if (uid) {
+        const byUid = pools.filter(a => a && (String(a.uid || '') === uid || String(a.id || '') === uid));
+        const r = tryList(byUid);
+        if (r) return r;
+      }
+      const nameKeys = [nameKey, origNameKey, pathBase].filter(Boolean);
+      if (nameKeys.length) {
+        const byName = pools.filter(a => {
+          if (!a) return false;
+          const aName = normAssetMatchName(a.name);
+          const aOrig = normAssetMatchName(a.origName);
+          const aBase = a.path ? normAssetMatchName(String(a.path).split(/[\\/]/).pop()) : '';
+          return nameKeys.some(k => (aName && aName === k) || (aOrig && aOrig === k) || (aBase && aBase === k));
+        });
+        const r = tryList(byName);
+        if (r) return r;
+      }
+      return '';
+    } finally {
+      _inAssetRecover = false;
+    }
+  };
+
   const assetSrc = item => {
     if (!item) return '';
-    if (item.dataUrl) return item.dataUrl;
-    if (item.path) return fileUrl(item.path);
-    return '';
+    const d = String(item.dataUrl || '').trim();
+    if (d) {
+      const resolved = fileUrl(d);
+      if (resolved) return resolved;
+    }
+    if (item.path) {
+      const pu = fileUrl(item.path);
+      if (pu) return pu;
+    }
+    return recoverItemFromAssets(item, '');
+  };
+
+  const recoverBoardItemOnError = (item, failedSrc) => {
+    if (!item) return '';
+    const bad = String(failedSrc || '').trim();
+    if (bad && /^blob:/i.test(bad)) brokenBlobUrls.add(bad);
+    if (bad && item.dataUrl && (item.dataUrl === bad || fileUrl(item.dataUrl) === bad)) {
+      item.dataUrl = '';
+    }
+    if (item.path) {
+      const pu = fileUrl(item.path);
+      if (pu && pu !== bad) {
+        let ok = true;
+        if (IS_ELECTRON && typeof fs !== 'undefined' && !/^(?:data:|https?:|zipview:|blob:|@img:)/i.test(item.path)) {
+          try {
+            let full = String(item.path).trim();
+            if (typeof path !== 'undefined' && path && typeof DATA_ROOT !== 'undefined' && DATA_ROOT && !path.isAbsolute(full)) {
+              full = path.resolve(DATA_ROOT, full);
+            }
+            if (!fs.existsSync(full)) ok = false;
+          } catch (_) { }
+        }
+        if (ok) return pu;
+      }
+    }
+    return recoverItemFromAssets(item, bad);
   };
 
   // ======================================================================
   // 状態（ドキュメント解析の一時保持・展開状態・選択中要素・試聴Audio）
   // ======================================================================
+  const SIDE_FOLD_STORAGE_KEY = 'ccf_bp_side_fold_v2';
+  const SIDE_FOLD_DEFAULTS = { scnlist: true, memo: true, media: true, screen: true, marker: true, layers: true };
+  function loadSideFold() {
+    const out = Object.assign({}, SIDE_FOLD_DEFAULTS);
+    try {
+      const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(SIDE_FOLD_STORAGE_KEY) : null;
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          Object.keys(out).forEach(k => { if (typeof parsed[k] === 'boolean') out[k] = parsed[k]; });
+        }
+      }
+    } catch (_) { }
+    return out;
+  }
+  function saveSideFold() {
+    try {
+      if (typeof localStorage !== 'undefined' && UI.sideFold) {
+        localStorage.setItem(SIDE_FOLD_STORAGE_KEY, JSON.stringify(UI.sideFold));
+      }
+    } catch (_) { }
+  }
+
   const UI = {
     subView: 'board',         // 'board' (①盤面・シーン編集) | 'scenes' (②シーン分割・本文整理) | 'cutin' (③演出・カットイン)
+    sideFold: loadSideFold(), // 右サイドバー各カードの折りたたみ状態（true = 折りたたみ）
     parsedLines: null,        // 最後に解析した行データ
     parsedOutline: [],        // 最後に解析したPDFしおり
     parsedPath: '',
@@ -35,6 +239,7 @@
     expandedSlotScenes: new Set(),
     sceneLimit: 50,
     boardTarget: 'global',    // 'global' | scene.id
+    memoSceneId: '',          // 共通盤面選択時の本文メモ編集対象シーンID
     selectedItemId: '',
     selectedIds: new Set(),
     lastCheckedIdx: -1,
@@ -1948,8 +2153,10 @@
     say(`🔊 ${useChecked ? 'チェック済み' : '全'}シーンのBGM（${targets.length}件）の音量を ${vol}% に統一しました`);
   }
 
-  function applyBgmVolumeLive(sc, rawVol, sourceEl) {
+  let _bgmSaveTimer = null;
+  function applyBgmVolumeLive(sc, rawVol, sourceEl, opts) {
     if (!sc || !sc.bgm) return;
+    const immediate = !!(opts && opts.immediate);
     const vol = Math.min(100, Math.max(0, Math.round(Number(rawVol) || 0)));
     sc.bgm.volume = vol;
     UI.defaultBgmVolume = vol;
@@ -1969,13 +2176,21 @@
     if (UI.audio && (UI.audioSceneId === sc.id || (sc.bgm.path && UI.audioKey === sc.bgm.path))) {
       UI.audio.volume = vol / 100;
     }
-    CCF.saveProject();
+    if (_bgmSaveTimer) { clearTimeout(_bgmSaveTimer); _bgmSaveTimer = null; }
+    if (immediate) {
+      CCF.saveProject();
+    } else {
+      _bgmSaveTimer = setTimeout(() => {
+        _bgmSaveTimer = null;
+        CCF.saveProject();
+      }, 250);
+    }
   }
 
   function renderSlotRowHtml(sc, idx, slot, label, assigned, candidates, extracted, opts) {
     const o = opts || {};
     const compact = !!o.compact;
-    const assignedSrc = assigned ? (assigned.dataUrl || fileUrl(assigned.path)) : '';
+    const assignedSrc = assigned ? assetSrc(assigned) : '';
     const isPlayingCur = !!(assigned && assigned.path && UI.audioKey === assigned.path && (!UI.audioSceneId || UI.audioSceneId === sc.id));
     const showTagBtn = !!(sc.manualSlots && sc.manualSlots[slot] && assigned && assigned.assetUid);
     const suggestTags = showTagBtn ? suggestTagsForScene(sc, extracted) : [];
@@ -2587,24 +2802,133 @@
     </div>`;
   }
 
+  function getDefaultPanelName(it, idx) {
+    const isMarker = it && it.kind === 'marker';
+    const n = (typeof idx === 'number' && idx >= 0) ? (idx + 1) : 1;
+    return (isMarker ? 'マーカーパネル ' : 'スクリーンパネル ') + n;
+  }
+
+  function findPanelIndexInHost(it) {
+    if (!it || !S || !S.proj) return -1;
+    const g = S.proj.globalDecor || {};
+    if (it.kind === 'screen') {
+      const i = (g.screens || []).findIndex(x => x && x.id === it.id);
+      if (i >= 0) return i;
+    }
+    const sc = getBoardTargetScene(UI.boardTarget);
+    if (sc) {
+      const arr = it.kind === 'marker' ? sc.markers : sc.screens;
+      const i = (arr || []).findIndex(x => x && x.id === it.id);
+      if (i >= 0) return i;
+    }
+    if (it.kind === 'marker') {
+      const i = (g.markers || []).findIndex(x => x && x.id === it.id);
+      if (i >= 0) return i;
+    }
+    return -1;
+  }
+
+  function isInitialOrDefaultPanelName(it) {
+    if (!it) return false;
+    if (it._nameSyncedFromText) return true;
+    if (it._manualName) return false;
+    const cur = String(it.name || '').trim();
+    if (!cur) return true;
+    if (/^(?:スクリーンパネル|マーカーパネル)(?:\s*\d+)?$/i.test(cur)) return true;
+    if (cur === '素材') return true;
+    if (it._origName != null && cur === String(it._origName).trim()) return true;
+    if (it.path) {
+      const base = String(it.path).split(/[\\/]/).pop() || '';
+      const stem = base.replace(/\.[^.]+$/, '');
+      if (cur === base || (stem && cur === stem)) return true;
+    }
+    if (it.assetUid) {
+      const pools = [];
+      if (CCF.assets && typeof CCF.assets.getUnifiedItems === 'function') {
+        try { pools.push(...(CCF.assets.getUnifiedItems(S.key) || [])); } catch (_) { }
+      }
+      if (typeof window !== 'undefined' && window.CommonAssets && typeof window.CommonAssets.getAll === 'function') {
+        try { pools.push(...(window.CommonAssets.getAll() || [])); } catch (_) { }
+      }
+      const matched = pools.find(a => a && (String(a.uid || '') === it.assetUid || String(a.id || '') === it.assetUid));
+      if (matched) {
+        const mName = String(matched.name || '').trim();
+        const mOrig = String(matched.origName || '').trim();
+        if ((mName && cur === mName) || (mOrig && cur === mOrig)) return true;
+      }
+    }
+    return false;
+  }
+
+  function applyPanelTextAndSyncName(it, nextText) {
+    if (!it) return { nameChanged: false };
+    const val = String(nextText == null ? '' : nextText);
+    it.text = val;
+    const idx = findPanelIndexInHost(it);
+    const defName = getDefaultPanelName(it, idx);
+    const firstLine = val.replace(/\r\n?/g, '\n').split('\n').map(s => s.trim()).find(Boolean) || '';
+    let nameChanged = false;
+    if (firstLine) {
+      if (isInitialOrDefaultPanelName(it)) {
+        if (!it._nameSyncedFromText && it._origName == null) {
+          it._origName = String(it.name || '').trim() || defName;
+        }
+        const synced = Array.from(firstLine).slice(0, 32).join('');
+        if (it.name !== synced) {
+          it.name = synced;
+          nameChanged = true;
+        }
+        it._nameSyncedFromText = true;
+      }
+    } else if (it._nameSyncedFromText) {
+      const restored = (it._origName && String(it._origName).trim()) ? String(it._origName).trim() : defName;
+      if (it.name !== restored) {
+        it.name = restored;
+        nameChanged = true;
+      }
+      it._nameSyncedFromText = false;
+    }
+    return { nameChanged, dispName: it.name || defName };
+  }
+
   function renderPanelListRowHtml(it, idx, isMarker) {
     const src = assetSrc(it);
     const isSel = UI.selectedIds && UI.selectedIds.has(it.id);
     const defName = (isMarker ? 'マーカーパネル ' : 'スクリーンパネル ') + (idx + 1);
     const dispName = it.name || defName;
-    const panelTxt = isMarker ? String(it.text || '').trim() : '';
     const isVis = it.visible !== false;
     const isLocked = !!it.locked;
     return `<div class="ccf-bp-mk-row${isSel ? ' sel' : ''}" data-bp-midsel="${esc(it.id)}" title="クリックで盤面上の該当パネルを選択／ダブルクリックで管理名を編集">
-      ${src ? `<img class="ccf-bp-mk-thumb" src="${esc(src)}" alt="">` : `<span class="ccf-bp-mk-swatch" style="background:${esc(it.color || '#5865f2')};"></span>`}
-      <div class="ccf-bp-mk-meta">
-        <div class="ccf-bp-mk-name" title="${esc(dispName)}">${esc(dispName)}</div>
-        ${panelTxt ? `<div class="ccf-bp-mk-text" title="${esc(panelTxt)}">${esc(panelTxt)}</div>` : ''}
+      <div class="ccf-bp-mk-top">
+        ${src ? `<img class="ccf-bp-mk-thumb" src="${esc(src)}" alt="" data-bp-img-item="${esc(it.id)}">` : `<span class="ccf-bp-mk-swatch" style="background:${esc(it.color || '#5865f2')};"></span>`}
+        <div class="ccf-bp-mk-meta">
+          <div class="ccf-bp-mk-name" data-bp-mk-name="${esc(it.id)}" title="${esc(dispName)}">${esc(dispName)}</div>
+        </div>
+        <div class="ccf-bp-mk-acts">
+          <button type="button" class="ccf-mini${isLocked ? ' active' : ''}" data-bp="pin" data-id="${esc(it.id)}" aria-pressed="${isLocked}" title="${isLocked ? '固定中（クリックで固定解除）' : '位置・サイズを固定'}">📌固定</button>
+          <button type="button" class="ccf-mini${isVis ? '' : ' is-hidden'}" data-bp="eye" data-id="${esc(it.id)}" title="${isVis ? '表示中（クリックで非表示）' : '非表示中（クリックで表示）'}">${isVis ? '👁️表示' : '🚫非表示'}</button>
+          <button type="button" class="ccf-mini danger" data-bp="del" data-id="${esc(it.id)}" title="削除">✕削除</button>
+        </div>
       </div>
-      <div class="ccf-bp-mk-acts">
-        <button type="button" class="ccf-mini${isLocked ? ' active' : ''}" data-bp="pin" data-id="${esc(it.id)}" aria-pressed="${isLocked}" title="${isLocked ? '固定中（クリックで固定解除）' : '位置・サイズを固定'}">📌固定</button>
-        <button type="button" class="ccf-mini${isVis ? '' : ' is-hidden'}" data-bp="eye" data-id="${esc(it.id)}" title="${isVis ? '表示中（クリックで非表示）' : '非表示中（クリックで表示）'}">${isVis ? '👁️表示' : '🚫非表示'}</button>
-        <button type="button" class="ccf-mini danger" data-bp="del" data-id="${esc(it.id)}" title="削除">✕削除</button>
+      <input type="text" class="ccf-bp-mk-txtinp" data-bp-panel-text="${esc(it.id)}" value="${esc(it.text || '')}" placeholder="💬 パネル内テキスト（盤面表示・空欄で非表示）">
+    </div>`;
+  }
+
+  function renderCollapsibleSec(foldKey, titleHtml, bodyHtml, opts) {
+    const o = opts || {};
+    const collapsed = !!(UI.sideFold && UI.sideFold[foldKey]);
+    const extraAttr = o.cardAttr ? ` data-bp-card="${esc(o.cardAttr)}"` : '';
+    return `<div class="ccf-bp-sec is-collapsible${collapsed ? ' is-collapsed' : ''}" data-bp-sec="${esc(foldKey)}"${extraAttr}>
+      <div class="ccf-bp-sechead ccf-bp-foldhead" data-bp-fold="${esc(foldKey)}" role="button" tabindex="0" aria-expanded="${!collapsed}">
+        <div class="ccf-bp-fold-left">
+          <span class="ccf-bp-fold-ico" aria-hidden="true">${collapsed ? '▸' : '▾'}</span>
+          <b>${titleHtml}</b>
+          ${o.badgeHtml || ''}
+        </div>
+        ${o.rightHtml ? `<div class="ccf-bp-fold-acts">${o.rightHtml}</div>` : ''}
+      </div>
+      <div class="ccf-bp-secbody">
+        ${bodyHtml}
       </div>
     </div>`;
   }
@@ -2615,19 +2939,21 @@
     const listHtml = screens.length
       ? `<div class="ccf-bp-mk-list">${screens.map((sr, si) => renderPanelListRowHtml(sr, si, false)).join('')}</div>`
       : '<div class="ccf-bp-panel-empty">なし（全シーン共通枠など）</div>';
-    return `<div class="ccf-bp-panel-card" data-bp-card="screen">
-      <div class="ccf-bp-panel-head">
-        <b>🖼️ スクリーンパネル（部屋常駐・${screens.length}枚）</b>
-        <button type="button" class="ccf-mini" data-bp="add-screen" title="全シーン共通の部屋常駐スクリーンパネルを追加">＋ 追加</button>
-      </div>
-      ${listHtml}
-    </div>`;
+    return renderCollapsibleSec(
+      'screen',
+      `🖼️ スクリーンパネル（部屋常駐・${screens.length}枚）`,
+      listHtml,
+      {
+        cardAttr: 'screen',
+        rightHtml: '<button type="button" class="ccf-mini" data-bp="add-screen" title="全シーン共通の部屋常駐スクリーンパネルを追加">＋ 追加</button>'
+      }
+    );
   }
 
-  function renderSceneMarkersBlockHtml(sc, idx, m) {
-    const g = S.proj.globalDecor || {};
-    const markers = sc ? (Array.isArray(sc.markers) ? sc.markers : []) : (Array.isArray(g.markers) ? g.markers : []);
-    const candHtml = (sc && m && m.marker || []).slice(0, 2).map(c => {
+  function renderMarkerCandStripHtml(sc, idx, m) {
+    const cands = (sc && m && m.marker || []).slice(0, 2);
+    if (!cands.length) return '';
+    const candHtml = cands.map(c => {
       const it = c.item, src = assetSrc(it);
       return `<div class="ccf-cand-card" data-scn-pickcand="marker" data-i="${idx}" data-uid="${esc(it.uid)}" title="一致: ${esc(c.matchedKeywords.join(', '))} / ${esc(c.tierLabel)}">
         ${src ? `<img src="${esc(src)}" alt="" loading="lazy" decoding="async">` : '<span class="ccf-cand-ico">📌</span>'}
@@ -2637,7 +2963,12 @@
         </div>
       </div>`;
     }).join('');
+    return `<div class="ccf-cand-strip"><span class="ccf-cand-badge">✨これかも？</span>${candHtml}</div>`;
+  }
 
+  function renderSceneMarkersBlockHtml(sc, idx, m) {
+    const g = S.proj.globalDecor || {};
+    const markers = sc ? (Array.isArray(sc.markers) ? sc.markers : []) : (Array.isArray(g.markers) ? g.markers : []);
     const listHtml = markers.length
       ? `<div class="ccf-bp-mk-list">${markers.map((mk, mi) => renderPanelListRowHtml(mk, mi, true)).join('')}</div>`
       : '<div class="ccf-bp-panel-empty">なし（場所固有パネル等）</div>';
@@ -2647,83 +2978,130 @@
       ${markers.length ? `<button type="button" class="ccf-mini danger" data-scn-clear="marker" data-i="${idx}" title="このシーンのマーカーパネルをすべて解除">✕ 全解除</button>` : ''}
     </div>` : '';
 
-    return `<div class="ccf-bp-panel-card" data-bp-card="marker">
-      <div class="ccf-bp-panel-head">
-        <b>📌 マーカーパネル（シーン別・${markers.length}枚）</b>
-        <button type="button" class="ccf-mini" data-bp="add-marker-menu" title="画像または色・テキスト枠のマーカーパネルを追加">＋ 追加</button>
-      </div>
-      ${listHtml}
-      ${extraActs}
-      ${candHtml ? `<div class="ccf-cand-strip"><span class="ccf-cand-badge">✨これかも？</span>${candHtml}</div>` : ''}
-    </div>`;
+    const candWrap = sc
+      ? `<div data-bp-marker-cands="${esc(sc.id)}">${renderMarkerCandStripHtml(sc, idx, m)}</div>`
+      : '';
+
+    return renderCollapsibleSec(
+      'marker',
+      `📌 マーカーパネル（シーン別・${markers.length}枚）`,
+      `${listHtml}${extraActs}${candWrap}`,
+      {
+        cardAttr: 'marker',
+        rightHtml: '<button type="button" class="ccf-mini" data-bp="add-marker-menu" title="画像または色・テキスト枠のマーカーパネルを追加">＋ 追加</button>'
+      }
+    );
   }
 
-  function renderBoardPanelCardsHtml(sc, idx, m) {
-    return `<div class="ccf-bp-panel-cards">
-      ${renderGlobalScreensCardHtml()}
-      ${renderSceneMarkersBlockHtml(sc, idx, m)}
-    </div>`;
+  function getMemoTargetScene(sc) {
+    if (sc) return sc;
+    ensureProjShape();
+    const scenes = S.proj.scenes || [];
+    if (!scenes.length) return null;
+    if (UI.memoSceneId) {
+      const hit = scenes.find(s => s.id === UI.memoSceneId);
+      if (hit) return hit;
+    }
+    UI.memoSceneId = scenes[0].id;
+    return scenes[0];
+  }
+
+  function renderBoardMemoSecHtml(sc) {
+    const scenes = (S && S.proj && Array.isArray(S.proj.scenes)) ? S.proj.scenes : [];
+    const targetSc = getMemoTargetScene(sc);
+    if (!targetSc) {
+      const emptyBody = `<div class="ccf-bp-panel-empty">まだシーンがありません。シーンを作成すると、本文メモやシーン切替メッセージをここで編集できます。</div>
+        <div class="ccf-bp-txt-acts">
+          <button type="button" class="ccf-btn primary" data-bp="add-empty-scn">＋ 最初のシーンを作成</button>
+          <button type="button" class="ccf-btn" data-bp="add-sel-scn" title="左のPDF/TXT選択テキストから新規シーンを作成">📥 選択テキストからシーン作成</button>
+        </div>`;
+      return renderCollapsibleSec('memo', '📖 本文メモ・切り替えメッセージ', emptyBody, {
+        badgeHtml: '<span class="ccf-badge">0件</span>'
+      });
+    }
+
+    const isGlobalMode = !sc;
+    const tIdx = scenes.findIndex(s => s.id === targetSc.id);
+    const pickerHtml = isGlobalMode
+      ? `<div class="ccf-bp-memo-pick">
+          <label class="ccf-inline-field" style="width:100%;">
+            <span class="ccf-inline-lbl ccf-muted" style="font-size:.72rem;font-weight:700;">編集対象シーン:</span>
+            <select class="ccf-bp-memo-scnsel" data-bp-memo-scnsel="1" style="flex:1;min-width:0;">
+              ${scenes.map((s, si) => `<option value="${esc(s.id)}"${s.id === targetSc.id ? ' selected' : ''}>#${si + 1} ${esc(s.title || '無題のシーン')}</option>`).join('')}
+            </select>
+          </label>
+        </div>`
+      : '';
+
+    const memoBody = `${pickerHtml}
+      <input type="text" class="ccf-bp-scn-title" data-bp-scn-title="${esc(targetSc.id)}" value="${esc(targetSc.title)}" placeholder="シーン名">
+      <div class="ccf-scn-field-lbl">📖 シナリオ本文・メモ（分割・素材候補の抽出用 ※ココフォリアには出力されません）</div>
+      <textarea class="ccf-bp-scn-text" data-bp-scn-text="${esc(targetSc.id)}" rows="4" placeholder="シーン本文・演出メモ・キーワード（例：夜の図書館で探索、病院の屋上で戦闘）">${esc(targetSc.text)}</textarea>
+      <div class="ccf-bp-txt-acts">
+        <button type="button" class="ccf-mini" data-bp="split-cursor" data-memo-scn-id="${esc(targetSc.id)}" title="本文テキストエリア内のカーソル位置より後ろを新しいシーンに分割します">✂️ カーソル分割</button>
+        <button type="button" class="ccf-mini" data-bp="insert-delim" data-memo-scn-id="${esc(targetSc.id)}" title="カーソル位置に区切り線（---）を挿入します">＋ ---</button>
+        <button type="button" class="ccf-mini" data-bp="split-delim" data-memo-scn-id="${esc(targetSc.id)}" title="本文中の「---」の位置で一気に複数シーンへ分割します">✂️ ---一括分割</button>
+        <button type="button" class="ccf-mini" data-bp="append-sel" data-memo-scn-id="${esc(targetSc.id)}" title="左ペインで選択中のテキスト／抽出バッファを末尾に追記">📥 選択追記</button>
+        <button type="button" class="ccf-mini" data-bp="replace-sel" data-memo-scn-id="${esc(targetSc.id)}" title="左ペインで選択中のテキスト／抽出バッファで本文を置換">📥 置換</button>
+        <button type="button" class="ccf-mini primary" data-bp="calc-cands" data-memo-scn-id="${esc(targetSc.id)}" title="入力された本文から前景・BGM・背景・マーカー候補を再計算">✨ 候補更新</button>
+      </div>
+      <div class="ccf-scn-msg-box">
+        <div class="ccf-scn-msg-head">
+          <span class="ccf-scn-field-lbl">💬 シーン切替メッセージ（ココフォリア表示用・初期空欄）</span>
+          <span class="ccf-scn-msg-btns">
+            <button type="button" class="ccf-mini" data-scn-msg-copy="${esc(targetSc.id)}" title="シナリオ本文（選択中は選択部分）をコピー">📋 本文（または選択部分）をコピー</button>
+            <button type="button" class="ccf-mini" data-scn-msg-title="${esc(targetSc.id)}" title="シーン名をセット">📋 シーン名をセット</button>
+            <button type="button" class="ccf-mini danger" data-scn-msg-clear="${esc(targetSc.id)}" title="空欄に戻す">✕ クリア</button>
+          </span>
+        </div>
+        <textarea class="ccf-bp-scn-msg" data-bp-scn-msg="${esc(targetSc.id)}" rows="2" placeholder="空欄のままにすると、ココフォリアでシーン切り替え時にメッセージが表示されません">${esc(targetSc.sceneMessage || '')}</textarea>
+      </div>`;
+
+    const memoBadgeText = isGlobalMode
+      ? `#${tIdx + 1} ${targetSc.title || '無題のシーン'}`
+      : (targetSc.page ? `p.${targetSc.page}` : '');
+    const badgeHtml = memoBadgeText
+      ? `<span class="ccf-badge${isGlobalMode ? ' ccf-bp-fold-badge' : ''}" data-bp-memo-badge="1" title="${esc(memoBadgeText)}">${esc(memoBadgeText)}</span>`
+      : '';
+
+    return renderCollapsibleSec('memo', '📖 本文メモ・切り替えメッセージ', memoBody, {
+      badgeHtml,
+      rightHtml: `<button type="button" class="ccf-mini" data-bp="open-split-editor" data-memo-scn-id="${esc(targetSc.id)}" title="広い画面で本文の編集や手動シーン分割を行います">🗗 広い画面で本文分割・編集</button>`
+    });
   }
 
   function renderBoardMiddlePanel(sc, idx, checkedCount) {
     const b = S.proj.board;
     const g = S.proj.globalDecor;
+    const memoSec = renderBoardMemoSecHtml(sc);
     if (!sc) {
       const pieces = (b && b.pieces) || [];
-      return `<div class="ccf-bp-sec">
-        <div class="ccf-bp-sechead"><b>🌐 共通盤面（全体装飾・初期盤面）</b><span class="ccf-muted">初期駒 ${pieces.length}体</span></div>
-        <div class="ccf-muted" style="font-size:.74rem;line-height:1.4;">全シーンで共通表示されるベース背景・共通前景（盤面テーブル）・常駐スクリーンパネルと、初期配置のNPC駒を編集します。</div>
-        ${renderBoardQuickActionsHtml(null)}
+      const mediaBadge = `<span class="ccf-badge ccf-bp-fold-badge">🪟共通前景${g.fg ? 'あり' : 'なし'} / 🖼️共通背景${g.bg ? 'あり' : 'なし'}</span>`;
+      const mediaBody = `<div class="ccf-muted" style="font-size:.74rem;line-height:1.4;">全シーンで共通表示されるベース背景・共通前景（盤面テーブル）・盤面サイズを編集します。（初期駒 ${pieces.length}体）</div>
         <div class="ccf-bp-global-grid">
           <div class="ccf-bp-gslot"><span>🖼️ 共通背景:</span> <b>${esc(g.bg ? g.bg.name : '未設定')}</b> <button type="button" class="ccf-mini" data-bp="add-bg">選択</button>${g.bg ? '<button type="button" class="ccf-mini danger" data-bp="clr-g-bg">✕</button>' : ''}</div>
           <div class="ccf-bp-gslot"><span>🪟 共通前景:</span> <b>${esc(g.fg ? g.fg.name : '未設定')}</b> <button type="button" class="ccf-mini" data-bp="add-fg">選択</button>${g.fg ? '<button type="button" class="ccf-mini danger" data-bp="clr-g-fg">✕</button>' : ''}</div>
           ${renderFgControlsHtml(b, g.fg, false)}
-        </div>
-        ${renderBoardPanelCardsHtml(null, -1, null)}
-      </div>`;
+        </div>`;
+      return [
+        memoSec,
+        renderCollapsibleSec('media', '🖼️ 前景・背景・BGM', mediaBody, { badgeHtml: mediaBadge }),
+        renderGlobalScreensCardHtml(),
+        renderSceneMarkersBlockHtml(null, -1, null)
+      ].join('');
     }
     let m = getCachedCandidates(sc);
     if (!m) m = computeCandidatesForScene(sc, getMatchSources());
     const bs = UI.batchSlots || { fg: true, bgm: true, bg: false, marker: false };
     const activeFg = sc.fg || g.fg || null;
     const isFallbackFg = !sc.fg && !!g.fg;
-    return `<div class="ccf-bp-sec">
-      <div class="ccf-bp-sechead" style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;">
-        <b>🎨 シーン #${idx + 1} 編集＆素材設定</b>
-        <span style="display:flex;align-items:center;gap:4px;">
-          ${sc.page ? `<span class="ccf-badge">p.${sc.page}</span>` : ''}
-          <button type="button" class="ccf-mini" data-bp="open-split-editor" title="広い画面で本文の編集や手動シーン分割を行います">🗗 広い画面で本文分割・編集</button>
-        </span>
-      </div>
-      ${renderBoardQuickActionsHtml(sc)}
-      <input type="text" class="ccf-bp-scn-title" data-bp-scn-title="${esc(sc.id)}" value="${esc(sc.title)}" placeholder="シーン名">
-      <div class="ccf-scn-field-lbl">📖 シナリオ本文・メモ（分割・素材候補の抽出用 ※ココフォリアには出力されません）</div>
-      <textarea class="ccf-bp-scn-text" data-bp-scn-text="${esc(sc.id)}" rows="4" placeholder="シーン本文・演出メモ・キーワード（例：夜の図書館で探索、病院の屋上で戦闘）">${esc(sc.text)}</textarea>
-      <div class="ccf-bp-txt-acts">
-        <button type="button" class="ccf-mini" data-bp="split-cursor" title="本文テキストエリア内のカーソル位置より後ろを新しいシーンに分割します">✂️ カーソル分割</button>
-        <button type="button" class="ccf-mini" data-bp="insert-delim" title="カーソル位置に区切り線（---）を挿入します">＋ ---</button>
-        <button type="button" class="ccf-mini" data-bp="split-delim" title="本文中の「---」の位置で一気に複数シーンへ分割します">✂️ ---一括分割</button>
-        <button type="button" class="ccf-mini" data-bp="append-sel" title="左ペインで選択中のテキスト／抽出バッファを末尾に追記">📥 選択追記</button>
-        <button type="button" class="ccf-mini" data-bp="replace-sel" title="左ペインで選択中のテキスト／抽出バッファで本文を置換">📥 置換</button>
-        <button type="button" class="ccf-mini primary" data-bp="calc-cands" title="入力された本文から前景・BGM・背景・マーカー候補を再計算">✨ 候補更新</button>
-      </div>
-      <div class="ccf-scn-msg-box">
-        <div class="ccf-scn-msg-head">
-          <span class="ccf-scn-field-lbl">💬 シーン切替メッセージ（ココフォリア表示用・初期空欄）</span>
-          <span class="ccf-scn-msg-btns">
-            <button type="button" class="ccf-mini" data-scn-msg-copy="${esc(sc.id)}" title="シナリオ本文（選択中は選択部分）をコピー">📋 本文（または選択部分）をコピー</button>
-            <button type="button" class="ccf-mini" data-scn-msg-title="${esc(sc.id)}" title="シーン名をセット">📋 シーン名をセット</button>
-            <button type="button" class="ccf-mini danger" data-scn-msg-clear="${esc(sc.id)}" title="空欄に戻す">✕ クリア</button>
-          </span>
-        </div>
-        <textarea class="ccf-bp-scn-msg" data-bp-scn-msg="${esc(sc.id)}" rows="2" placeholder="空欄のままにすると、ココフォリアでシーン切り替え時にメッセージが表示されません">${esc(sc.sceneMessage || '')}</textarea>
-      </div>
-      <div class="ccf-slots" data-bp-cands-host="${esc(sc.id)}">
+
+    const mediaSummary = `🪟前景${sc.fg ? 'あり' : 'なし'} / 🎵BGM${sc.bgm ? 'あり' : 'なし'} / 🖼️背景${sc.bg ? 'あり' : 'なし'}`;
+    const mediaBody = `<div class="ccf-slots" data-bp-cands-host="${esc(sc.id)}">
         ${renderSlotRowHtml(sc, idx, 'fg', '🪟 前景（盤面）', sc.fg, m.fg, m.extracted, { compact: true })}
         ${renderFgControlsHtml(b, activeFg, isFallbackFg)}
         ${renderSlotRowHtml(sc, idx, 'bgm', '🎵 BGM', sc.bgm, m.bgm, m.extracted, { compact: true })}
         ${renderSlotRowHtml(sc, idx, 'bg', '🖼️ 背景（任意）', sc.bg, m.bg, m.extracted, { compact: true })}
-        ${renderBoardPanelCardsHtml(sc, idx, m)}
       </div>
       <div class="ccf-bp-batch">
         <div class="ccf-bp-batch-head">
@@ -2737,8 +3115,74 @@
           <label class="ccf-chk"><input type="checkbox" data-bp-batch="marker"${bs.marker ? ' checked' : ''}> マーカーパネル</label>
         </div>
         <button type="button" class="ccf-btn accent" data-bp="batch-apply" style="width:100%;"${checkedCount ? '' : ' disabled'}>📋 現在の素材をチェック済み（${checkedCount}件）へ一括適用</button>
+      </div>`;
+
+    const mediaSec = renderCollapsibleSec('media', '🖼️ 前景・背景・BGM', mediaBody, {
+      badgeHtml: `<span class="ccf-badge ccf-bp-fold-badge" title="${esc(mediaSummary)}">${esc(mediaSummary)}</span>`
+    });
+
+    return [
+      memoSec,
+      mediaSec,
+      renderGlobalScreensCardHtml(),
+      renderSceneMarkersBlockHtml(sc, idx, m)
+    ].join('');
+  }
+
+  function renderBoardInspectorHtml(selLayers, checkedCount) {
+    const kindLabel = k => k === 'screen' ? 'スクリーン' : k === 'marker' ? 'マーカー' : 'キャラ駒';
+    const sel = selLayers.length === 1 ? selLayers[0].item : null;
+    const selPanelCount = selLayers.filter(l => l.item.kind === 'screen' || l.item.kind === 'marker').length;
+    if (sel) {
+      return `<div class="ccf-bp-inspector">
+      <div class="ccf-muted" style="font-size:.74rem;font-weight:700;">🎛️ ${esc(sel.name || kindLabel(sel.kind))}${sel.locked ? ' <span class="ccf-badge">📌 固定中</span>' : ''}</div>
+      <div class="ccf-bp-props">
+        <label>X <input type="number" data-bp-f="x" value="${sel.x}"></label>
+        <label>Y <input type="number" data-bp-f="y" value="${sel.y}"></label>
+        <label>幅(W) <input type="number" min="16" data-bp-f="width" value="${sel.width}"></label>
+        <label>高さ(H) <input type="number" min="16" data-bp-f="height" value="${sel.height}"></label>
+        <label>Z順 <input type="number" data-bp-f="zIndex" value="${sel.zIndex}"${sel.kind === 'piece' ? ' title="キャラ駒は実質優先度100.5で常に通常パネル(0〜100)より前面に描画されます"' : ''}></label>
+        <label>🏷️ 管理名（ツール用） <input type="text" data-bp-f="name" value="${esc(sel.name)}"></label>
+      </div>
+      <div class="ccf-bp-scale-acts">
+        <span class="ccf-muted" style="font-size:.72rem;">倍率:</span>
+        <button type="button" class="ccf-mini" data-bp="scale-50" data-id="${esc(sel.id)}" title="元画像サイズの50%に設定">50%</button>
+        <button type="button" class="ccf-mini" data-bp="scale-100" data-id="${esc(sel.id)}" title="元画像サイズの100%（等倍）に設定">100%</button>
+        <button type="button" class="ccf-mini" data-bp="fit-board" data-id="${esc(sel.id)}" title="元画像の縦横比を保って盤面内にぴったり収めます">盤面サイズに合わせる</button>
+        <button type="button" class="ccf-mini" data-bp="center-item" data-id="${esc(sel.id)}" title="現在のサイズで盤面中央へ配置">中央に配置</button>
+      </div>
+      <div class="ccf-bp-toggles">
+        <button type="button" class="ccf-btn${sel.locked ? ' active' : ''}" data-bp="pin" data-id="${esc(sel.id)}" aria-pressed="${!!sel.locked}" title="ONで位置・サイズを固定し、パネル上のドラッグで視点移動できるようにします">${sel.locked ? '📌 固定 ON' : '📌 固定'}</button>
+        <button type="button" class="ccf-btn${sel.lockAspect ? ' active' : ''}" data-bp="lock" data-id="${esc(sel.id)}" aria-pressed="${sel.lockAspect}">${sel.lockAspect ? '🔒 比率固定 ON' : '🔓 比率自由'}</button>
+        <button type="button" class="ccf-btn${sel.visible ? ' active' : ''}" data-bp="eye" data-id="${esc(sel.id)}">${sel.visible ? '👁️ 表示' : '🚫 非表示'}</button>
+        ${sel.kind !== 'piece'
+          ? `<button type="button" class="ccf-btn${(sel.zIndex || 0) >= 101 ? ' active' : ''}" data-bp="toggle-z101" data-id="${esc(sel.id)}" title="優先度0（駒より下）と優先度101（駒より上）を切り替えます">${(sel.zIndex || 0) >= 101 ? '🔺 駒より上(101) ⇔ 駒より下(0)' : '🔻 駒より下(0) ⇔ 駒より上(101)'}</button>`
+          : '<span class="ccf-muted" style="font-size:.7rem;">♟️ 駒は実質優先度100.5（最前面）</span>'}
+        <button type="button" class="ccf-mini" data-bp="ztop" data-id="${esc(sel.id)}">⤒ 前面</button>
+        <button type="button" class="ccf-mini" data-bp="zbot" data-id="${esc(sel.id)}">⤓ 背面</button>
+      </div>
+      ${sel.kind === 'marker' ? `<div class="ccf-bp-syncbox">
+        <button type="button" class="ccf-btn accent" data-bp="sync-scenes" data-id="${esc(sel.id)}" style="width:100%;">📌 チェック済みシーン（${checkedCount}件）へ座標同期</button>
+      </div>` : ''}
+    </div>`;
+    }
+    if (selLayers.length > 1) {
+      return `<div class="ccf-bp-inspector">
+      <div class="ccf-muted" style="font-size:.74rem;font-weight:700;">🎛️ ${selLayers.length}件を選択中（未固定要素をドラッグで一括移動・Deleteで削除・右クリックで詳細）</div>
+      ${selPanelCount >= 2 ? `<div class="ccf-bp-syncbox"><button type="button" class="ccf-btn primary" data-bp="combine-panels" style="width:100%;">🧩 選択したパネル(${selPanelCount}枚)を1枚に結合</button></div>` : ''}
+      <div class="ccf-bp-toggles">
+        <button type="button" class="ccf-mini" data-bp="pin-selected">📌 固定切替</button>
+        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="left">左揃え</button>
+        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="hcenter">左右中央</button>
+        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="right">右揃え</button>
+        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="top">上揃え</button>
+        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="vcenter">上下中央</button>
+        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="bottom">下揃え</button>
+        <button type="button" class="ccf-mini danger" data-bp="del-selected">🗑️ 選択削除</button>
       </div>
     </div>`;
+    }
+    return '';
   }
 
   function boardEditorHtml(targetId, inModal) {
@@ -2778,7 +3222,7 @@
         ? `<div class="ccf-bp-paneltext">${esc(it.text)}</div>`
         : '';
       const content = src
-        ? `<img src="${esc(src)}" alt="" draggable="false">${panelText}`
+        ? `<img src="${esc(src)}" alt="" draggable="false" data-bp-img-item="${esc(it.id)}">${panelText}`
         : (it.kind === 'piece'
           ? `<div class="ccf-bp-ph">♟️<span>${esc(it.name)}</span></div>`
           : `<div class="ccf-bp-ph">${panelText}</div>`);
@@ -2821,6 +3265,7 @@
       const originTag = l.origin === 'global' ? '共通' : l.origin === 'board' ? '初期' : 'ｼｰﾝ';
       const prioTag = it.kind === 'piece' ? '100.5' : String(it.zIndex || 0);
       return `<div class="ccf-bp-layer${isSel ? ' sel' : ''}${!it.visible ? ' muted' : ''}" data-bpl="${esc(it.id)}" title="クリックで選択 / Ctrl+クリックで複数選択">
+        <span class="ccf-scn-drag" draggable="true" data-bp-layer-drag="${esc(it.id)}" title="ドラッグして重ね順を並べ替え">⠿</span>
         <button type="button" class="ccf-mini" data-bp="eye" data-id="${esc(it.id)}" title="一時表示/非表示切替">${it.visible ? '👁️' : '🚫'}</button>
         <button type="button" class="ccf-mini${it.locked ? ' active' : ''}" data-bp="pin" data-id="${esc(it.id)}" aria-pressed="${!!it.locked}" title="${it.locked ? '固定中（クリックで固定解除）' : '📌 位置・サイズを固定'}">${it.locked ? '📌固定' : '📌'}</button>
         <span class="ccf-badge">${originTag}:${kindLabel(it.kind)}</span>
@@ -2832,52 +3277,26 @@
       </div>`;
     }).join('') || '<div class="ccf-muted" style="padding:8px;">パネル・駒がありません。上部ボタンから追加してください。</div>';
 
-    const selPanelCount = selLayers.filter(l => l.item.kind === 'screen' || l.item.kind === 'marker').length;
-    const inspectorHtml = sel ? `<div class="ccf-bp-inspector">
-      <div class="ccf-muted" style="font-size:.74rem;font-weight:700;">🎛️ ${esc(sel.name || kindLabel(sel.kind))}${sel.locked ? ' <span class="ccf-badge">📌 固定中</span>' : ''}</div>
-      <div class="ccf-bp-props">
-        <label>X <input type="number" data-bp-f="x" value="${sel.x}"></label>
-        <label>Y <input type="number" data-bp-f="y" value="${sel.y}"></label>
-        <label>幅(W) <input type="number" min="16" data-bp-f="width" value="${sel.width}"></label>
-        <label>高さ(H) <input type="number" min="16" data-bp-f="height" value="${sel.height}"></label>
-        <label>Z順 <input type="number" data-bp-f="zIndex" value="${sel.zIndex}"${sel.kind === 'piece' ? ' title="キャラ駒は実質優先度100.5で常に通常パネル(0〜100)より前面に描画されます"' : ''}></label>
-        <label>🏷️ 管理名（ツール用） <input type="text" data-bp-f="name" value="${esc(sel.name)}"></label>
-        ${sel.kind !== 'piece' ? `<label class="ccf-bp-prop-wide">💬 パネル内テキスト（盤面表示・空欄で非表示） <textarea rows="2" data-bp-f="text" placeholder="空欄で盤面上に文字を表示しない">${esc(sel.text || '')}</textarea></label>` : ''}
-      </div>
-      <div class="ccf-bp-scale-acts">
-        <span class="ccf-muted" style="font-size:.72rem;">倍率:</span>
-        <button type="button" class="ccf-mini" data-bp="scale-50" data-id="${esc(sel.id)}" title="元画像サイズの50%に設定">50%</button>
-        <button type="button" class="ccf-mini" data-bp="scale-100" data-id="${esc(sel.id)}" title="元画像サイズの100%（等倍）に設定">100%</button>
-        <button type="button" class="ccf-mini" data-bp="fit-board" data-id="${esc(sel.id)}" title="元画像の縦横比を保って盤面内にぴったり収めます">盤面サイズに合わせる</button>
-        <button type="button" class="ccf-mini" data-bp="center-item" data-id="${esc(sel.id)}" title="現在のサイズで盤面中央へ配置">中央に配置</button>
-      </div>
-      <div class="ccf-bp-toggles">
-        <button type="button" class="ccf-btn${sel.locked ? ' active' : ''}" data-bp="pin" data-id="${esc(sel.id)}" aria-pressed="${!!sel.locked}" title="ONで位置・サイズを固定し、パネル上のドラッグで視点移動できるようにします">${sel.locked ? '📌 固定 ON' : '📌 固定'}</button>
-        <button type="button" class="ccf-btn${sel.lockAspect ? ' active' : ''}" data-bp="lock" data-id="${esc(sel.id)}" aria-pressed="${sel.lockAspect}">${sel.lockAspect ? '🔒 比率固定 ON' : '🔓 比率自由'}</button>
-        <button type="button" class="ccf-btn${sel.visible ? ' active' : ''}" data-bp="eye" data-id="${esc(sel.id)}">${sel.visible ? '👁️ 表示' : '🚫 非表示'}</button>
-        ${sel.kind !== 'piece'
-          ? `<button type="button" class="ccf-btn${(sel.zIndex || 0) >= 101 ? ' active' : ''}" data-bp="toggle-z101" data-id="${esc(sel.id)}" title="優先度0（駒より下）と優先度101（駒より上）を切り替えます">${(sel.zIndex || 0) >= 101 ? '🔺 駒より上(101) ⇔ 駒より下(0)' : '🔻 駒より下(0) ⇔ 駒より上(101)'}</button>`
-          : '<span class="ccf-muted" style="font-size:.7rem;">♟️ 駒は実質優先度100.5（最前面）</span>'}
-        <button type="button" class="ccf-mini" data-bp="ztop" data-id="${esc(sel.id)}">⤒ 前面</button>
-        <button type="button" class="ccf-mini" data-bp="zbot" data-id="${esc(sel.id)}">⤓ 背面</button>
-      </div>
-      ${sel.kind === 'marker' ? `<div class="ccf-bp-syncbox">
-        <button type="button" class="ccf-btn accent" data-bp="sync-scenes" data-id="${esc(sel.id)}" style="width:100%;">📌 チェック済みシーン（${checkedCount}件）へ座標同期</button>
-      </div>` : ''}
-    </div>` : (selLayers.length > 1 ? `<div class="ccf-bp-inspector">
-      <div class="ccf-muted" style="font-size:.74rem;font-weight:700;">🎛️ ${selLayers.length}件を選択中（未固定要素をドラッグで一括移動・Deleteで削除・右クリックで詳細）</div>
-      ${selPanelCount >= 2 ? `<div class="ccf-bp-syncbox"><button type="button" class="ccf-btn primary" data-bp="combine-panels" style="width:100%;">🧩 選択したパネル(${selPanelCount}枚)を1枚に結合</button></div>` : ''}
-      <div class="ccf-bp-toggles">
-        <button type="button" class="ccf-mini" data-bp="pin-selected">📌 固定切替</button>
-        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="left">左揃え</button>
-        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="hcenter">左右中央</button>
-        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="right">右揃え</button>
-        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="top">上揃え</button>
-        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="vcenter">上下中央</button>
-        <button type="button" class="ccf-mini" data-bp="align-sel" data-align="bottom">下揃え</button>
-        <button type="button" class="ccf-mini danger" data-bp="del-selected">🗑️ 選択削除</button>
-      </div>
-    </div>` : '');
+    const inspectorHtml = renderBoardInspectorHtml(selLayers, checkedCount);
+    const curSceneBadgeText = sc ? `#${scIdx + 1} ${sc.title || '無題のシーン'}` : '🌐 共通盤面';
+    const scnListBody = `<div class="ccf-bp-scnlist-acts">
+      <button type="button" class="ccf-mini" data-bp="add-empty-scn">＋空シーン</button>
+      <button type="button" class="ccf-mini" data-bp="add-sel-scn" title="左のPDF/TXT選択テキストから新規シーンを作成">📥選択テキスト</button>
+      <button type="button" class="ccf-mini" data-bp="dup-cur-scn"${sc ? '' : ' disabled'} title="選択中のシーンを丸ごと複製してすぐ下に挿入">📋複製</button>
+      <button type="button" class="ccf-mini danger" data-bp="del-cur-scn"${sc ? '' : ' disabled'} title="選択中のシーンを削除 (Ctrl+Zで元に戻せます)">🗑️削除</button>
+      <button type="button" class="ccf-mini" data-bp="chk-all-scn"${scenes.length ? '' : ' disabled'}>${allChecked ? '☑解除' : '☐全選択'}</button>
+      <button type="button" class="ccf-mini danger" data-bp="del-chk-scn"${checkedCount ? '' : ' disabled'}>🗑️選択削除(${checkedCount})</button>
+    </div>
+    <div class="ccf-bp-scnlist">${sceneListHtml}</div>`;
+    const scnListSec = renderCollapsibleSec('scnlist', `🎬 シーン一覧（${scenes.length}件）`, scnListBody, {
+      badgeHtml: `<span class="ccf-badge ccf-bp-fold-badge" data-bp-cur-scn-badge="1" title="${esc(curSceneBadgeText)}">${esc(curSceneBadgeText)}</span>`
+    });
+    const layersSec = renderCollapsibleSec(
+      'layers',
+      '📚 レイヤー（重ね順・表示👁️・比率固定🔒・座標/サイズ）',
+      `<div class="ccf-bp-layers">${layerRows}</div><div class="ccf-bp-inspector-host" data-bp-inspector-host="1">${inspectorHtml}</div>`,
+      { badgeHtml: `<span class="ccf-badge">${layers.length}件</span>` }
+    );
 
     const canUndo = window.AppHistory && window.AppHistory.canUndo ? window.AppHistory.canUndo() : false;
     const canRedo = window.AppHistory && window.AppHistory.canRedo ? window.AppHistory.canRedo() : false;
@@ -2913,35 +3332,16 @@
         <div class="ccf-bp-stage-wrap${UI.marqueeMode ? ' marquee-mode' : ''}">
           ${safeBgCss ? `<div class="ccf-bp-stage-bg" style="background-image:url('${esc(safeBgCss)}');"></div>` : ''}
           <div class="ccf-bp-canvas" data-bp-canvas="1" style="width:${b.width}px;height:${b.height}px;--ccf-grid:${b.grid}px;">
-            <div class="ccf-bp-fg-layer">${activeFgSrc ? `<img class="ccf-bp-fg-img fit-${fgFit}" src="${esc(activeFgSrc)}" alt="" draggable="false">` : ''}</div>
+            <div class="ccf-bp-fg-layer">${activeFgSrc ? `<img class="ccf-bp-fg-img fit-${fgFit}" src="${esc(activeFgSrc)}" alt="" draggable="false" data-bp-img-fg="1">` : ''}</div>
             <div class="ccf-bp-grid-layer${b.showGrid ? ' grid' : ''}"></div>
             ${stageItems}
             <div class="ccf-bp-guides" data-bp-guides="1"></div>
           </div>
         </div>
         <div class="ccf-bp-side">
-          <div class="ccf-bp-sec">
-            <div class="ccf-bp-sechead" style="display:flex;align-items:center;justify-content:space-between;gap:4px;flex-wrap:wrap;">
-              <b>🎬 シーン切り替え一覧（${scenes.length}件）</b>
-              <div style="display:flex;gap:4px;flex-wrap:wrap;">
-                <button type="button" class="ccf-mini" data-bp="add-empty-scn">＋空シーン</button>
-                <button type="button" class="ccf-mini" data-bp="add-sel-scn" title="左のPDF/TXT選択テキストから新規シーンを作成">📥選択テキストから追加</button>
-                <button type="button" class="ccf-mini" data-bp="dup-cur-scn"${sc ? '' : ' disabled'} title="選択中のシーンを丸ごと複製してすぐ下に挿入">📋 シーンを複製</button>
-                <button type="button" class="ccf-mini danger" data-bp="del-cur-scn"${sc ? '' : ' disabled'} title="選択中のシーンを削除 (Ctrl+Zで元に戻せます)">🗑️ このシーンを削除</button>
-                <button type="button" class="ccf-mini" data-bp="chk-all-scn"${scenes.length ? '' : ' disabled'}>${allChecked ? '☑解除' : '☐全選択'}</button>
-                <button type="button" class="ccf-mini danger" data-bp="del-chk-scn"${checkedCount ? '' : ' disabled'}>🗑️選択削除(${checkedCount})</button>
-              </div>
-            </div>
-            <div class="ccf-bp-scnlist">${sceneListHtml}</div>
-          </div>
-
+          ${scnListSec}
           ${renderBoardMiddlePanel(sc, scIdx, checkedCount)}
-
-          <div class="ccf-bp-sec">
-            <div class="ccf-bp-sechead"><b>📚 レイヤー（重ね順・表示👁️・比率固定🔒・座標/サイズ）</b></div>
-            <div class="ccf-bp-layers">${layerRows}</div>
-            ${inspectorHtml}
-          </div>
+          ${layersSec}
         </div>
       </div>
     </div>`;
@@ -2994,7 +3394,7 @@
     const sc = clampBoardZoom(UI.zoomScale);
     UI.zoomScale = sc;
     cv.style.transformOrigin = '0 0';
-    cv.style.transform = `translate(${UI.panX}px, ${UI.panY}px) scale(${sc})`;
+    cv.style.transform = `translate3d(${UI.panX}px, ${UI.panY}px, 0) scale(${sc})`;
     cv.style.setProperty('--ccf-inv-zoom', String(1 / sc));
     cv.dataset.scale = String(sc);
     const pct = Math.round(sc * 100);
@@ -3014,9 +3414,9 @@
     const my = (clientY != null) ? (clientY - rect.top) : (wrap.clientHeight / 2);
     const bx = (mx - UI.panX) / prev;
     const by = (my - UI.panY) / prev;
-    UI.zoomScale = Math.round(next * 1000) / 1000;
-    UI.panX = Math.round(mx - bx * UI.zoomScale);
-    UI.panY = Math.round(my - by * UI.zoomScale);
+    UI.zoomScale = Math.round(next * 10000) / 10000;
+    UI.panX = Math.round((mx - bx * UI.zoomScale) * 100) / 100;
+    UI.panY = Math.round((my - by * UI.zoomScale) * 100) / 100;
     UI.cameraFitted = true;
     applyBoardCanvasScale(container, false);
   }
@@ -3590,7 +3990,7 @@
     menu.className = 'ccf-bp-dropdown';
     const npcHtml = npcs.length ? `<div class="ccf-bp-menu-sub">👤 登録NPC（${npcs.length}）</div>` + npcs.map((npc, idx) => {
       const head = (npc.images && npc.images[0]) || {};
-      const src = head.dataUrl || npc.iconDataUrl || fileUrl(head.filePath || head.path || npc.imagePath);
+      const src = fileUrl(head.dataUrl || npc.iconDataUrl) || fileUrl(head.filePath || head.path || npc.imagePath);
       const isPlaced = placedIds.has(npc.id);
       return `<button type="button" class="ccf-bp-menu-item" data-npc-pick-idx="${idx}">
         ${src ? `<img class="ccf-bp-menu-thumb" src="${esc(src)}" alt="">` : '<span>♟️</span>'}
@@ -3799,6 +4199,9 @@
         if (nextName === null) return;
         cp('管理名を編集');
         it.name = String(nextName).trim() || it.name;
+        it._nameSyncedFromText = false;
+        it._manualName = true;
+        it._origName = it.name;
         CCF.saveProject();
         return refreshBoardContainers();
       }
@@ -3806,7 +4209,7 @@
         const nextText = await promptTextModal('💬 パネル内テキスト（空欄で盤面上に非表示）', it.text || '');
         if (nextText === null) return;
         cp('パネル内テキストを編集');
-        it.text = String(nextText);
+        applyPanelTextAndSyncName(it, nextText);
         CCF.saveProject();
         return refreshBoardContainers();
       }
@@ -3842,6 +4245,68 @@
     });
 
     positionFloatingMenu(menu, clientX, clientY);
+  }
+
+  function reorderBoardLayerByDrag(targetId, fromId, toId, after) {
+    if (!fromId || !toId || fromId === toId) return false;
+    const displayList = collectBoardLayers(targetId).slice().reverse().map(l => l.item);
+    const fromIdx = displayList.findIndex(x => x.id === fromId);
+    const rawIdx = displayList.findIndex(x => x.id === toId);
+    if (fromIdx < 0 || rawIdx < 0 || fromIdx === rawIdx) return false;
+
+    let toIdx = after
+      ? (fromIdx < rawIdx ? rawIdx : rawIdx + 1)
+      : (fromIdx < rawIdx ? rawIdx - 1 : rawIdx);
+    toIdx = Math.max(0, Math.min(displayList.length - 1, toIdx));
+    if (toIdx === fromIdx) return false;
+
+    const moved = displayList[fromIdx];
+    const nextOrder = displayList.slice();
+    nextOrder.splice(fromIdx, 1);
+    nextOrder.splice(toIdx, 0, moved);
+
+    cp('レイヤーの重ね順をドラッグ変更');
+
+    if (moved.kind === 'piece') {
+      const piecesDesc = nextOrder.filter(x => x.kind === 'piece');
+      piecesDesc.slice().reverse().forEach((p, i) => { p.zIndex = i; });
+    } else {
+      const firstPieceIdx = nextOrder.findIndex(x => x.kind === 'piece');
+      let lastPieceIdx = -1;
+      for (let i = nextOrder.length - 1; i >= 0; i--) {
+        if (nextOrder[i].kind === 'piece') { lastPieceIdx = i; break; }
+      }
+
+      let movedFront = (moved.zIndex || 0) >= 101;
+      if (firstPieceIdx >= 0) {
+        if (toIdx < firstPieceIdx) movedFront = true;
+        else if (toIdx > lastPieceIdx) movedFront = false;
+        else movedFront = !after;
+      } else {
+        const above = toIdx > 0 ? nextOrder[toIdx - 1] : null;
+        const below = toIdx + 1 < nextOrder.length ? nextOrder[toIdx + 1] : null;
+        if (below && (below.zIndex || 0) >= 101) movedFront = true;
+        else if (above && (above.zIndex || 0) < 101) movedFront = false;
+      }
+
+      const frontDesc = [];
+      const normalDesc = [];
+      nextOrder.forEach(item => {
+        if (item.kind === 'piece') return;
+        const isFront = item === moved ? movedFront : ((item.zIndex || 0) >= 101);
+        if (isFront) frontDesc.push(item);
+        else normalDesc.push(item);
+      });
+
+      frontDesc.slice().reverse().forEach((p, i) => { p.zIndex = 101 + i; });
+      const nLen = normalDesc.length;
+      const nStart = nLen > 101 ? (101 - nLen) : 0;
+      normalDesc.slice().reverse().forEach((p, i) => { p.zIndex = nStart + i; });
+    }
+
+    CCF.saveProject();
+    refreshBoardContainers();
+    return true;
   }
 
   function wireBoardInteractions(container, targetId, inModal) {
@@ -3882,12 +4347,37 @@
     let marqueeDrag = null;
     let spaceHeld = false;
     let candDebounce = null;
+    let moveRaf = 0;
+    let pendingMove = null;
+    let zoomRaf = 0;
+    let zoomTargetScale = null;
+    let zoomAnchorX = 0;
+    let zoomAnchorY = 0;
     const activeTarget = () => UI.boardTarget || targetId;
     const isEditable = el => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+    const stopSmoothZoom = () => {
+      if (zoomRaf) { cancelAnimationFrame(zoomRaf); zoomRaf = 0; }
+      zoomTargetScale = null;
+    };
 
     const syncSelectionDom = () => {
+      let singleUnlockedId = '';
+      if (UI.selectedIds.size === 1) {
+        const onlyId = [...UI.selectedIds][0];
+        const hit = findLayerById(activeTarget(), onlyId);
+        if (hit && !hit.item.locked) singleUnlockedId = onlyId;
+      }
       cv.querySelectorAll('[data-bpid]').forEach(el => {
-        el.classList.toggle('sel', UI.selectedIds.has(el.dataset.bpid));
+        const id = el.dataset.bpid;
+        const isSel = UI.selectedIds.has(id);
+        el.classList.toggle('sel', isSel);
+        const wantHandles = isSel && id === singleUnlockedId;
+        const existing = el.querySelectorAll(':scope > .ccf-bp-h');
+        if (wantHandles && existing.length === 0) {
+          el.insertAdjacentHTML('beforeend', '<span class="ccf-bp-h nw" data-bph="nw"></span><span class="ccf-bp-h ne" data-bph="ne"></span><span class="ccf-bp-h sw" data-bph="sw"></span><span class="ccf-bp-h se" data-bph="se"></span>');
+        } else if (!wantHandles && existing.length > 0) {
+          existing.forEach(h => h.remove());
+        }
       });
       container.querySelectorAll('[data-bpl]').forEach(el => {
         el.classList.toggle('sel', UI.selectedIds.has(el.dataset.bpl));
@@ -3895,6 +4385,20 @@
       container.querySelectorAll('[data-bp-midsel]').forEach(el => {
         el.classList.toggle('sel', UI.selectedIds.has(el.dataset.bpMidsel));
       });
+    };
+
+    const syncInspectorDom = () => {
+      const host = container.querySelector('[data-bp-inspector-host]');
+      if (!host) return;
+      const layers = collectBoardLayers(activeTarget());
+      const selLayers = syncSelectionToLayers(layers);
+      const checkedCount = (S.proj && Array.isArray(S.proj.scenes)) ? S.proj.scenes.filter(s => s.checked).length : 0;
+      host.innerHTML = renderBoardInspectorHtml(selLayers, checkedCount);
+    };
+
+    const syncSelectionAndInspector = () => {
+      syncSelectionDom();
+      syncInspectorDom();
     };
 
     const collectOtherBoxes = excludeIds => {
@@ -3913,6 +4417,7 @@
       const itemEl = e.target.closest('[data-bpid]');
       const wantPan = isMid || (isLeft && spaceHeld);
       const startPan = opts => {
+        stopSmoothZoom();
         panDrag = Object.assign({
           startX: e.clientX,
           startY: e.clientY,
@@ -3920,7 +4425,7 @@
           origPanY: UI.panY,
           moved: false
         }, opts || {});
-        wrap.classList.add('panning');
+        wrap.classList.add('panning', 'is-dragging-board');
       };
       if (wantPan) {
         e.preventDefault();
@@ -4076,7 +4581,7 @@
         const id = itemEl.dataset.bpid;
         if (!UI.selectedIds.has(id)) {
           setSingleSelection(id);
-          refreshBoardContainers();
+          syncSelectionAndInspector();
         }
         openBoardContextMenu(e.clientX, e.clientY, tId, id);
       } else {
@@ -4090,7 +4595,30 @@
       closeActiveMenu();
       const delta = Math.max(-240, Math.min(240, e.deltaY));
       const factor = Math.exp(-delta * 0.0018);
-      zoomBoardTo(container, UI.zoomScale * factor, e.clientX, e.clientY);
+      const baseScale = zoomTargetScale != null ? zoomTargetScale : clampBoardZoom(UI.zoomScale);
+      zoomTargetScale = clampBoardZoom(baseScale * factor);
+      zoomAnchorX = e.clientX;
+      zoomAnchorY = e.clientY;
+      if (!zoomRaf) {
+        const stepZoom = () => {
+          zoomRaf = 0;
+          if (zoomTargetScale == null || !container.isConnected) {
+            zoomTargetScale = null;
+            return;
+          }
+          const cur = clampBoardZoom(UI.zoomScale);
+          const diff = zoomTargetScale - cur;
+          if (Math.abs(diff) < 0.002) {
+            const finalScale = zoomTargetScale;
+            zoomTargetScale = null;
+            zoomBoardTo(container, finalScale, zoomAnchorX, zoomAnchorY);
+            return;
+          }
+          zoomBoardTo(container, cur + diff * 0.28, zoomAnchorX, zoomAnchorY);
+          zoomRaf = requestAnimationFrame(stepZoom);
+        };
+        zoomRaf = requestAnimationFrame(stepZoom);
+      }
     };
     wrap.addEventListener('wheel', onWheel, { passive: false });
 
@@ -4129,7 +4657,7 @@
           closeActiveMenu();
         } else if (!inModal && UI.selectedIds && UI.selectedIds.size) {
           setSelectionIds([], '');
-          refreshBoardContainers();
+          syncSelectionAndInspector();
         }
       }
     };
@@ -4144,10 +4672,15 @@
       wrap.classList.remove('space-pan');
     };
 
-    const onMove = e => {
+    const flushMove = () => {
+      moveRaf = 0;
+      const ev = pendingMove;
+      pendingMove = null;
+      if (!ev) return;
+
       if (panDrag) {
-        const dx = e.clientX - panDrag.startX;
-        const dy = e.clientY - panDrag.startY;
+        const dx = ev.clientX - panDrag.startX;
+        const dy = ev.clientY - panDrag.startY;
         if (!panDrag.moved && Math.hypot(dx, dy) > 2) panDrag.moved = true;
         UI.panX = Math.round(panDrag.origPanX + dx);
         UI.panY = Math.round(panDrag.origPanY + dy);
@@ -4156,34 +4689,36 @@
         return;
       }
       if (marqueeDrag) {
-        const dScreen = Math.hypot(e.clientX - marqueeDrag.startClientX, e.clientY - marqueeDrag.startClientY);
+        const dScreen = Math.hypot(ev.clientX - marqueeDrag.startClientX, ev.clientY - marqueeDrag.startClientY);
         if (!marqueeDrag.moved && dScreen > 4) {
           marqueeDrag.moved = true;
+          wrap.classList.add('is-dragging-board');
           const bx = document.createElement('div');
           bx.className = 'ccf-bp-marquee';
           wrap.appendChild(bx);
           marqueeDrag.boxEl = bx;
+          marqueeDrag.wrapRect = wrap.getBoundingClientRect();
+          marqueeDrag.layers = collectBoardLayers(activeTarget());
         }
         if (!marqueeDrag.moved) return;
-        const wr = wrap.getBoundingClientRect();
-        const x1 = Math.min(marqueeDrag.startClientX, e.clientX) - wr.left;
-        const y1 = Math.min(marqueeDrag.startClientY, e.clientY) - wr.top;
-        const x2 = Math.max(marqueeDrag.startClientX, e.clientX) - wr.left;
-        const y2 = Math.max(marqueeDrag.startClientY, e.clientY) - wr.top;
+        const wr = marqueeDrag.wrapRect || wrap.getBoundingClientRect();
+        const x1 = Math.min(marqueeDrag.startClientX, ev.clientX) - wr.left;
+        const y1 = Math.min(marqueeDrag.startClientY, ev.clientY) - wr.top;
+        const x2 = Math.max(marqueeDrag.startClientX, ev.clientX) - wr.left;
+        const y2 = Math.max(marqueeDrag.startClientY, ev.clientY) - wr.top;
         marqueeDrag.boxEl.style.left = x1 + 'px';
         marqueeDrag.boxEl.style.top = y1 + 'px';
         marqueeDrag.boxEl.style.width = (x2 - x1) + 'px';
         marqueeDrag.boxEl.style.height = (y2 - y1) + 'px';
 
-        const cr = cv.getBoundingClientRect();
         const sc = Number(cv.dataset.scale || UI.zoomScale || 1) || 1;
-        const cx1 = (Math.min(marqueeDrag.startClientX, e.clientX) - cr.left) / sc;
-        const cy1 = (Math.min(marqueeDrag.startClientY, e.clientY) - cr.top) / sc;
-        const cx2 = (Math.max(marqueeDrag.startClientX, e.clientX) - cr.left) / sc;
-        const cy2 = (Math.max(marqueeDrag.startClientY, e.clientY) - cr.top) / sc;
+        const cx1 = (x1 - UI.panX) / sc;
+        const cy1 = (y1 - UI.panY) / sc;
+        const cx2 = (x2 - UI.panX) / sc;
+        const cy2 = (y2 - UI.panY) / sc;
 
         const nextSel = marqueeDrag.additive ? new Set(marqueeDrag.baseIds) : new Set();
-        collectBoardLayers(activeTarget()).forEach(l => {
+        (marqueeDrag.layers || collectBoardLayers(activeTarget())).forEach(l => {
           const it = l.item;
           if (it.visible === false && !UI.showHiddenGhost) return;
           if (it.x < cx2 && (it.x + it.width) > cx1 && it.y < cy2 && (it.y + it.height) > cy1) {
@@ -4196,10 +4731,11 @@
         return;
       }
       if (!drag || drag.needRefreshOnly) return;
-      const dx = (e.clientX - drag.startX) / drag.scale;
-      const dy = (e.clientY - drag.startY) / drag.scale;
+      const dx = (ev.clientX - drag.startX) / drag.scale;
+      const dy = (ev.clientY - drag.startY) / drag.scale;
       if (!drag.moved && Math.hypot(dx, dy) > 2) {
         drag.moved = true;
+        wrap.classList.add('is-dragging-board');
         cp(drag.mode === 'resize' ? '盤面要素のリサイズ' : (drag.items.length > 1 ? '選択要素を一括移動' : '盤面要素の移動'));
       }
       if (!drag.moved) return;
@@ -4241,7 +4777,20 @@
       }
     };
 
+    const onMove = e => {
+      if (!panDrag && !marqueeDrag && (!drag || drag.needRefreshOnly)) return;
+      pendingMove = { clientX: e.clientX, clientY: e.clientY };
+      if (!moveRaf) moveRaf = requestAnimationFrame(flushMove);
+    };
+
     const onUp = () => {
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; }
+      if (pendingMove && (panDrag || marqueeDrag || (drag && !drag.needRefreshOnly))) {
+        flushMove();
+      }
+      pendingMove = null;
+      wrap.classList.remove('is-dragging-board');
+
       if (panDrag) {
         const pd = panDrag;
         panDrag = null;
@@ -4259,10 +4808,10 @@
             } else {
               setSingleSelection(pd.clickItemId);
             }
-            refreshBoardContainers();
+            syncSelectionAndInspector();
           } else if (pd.clearOnClick && UI.selectedIds.size) {
             setSelectionIds([], '');
-            refreshBoardContainers();
+            syncSelectionAndInspector();
           }
         }
         return;
@@ -4288,15 +4837,19 @@
           }
         }
         marqueeDrag = null;
-        refreshBoardContainers();
+        syncSelectionAndInspector();
         return;
       }
       if (!drag) return;
       renderSmartGuides(guidesEl, null);
       const wasMoved = !!drag.moved;
       drag = null;
-      if (wasMoved) CCF.saveProject();
-      refreshBoardContainers();
+      if (wasMoved) {
+        CCF.saveProject();
+        refreshBoardContainers();
+      } else {
+        syncSelectionAndInspector();
+      }
     };
 
     const onClick = async e => {
@@ -4345,9 +4898,9 @@
         const act = b.dataset.bp, tId = activeTarget(), id = b.dataset.id || UI.selectedItemId;
         if (act === 'open-modal') return openBoardModal(tId);
         if (act === 'close-modal') return closeBoardModal();
-        if (act === 'zoom-in') { zoomBoardTo(container, UI.zoomScale * 1.15, null, null); return; }
-        if (act === 'zoom-out') { zoomBoardTo(container, UI.zoomScale / 1.15, null, null); return; }
-        if (act === 'zoom-fit') { applyBoardCanvasScale(container, true); return; }
+        if (act === 'zoom-in') { stopSmoothZoom(); zoomBoardTo(container, UI.zoomScale * 1.15, null, null); return; }
+        if (act === 'zoom-out') { stopSmoothZoom(); zoomBoardTo(container, UI.zoomScale / 1.15, null, null); return; }
+        if (act === 'zoom-fit') { stopSmoothZoom(); applyBoardCanvasScale(container, true); return; }
         if (act === 'marquee-mode') {
           UI.marqueeMode = !UI.marqueeMode;
           wrap.classList.toggle('marquee-mode', UI.marqueeMode);
@@ -4434,20 +4987,23 @@
           CCF.saveProject();
           return refreshBoardContainers();
         }
-        if (act === 'open-split-editor') return openSceneSplitEditorModal(tId);
+        const memoId = b.dataset.memoScnId || (tId !== 'global' ? tId : (UI.memoSceneId || (S.proj.scenes[0] && S.proj.scenes[0].id) || ''));
+        if (act === 'open-split-editor') return openSceneSplitEditorModal(memoId);
         if (act === 'split-cursor') {
-          const ta = container.querySelector(`[data-bp-scn-text="${CSS.escape ? CSS.escape(tId) : tId}"]`) || container.querySelector('.ccf-bp-scn-text');
-          return splitSceneAtCursorById(tId, ta);
+          const escMid = CSS.escape ? CSS.escape(memoId) : memoId;
+          const ta = container.querySelector(`[data-bp-scn-text="${escMid}"]`) || container.querySelector('.ccf-bp-scn-text');
+          return splitSceneAtCursorById(memoId, ta);
         }
         if (act === 'insert-delim') {
-          const ta = container.querySelector('.ccf-bp-scn-text');
-          return insertDelimiterInTextarea(tId, ta);
+          const escMid = CSS.escape ? CSS.escape(memoId) : memoId;
+          const ta = container.querySelector(`[data-bp-scn-text="${escMid}"]`) || container.querySelector('.ccf-bp-scn-text');
+          return insertDelimiterInTextarea(memoId, ta);
         }
-        if (act === 'split-delim') return splitSceneAtDelimitersById(tId);
-        if (act === 'append-sel') return applySelectionToScene(tId, 'append');
-        if (act === 'replace-sel') return applySelectionToScene(tId, 'replace');
+        if (act === 'split-delim') return splitSceneAtDelimitersById(memoId);
+        if (act === 'append-sel') return applySelectionToScene(memoId, 'append');
+        if (act === 'replace-sel') return applySelectionToScene(memoId, 'replace');
         if (act === 'calc-cands') {
-          const sc = getBoardTargetScene(tId);
+          const sc = getBoardTargetScene(memoId);
           if (sc) { computeCandidatesForScene(sc, getMatchSources()); refreshBoardContainers(); say('✨ 素材候補を更新しました'); }
           return;
         }
@@ -4490,12 +5046,34 @@
         return;
       }
 
+      const foldHead = e.target.closest('[data-bp-fold]');
+      if (foldHead && !e.target.closest('button,input,select,a')) {
+        e.stopPropagation();
+        const key = foldHead.dataset.bpFold;
+        if (!key) return;
+        UI.sideFold = UI.sideFold || loadSideFold();
+        const nextCollapsed = !UI.sideFold[key];
+        UI.sideFold[key] = nextCollapsed;
+        saveSideFold();
+        const sec = foldHead.closest('.ccf-bp-sec');
+        if (sec) sec.classList.toggle('is-collapsed', nextCollapsed);
+        foldHead.setAttribute('aria-expanded', String(!nextCollapsed));
+        const ico = foldHead.querySelector('.ccf-bp-fold-ico');
+        if (ico) ico.textContent = nextCollapsed ? '▸' : '▾';
+        return;
+      }
+
       const pickRow = e.target.closest('[data-bp-pick]');
       if (pickRow) {
         e.stopPropagation();
         setBoardTarget(pickRow.dataset.bpPick);
         setSelectionIds([], '');
         return refreshBoardContainers();
+      }
+
+      if (e.target.closest('[data-bp-panel-text]')) {
+        e.stopPropagation();
+        return;
       }
 
       const midRow = e.target.closest('[data-bp-midsel]');
@@ -4513,7 +5091,13 @@
         } else {
           setSingleSelection(mid);
         }
-        return refreshBoardContainers();
+        syncSelectionAndInspector();
+        return;
+      }
+
+      if (e.target.closest('[data-bp-layer-drag]')) {
+        e.stopPropagation();
+        return;
       }
 
       const lrow = e.target.closest('[data-bpl]');
@@ -4531,11 +5115,23 @@
         } else {
           setSingleSelection(lid);
         }
-        refreshBoardContainers();
+        syncSelectionAndInspector();
       }
     };
 
     const onChange = e => {
+      const memoScnSel = e.target.closest('[data-bp-memo-scnsel]');
+      if (memoScnSel) {
+        e.stopPropagation();
+        UI.memoSceneId = memoScnSel.value || '';
+        return refreshBoardContainers();
+      }
+      const panelTxtEl = e.target.closest('[data-bp-panel-text]');
+      if (panelTxtEl) {
+        e.stopPropagation();
+        panelTxtEl._cpDone = false;
+        return;
+      }
       const dimInp = e.target.closest('[data-bp-board-dim]');
       if (dimInp) {
         const b = S.proj.board;
@@ -4566,7 +5162,7 @@
         const sc = S.proj.scenes.find(s => s.id === bgmVolNum.dataset.bgmScnid);
         if (sc && sc.bgm) {
           cp('BGM音量変更');
-          applyBgmVolumeLive(sc, bgmVolNum.value, bgmVolNum);
+          applyBgmVolumeLive(sc, bgmVolNum.value, bgmVolNum, { immediate: true });
         }
         return;
       }
@@ -4604,8 +5200,13 @@
         cp('盤面プロパティ編集');
         const k = f.dataset.bpF;
         const it = hit.item;
-        if (k === 'name') it.name = f.value;
-        else if (k === 'text') it.text = f.value;
+        if (k === 'name') {
+          it.name = f.value;
+          it._nameSyncedFromText = false;
+          it._manualName = true;
+          it._origName = it.name;
+        }
+        else if (k === 'text') applyPanelTextAndSyncName(it, f.value);
         else {
           const val = Math.round(Number(f.value) || 0);
           if ((k === 'width' || k === 'height') && it.lockAspect && it.width > 0 && it.height > 0) {
@@ -4623,15 +5224,76 @@
     };
 
     const onInput = e => {
+      const panelTxtInp = e.target.closest('[data-bp-panel-text]');
+      if (panelTxtInp) {
+        e.stopPropagation();
+        const pid = panelTxtInp.dataset.bpPanelText;
+        const hit = pid ? findLayerById(activeTarget(), pid) : null;
+        if (!hit) return;
+        const it = hit.item;
+        if (!panelTxtInp._cpDone) {
+          cp('パネル内テキストを編集');
+          panelTxtInp._cpDone = true;
+        }
+        const val = panelTxtInp.value;
+        const res = applyPanelTextAndSyncName(it, val);
+        const escId = CSS.escape ? CSS.escape(it.id) : it.id;
+
+        const stageEl = cv.querySelector(`[data-bpid="${escId}"]`);
+        if (stageEl) {
+          let ptEl = stageEl.querySelector('.ccf-bp-paneltext');
+          if (String(val).trim()) {
+            if (!ptEl) {
+              ptEl = document.createElement('div');
+              ptEl.className = 'ccf-bp-paneltext';
+              const ph = stageEl.querySelector('.ccf-bp-ph');
+              if (ph) ph.appendChild(ptEl);
+              else {
+                const img = stageEl.querySelector('img');
+                if (img && img.nextSibling) stageEl.insertBefore(ptEl, img.nextSibling);
+                else stageEl.appendChild(ptEl);
+              }
+            }
+            ptEl.textContent = val;
+          } else if (ptEl) {
+            ptEl.remove();
+          }
+          if (res.nameChanged) {
+            const kLbl = it.kind === 'screen' ? 'スクリーン' : it.kind === 'marker' ? 'マーカー' : 'キャラ駒';
+            stageEl.title = `${res.dispName} (${kLbl})${it.locked ? ' [固定中]' : ''}`;
+          }
+        }
+        if (res.nameChanged) {
+          container.querySelectorAll(`[data-bp-mk-name="${escId}"]`).forEach(el => {
+            el.textContent = res.dispName;
+            el.title = res.dispName;
+          });
+          container.querySelectorAll(`[data-bpl="${escId}"] .ccf-bp-lname`).forEach(el => {
+            el.textContent = res.dispName;
+            el.title = res.dispName;
+          });
+          if (UI.selectedIds.size === 1 && UI.selectedIds.has(it.id)) {
+            const nameInp = container.querySelector('[data-bp-f="name"]');
+            if (nameInp && nameInp !== document.activeElement) nameInp.value = it.name;
+            const inspTitle = container.querySelector('.ccf-bp-inspector > .ccf-muted');
+            if (inspTitle) {
+              inspTitle.innerHTML = `🎛️ ${esc(res.dispName)}${it.locked ? ' <span class="ccf-badge">📌 固定中</span>' : ''}`;
+            }
+          }
+        }
+        CCF.saveProject();
+        return;
+      }
       const zSlider = e.target.closest('[data-bp-zoom-slider]');
       if (zSlider) {
+        stopSmoothZoom();
         zoomBoardTo(container, Number(zSlider.value) / 100, null, null);
         return;
       }
       const bgmVolEl = e.target.closest('[data-bgm-vol-range],[data-bgm-vol-num]');
       if (bgmVolEl) {
         const sc = S.proj.scenes.find(s => s.id === bgmVolEl.dataset.bgmScnid);
-        if (sc && sc.bgm) applyBgmVolumeLive(sc, bgmVolEl.value, bgmVolEl);
+        if (sc && sc.bgm) applyBgmVolumeLive(sc, bgmVolEl.value, bgmVolEl, { immediate: false });
         return;
       }
       const tInp = e.target.closest('[data-bp-scn-title]');
@@ -4640,8 +5302,25 @@
         if (!sc) return;
         sc.title = tInp.value;
         invalidateCandidate(sc);
+        const sIdx = S.proj.scenes.findIndex(s => s.id === sc.id);
+        const lbl = sIdx >= 0 ? `#${sIdx + 1} ${sc.title || '無題のシーン'}` : (sc.title || '無題のシーン');
         const rowName = container.querySelector(`[data-bp-pick="${sc.id}"] .ccf-bp-scn-name`);
         if (rowName) rowName.textContent = sc.title || '無題のシーン';
+        const badgeEl = container.querySelector('[data-bp-cur-scn-badge]');
+        if (badgeEl && activeTarget() === sc.id) {
+          badgeEl.textContent = lbl;
+          badgeEl.title = lbl;
+        }
+        const memoSel = container.querySelector('[data-bp-memo-scnsel]');
+        if (memoSel) {
+          const opt = Array.from(memoSel.options).find(o => o.value === sc.id);
+          if (opt) opt.textContent = lbl;
+        }
+        const memoBadge = container.querySelector('[data-bp-memo-badge]');
+        if (memoBadge && activeTarget() === 'global') {
+          memoBadge.textContent = lbl;
+          memoBadge.title = lbl;
+        }
         CCF.saveProject();
         clearTimeout(candDebounce);
         candDebounce = setTimeout(() => updateBoardCandidatesHost(container, sc), 450);
@@ -4670,14 +5349,36 @@
     };
 
     let dragScnIdx = -1;
+    let dragLayerId = '';
     const clearScnDropMarks = () => {
       container.querySelectorAll('.ccf-bp-scn-row.drag-over-top,.ccf-bp-scn-row.drag-over-bot,.ccf-bp-scn-row.is-dragging').forEach(r => {
         r.classList.remove('drag-over-top', 'drag-over-bot', 'is-dragging');
       });
     };
+    const clearLayerDropMarks = () => {
+      container.querySelectorAll('.ccf-bp-layer.drag-over-top,.ccf-bp-layer.drag-over-bot,.ccf-bp-layer.is-dragging').forEach(r => {
+        r.classList.remove('drag-over-top', 'drag-over-bot', 'is-dragging');
+      });
+    };
     const onScnDragStart = e => {
+      const lh = e.target.closest('[data-bp-layer-drag]');
+      if (lh) {
+        dragLayerId = lh.dataset.bpLayerDrag || '';
+        dragScnIdx = -1;
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', dragLayerId);
+          const lrow = lh.closest('.ccf-bp-layer');
+          if (lrow) {
+            lrow.classList.add('is-dragging');
+            try { e.dataTransfer.setDragImage(lrow, 16, 14); } catch (_) { }
+          }
+        }
+        return;
+      }
       const h = e.target.closest('[data-bp-scn-drag]');
       if (!h) return;
+      dragLayerId = '';
       dragScnIdx = +h.dataset.bpScnDrag;
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = 'move';
@@ -4690,6 +5391,20 @@
       }
     };
     const onScnDragOver = e => {
+      if (dragLayerId) {
+        const lrow = e.target.closest('.ccf-bp-layer[data-bpl]');
+        if (!lrow) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        const rect = lrow.getBoundingClientRect();
+        const after = (e.clientY - rect.top) > rect.height / 2;
+        container.querySelectorAll('.ccf-bp-layer.drag-over-top,.ccf-bp-layer.drag-over-bot').forEach(r => {
+          if (r !== lrow) r.classList.remove('drag-over-top', 'drag-over-bot');
+        });
+        lrow.classList.toggle('drag-over-top', !after);
+        lrow.classList.toggle('drag-over-bot', after);
+        return;
+      }
       if (dragScnIdx < 0) return;
       const row = e.target.closest('.ccf-bp-scn-row:not(.fixed)');
       if (!row || row.dataset.bpScnIdx == null) return;
@@ -4704,6 +5419,20 @@
       row.classList.toggle('drag-over-bot', after);
     };
     const onScnDrop = e => {
+      if (dragLayerId) {
+        const lrow = e.target.closest('.ccf-bp-layer[data-bpl]');
+        if (!lrow) return;
+        e.preventDefault();
+        const fromId = dragLayerId;
+        const targetLayerId = lrow.dataset.bpl || '';
+        dragLayerId = '';
+        clearLayerDropMarks();
+        if (!fromId || !targetLayerId || fromId === targetLayerId) return;
+        const rect = lrow.getBoundingClientRect();
+        const after = (e.clientY - rect.top) > rect.height / 2;
+        reorderBoardLayerByDrag(activeTarget(), fromId, targetLayerId, after);
+        return;
+      }
       if (dragScnIdx < 0) return;
       const row = e.target.closest('.ccf-bp-scn-row:not(.fixed)');
       if (!row || row.dataset.bpScnIdx == null) return;
@@ -4721,7 +5450,9 @@
     };
     const onScnDragEnd = () => {
       dragScnIdx = -1;
+      dragLayerId = '';
       clearScnDropMarks();
+      clearLayerDropMarks();
     };
     const onScnRowContextMenu = e => {
       const row = e.target.closest('.ccf-bp-scn-row:not(.fixed)[data-bp-pick]');
@@ -4738,17 +5469,65 @@
       }
     };
 
+    const onImgError = e => {
+      const img = e.target;
+      if (!img || img.tagName !== 'IMG' || img.dataset.bpRecovering === '1') return;
+      img.dataset.bpRecovering = '1';
+      const failedSrc = img.getAttribute('src') || '';
+      const tId = activeTarget();
+      let item = null;
+      if (img.dataset.bpImgFg === '1') {
+        const sc = getBoardTargetScene(tId);
+        item = (sc && sc.fg) || (S.proj.globalDecor && S.proj.globalDecor.fg) || null;
+      } else {
+        const iid = img.dataset.bpImgItem
+          || (img.closest('[data-bpid]') && img.closest('[data-bpid]').dataset.bpid)
+          || (img.closest('[data-bp-midsel]') && img.closest('[data-bp-midsel]').dataset.bpMidsel)
+          || '';
+        if (iid) {
+          const hit = findLayerById(tId, iid);
+          if (hit) item = hit.item;
+        }
+      }
+      if (!item) return;
+      const recovered = recoverBoardItemOnError(item, failedSrc);
+      if (recovered && recovered !== failedSrc) {
+        img.src = recovered;
+        CCF.saveProject();
+        scheduleImgHydrateRefresh();
+      }
+    };
+
     const onDblClick = e => {
       const midRow = e.target.closest('[data-bp-midsel]');
-      if (!midRow || e.target.closest('[data-bp]')) return;
+      if (!midRow || e.target.closest('[data-bp],[data-bp-panel-text]')) return;
       const mid = midRow.dataset.bpMidsel;
       setSingleSelection(mid);
-      refreshBoardContainers();
+      syncSelectionAndInspector();
+      if (UI.sideFold && UI.sideFold.layers) {
+        UI.sideFold.layers = false;
+        saveSideFold();
+        const lSec = container.querySelector('[data-bp-sec="layers"]');
+        if (lSec) {
+          lSec.classList.remove('is-collapsed');
+          const fh = lSec.querySelector('[data-bp-fold="layers"]');
+          if (fh) fh.setAttribute('aria-expanded', 'true');
+          const ico = lSec.querySelector('.ccf-bp-fold-ico');
+          if (ico) ico.textContent = '▾';
+        }
+      }
       setTimeout(() => {
-        const host = UI.modalOpen && UI.modalEl ? UI.modalEl : $('ccfBoardInlineHost');
-        const inp = host && host.querySelector('[data-bp-f="name"]');
+        const inp = container.querySelector('[data-bp-f="name"]');
         if (inp) { inp.focus(); inp.select(); inp.scrollIntoView({ block: 'nearest' }); }
       }, 0);
+    };
+
+    const onContainerKeyDown = e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const foldHead = e.target && e.target.closest && e.target.closest('[data-bp-fold]');
+      if (!foldHead || e.target !== foldHead) return;
+      e.preventDefault();
+      foldHead.click();
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -4758,6 +5537,7 @@
     window.addEventListener('mouseup', onUp, { once: false });
     container.addEventListener('click', onClick);
     container.addEventListener('dblclick', onDblClick);
+    container.addEventListener('keydown', onContainerKeyDown);
     container.addEventListener('change', onChange);
     container.addEventListener('input', onInput);
     container.addEventListener('keyup', onTrackCursor);
@@ -4767,8 +5547,13 @@
     container.addEventListener('drop', onScnDrop);
     container.addEventListener('dragend', onScnDragEnd);
     container.addEventListener('contextmenu', onScnRowContextMenu);
+    container.addEventListener('error', onImgError, true);
     container._bpCleanup = () => {
       closeActiveMenu();
+      stopSmoothZoom();
+      if (moveRaf) { cancelAnimationFrame(moveRaf); moveRaf = 0; }
+      pendingMove = null;
+      wrap.classList.remove('is-dragging-board', 'panning');
       if (rafFit) cancelAnimationFrame(rafFit);
       if (rafResize) cancelAnimationFrame(rafResize);
       if (ro) ro.disconnect();
@@ -4784,6 +5569,7 @@
       window.removeEventListener('mouseup', onUp);
       container.removeEventListener('click', onClick);
       container.removeEventListener('dblclick', onDblClick);
+      container.removeEventListener('keydown', onContainerKeyDown);
       container.removeEventListener('change', onChange);
       container.removeEventListener('input', onInput);
       container.removeEventListener('keyup', onTrackCursor);
@@ -4793,13 +5579,15 @@
       container.removeEventListener('drop', onScnDrop);
       container.removeEventListener('dragend', onScnDragEnd);
       container.removeEventListener('contextmenu', onScnRowContextMenu);
+      container.removeEventListener('error', onImgError, true);
     };
   }
 
   function updateBoardCandidatesHost(container, sc) {
     if (!container || !sc) return;
     const host = container.querySelector(`[data-bp-cands-host="${sc.id}"]`);
-    if (!host) return;
+    const mkHost = container.querySelector(`[data-bp-marker-cands="${sc.id}"]`);
+    if (!host && !mkHost) return;
     const idx = S.proj.scenes.findIndex(s => s.id === sc.id);
     if (idx < 0) return;
     const m = computeCandidatesForScene(sc, getMatchSources());
@@ -4808,11 +5596,15 @@
     const activeFg = sc.fg || g.fg || null;
     const isFallbackFg = !sc.fg && !!g.fg;
     withPreservedScroll(() => {
-      host.innerHTML = `${renderSlotRowHtml(sc, idx, 'fg', '🪟 前景（盤面）', sc.fg, m.fg, m.extracted, { compact: true })}
-        ${renderFgControlsHtml(b, activeFg, isFallbackFg)}
-        ${renderSlotRowHtml(sc, idx, 'bgm', '🎵 BGM', sc.bgm, m.bgm, m.extracted, { compact: true })}
-        ${renderSlotRowHtml(sc, idx, 'bg', '🖼️ 背景（任意）', sc.bg, m.bg, m.extracted, { compact: true })}
-        ${renderBoardPanelCardsHtml(sc, idx, m)}`;
+      if (host) {
+        host.innerHTML = `${renderSlotRowHtml(sc, idx, 'fg', '🪟 前景（盤面）', sc.fg, m.fg, m.extracted, { compact: true })}
+          ${renderFgControlsHtml(b, activeFg, isFallbackFg)}
+          ${renderSlotRowHtml(sc, idx, 'bgm', '🎵 BGM', sc.bgm, m.bgm, m.extracted, { compact: true })}
+          ${renderSlotRowHtml(sc, idx, 'bg', '🖼️ 背景（任意）', sc.bg, m.bg, m.extracted, { compact: true })}`;
+      }
+      if (mkHost) {
+        mkHost.innerHTML = renderMarkerCandStripHtml(sc, idx, m);
+      }
     }, container);
   }
 
@@ -4901,7 +5693,7 @@
   function playCutinStage(cutin) {
     if (!cutin) return;
     stopCutinStage();
-    const vSrc = cutin.visualDataUrl || fileUrl(cutin.visualPath);
+    const vSrc = fileUrl(cutin.visualDataUrl) || fileUrl(cutin.visualPath);
     const sSrc = fileUrl(cutin.sePath);
     if (!vSrc && !sSrc) return say('⚠️ 画像/動画またはSE音源を設定してください');
 
@@ -5168,7 +5960,7 @@
     ensureProjShape();
     const pkgs = window.CommonAssets && window.CommonAssets.getCutinPackages ? window.CommonAssets.getCutinPackages() : [];
     const cutinCards = S.proj.cutins.map((c, idx) => {
-      const vSrc = c.visualDataUrl || fileUrl(c.visualPath);
+      const vSrc = fileUrl(c.visualDataUrl) || fileUrl(c.visualPath);
       return `<div class="ccf-cutin-card" data-ci-idx="${idx}">
         <div class="ccf-cutin-prevbox">
           ${vSrc ? (c.visualType === 'video'
@@ -5662,7 +6454,7 @@
         const sc = S.proj.scenes.find(s => s.id === bgmVolEl.dataset.bgmScnid);
         if (sc && sc.bgm) {
           cp('BGM音量変更');
-          applyBgmVolumeLive(sc, bgmVolEl.value, bgmVolEl);
+          applyBgmVolumeLive(sc, bgmVolEl.value, bgmVolEl, { immediate: true });
         }
         return;
       }
@@ -5884,6 +6676,7 @@
     },
     onProjectSwitch() {
       closeActiveMenu();
+      if (_bgmSaveTimer) { clearTimeout(_bgmSaveTimer); _bgmSaveTimer = null; }
       candidateCache.clear();
       UI.parsedLines = null;
       UI.parsedOutline = [];
