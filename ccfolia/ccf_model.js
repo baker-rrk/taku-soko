@@ -8,7 +8,11 @@
 
   const newId = () => (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
   const str = (v, d) => (typeof v === 'string' ? v : (v == null ? (d || '') : String(v)));
-  const num = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : (d || 0); };
+  const num = (v, d) => {
+    if (v === '' || v == null || (typeof v === 'string' && !v.trim())) return d || 0;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : (d || 0);
+  };
 
   const DEFAULT_SETTINGS = {
     joinLines: 'smart',        // 改行の除去：smart / all / none
@@ -69,7 +73,7 @@
       createdAt: num(s.createdAt, Date.now())
     };
   }
-  const isSafeImgSrc = v => /^(?:@img:[a-z0-9]+|data:image\/|file:\/\/|https?:\/\/|zipview:\/\/|blob:)/i.test(str(v).trim());
+  const isSafeImgSrc = v => /^(?:@img:[a-z0-9]+|cloud-asset:|data:image\/|file:\/\/|https?:\/\/|zipview:\/\/|blob:)/i.test(str(v).trim());
   const isUnsafeImg = v => /^(?:javascript|vbscript|data:(?!image\/))/i.test(str(v).trim());
   function normalizeImgRef(v) {
     const s = str(v).trim();
@@ -300,7 +304,7 @@
   const RE_TITLE_PLAYERS = /[（(【\[][^）)】\]]*(?:\d+\s*(?:PL|pl|人|名|PC)|タイマン|ソロ|ペア)[^）)】\]]*[）)】\]]/g;
   const RE_TITLE_BRACKETS = /【([^】]*)】|\[([^\]]*)\]|（([^）]*)）|\(([^)]*)\)/g;
   const RE_BRACKET_NOISE = /(?:CoC|6版|7版|クトゥルフ|エモクロア|インセイン|マダミス|シノビガミ|SW2\.?5|DX3|SPLL|秘匿|HO|R-?18|シナリオ|素材|一式|セット|同梱|追加|BGM|立ち絵|マップ|ZIP|PDF|ver\.?\s*\d|v\d+|更新|修正|改訂|オンライン|オフライン|Web|BOOTH|DL|配布|完全版|最新版|軽量版|分割版|統合版|\d{4}[./\-年]\d{1,2}|\d{4,8})/i;
-  const DIST_WORDS_STRICT = 'オンライン版|オフライン版|オンセ版|オフセ版|Web版|ウェブ版|BOOTH版|DL版|ダウンロード版|配布版|配布用|完全版|改訂版|修正版|最新版|軽量版|分割版|統合版|更新版|体験版|テスト版|β版|ベータ版|リメイク版|リマスター版|同梱版|PDF版|データ版';
+  const DIST_WORDS_STRICT = 'オンライン版|オフライン版|オンセ版|オフセ版|Web版|ウェブ版|BOOTH版|DL版|ダウンロード版|配布版|配布用|完全版|改訂版|修正版|最新版|軽量版|分割版|統合版|更新版|体験版|テスト版|β版|ベータ版|同梱版|PDF版|データ版';
   const DIST_WORDS_ALL = DIST_WORDS_STRICT + '|オンライン|オフライン|Web|BOOTH|DL|配布|一式|セット|まとめ';
   const RE_LEAD_DIST_SEP = new RegExp('^(?:' + DIST_WORDS_ALL + ')[\\s_\\-・:：/／]+(.+)$', 'i');
   const RE_LEAD_DIST_STRICT = new RegExp('^(?:' + DIST_WORDS_STRICT + ')[\\s_\\-・:：/／]*(.+)$', 'i');
@@ -612,7 +616,7 @@
       lockAspect: item.lockAspect !== false,
       invisible: !!item.invisible
     };
-    if (k === 'fg' || item.fitMode) out.fitMode = item.fitMode === 'fill' ? 'fill' : 'cover';
+    if (k === 'fg' || item.fitMode) out.fitMode = (item.fitMode === 'fill' || item.fitMode === 'cover' || item.fitMode === 'contain') ? item.fitMode : 'contain';
     return out;
   }
 
@@ -635,6 +639,12 @@
     const arr = a => Array.isArray(a) ? a : [];
     const ms = s.manualSlots && typeof s.manualSlots === 'object' ? s.manualSlots : {};
     const optIdx = v => (v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v))) ? Math.max(0, Math.round(Number(v))) : null;
+    const bwRaw = num(s.boardWidth, 0);
+    const bhRaw = num(s.boardHeight, 0);
+    const fgObj = s.fg ? sanitizeBoardItem(s.fg, 'fg') : null;
+    const isValidFit = v => v === 'contain' || v === 'cover' || v === 'fill';
+    const fgFit = isValidFit(s.fgFit) ? s.fgFit : (fgObj && isValidFit(fgObj.fitMode) ? fgObj.fitMode : '');
+    if (fgObj && !isValidFit(s.fg.fitMode)) fgObj.fitMode = fgFit || 'contain';
     return {
       id: str(s.id) || newId(),
       title: str(s.title, '無題のシーン'),
@@ -648,9 +658,12 @@
       headingPattern: str(s.headingPattern),
       checked: !!s.checked,
       tags: cleanTagList(s.tags),
+      boardWidth: bwRaw > 0 ? Math.max(96, Math.min(4000, Math.round(bwRaw))) : null,
+      boardHeight: bhRaw > 0 ? Math.max(96, Math.min(4000, Math.round(bhRaw))) : null,
+      fgFit,
       manualSlots: { bg: !!ms.bg, fg: !!ms.fg, screen: !!ms.screen, marker: !!ms.marker, bgm: !!ms.bgm },
       bg: s.bg ? sanitizeBoardItem(s.bg, 'bg') : null,
-      fg: s.fg ? sanitizeBoardItem(s.fg, 'fg') : null,
+      fg: fgObj,
       screens: arr(s.screens).map(x => sanitizeBoardItem(x, 'screen')).filter(Boolean),
       markers: arr(s.markers).map(x => sanitizeBoardItem(x, 'marker')).filter(Boolean),
       bgm: s.bgm ? sanitizeSceneAudio(s.bgm) : null
@@ -699,7 +712,8 @@
       customPrefixes: str(c.customPrefixes),
       startPage: sp >= 1 ? Math.round(sp) : null,
       endPage: ep >= 1 ? Math.round(ep) : null,
-      cleanLineBreaks: c.cleanLineBreaks !== false
+      cleanLineBreaks: c.cleanLineBreaks !== false,
+      inheritMarkersOnNewScene: c.inheritMarkersOnNewScene !== false
     };
   }
 
@@ -709,7 +723,8 @@
       bg: g.bg ? sanitizeBoardItem(g.bg, 'bg') : null,
       fg: g.fg ? sanitizeBoardItem(g.fg, 'fg') : null,
       screens: (Array.isArray(g.screens) ? g.screens : []).map(x => sanitizeBoardItem(x, 'screen')).filter(Boolean),
-      markers: (Array.isArray(g.markers) ? g.markers : []).map(x => sanitizeBoardItem(x, 'marker')).filter(Boolean)
+      markers: (Array.isArray(g.markers) ? g.markers : []).map(x => sanitizeBoardItem(x, 'marker')).filter(Boolean),
+      bgm: g.bgm ? sanitizeSceneAudio(g.bgm) : null
     };
   }
 
@@ -729,6 +744,7 @@
       customSize,
       grid: Math.max(12, Math.min(96, Math.round(num(b.grid, 24)))),
       showGrid: b.showGrid !== false,
+      coordVersion: num(b.coordVersion, 0),
       pieces: (Array.isArray(b.pieces) ? b.pieces : []).map(x => sanitizeBoardItem(x, 'piece')).filter(Boolean)
     };
   }
@@ -842,10 +858,52 @@
   /** ココフォリアのキャラクター駒 JSON（{kind:'character',data} または data 単体）→ NPC 下書き（逆変換）。失敗時は null */
   function fromCcfoliaCharacter(obj) {
     const d = obj && obj.kind === 'character' && obj.data ? obj.data : obj; if (!d || typeof d !== 'object' || !('name' in d || 'commands' in d || 'params' in d)) return null;
-    const faces = Array.isArray(d.faces) ? d.faces : [], portraits = faces.filter(f => f && /^data:image\//.test(str(f.iconUrl))).map(f => ({ id: newId(), label: str(f.label), dataUrl: f.iconUrl }));
-    const n = sanitizeNpc({ name: str(d.name, '名称未設定NPC'), memo: str(d.memo), initiative: d.initiative, externalUrl: str(d.externalUrl), status: d.status, params: d.params, commands: str(d.commands), portraits, iconDataUrl: /^data:image\//.test(str(d.iconUrl)) ? d.iconUrl : (portraits[0] && portraits[0].dataUrl) || null, sysOpts: { statusPublic: !d.secret }, source: '', skills: [] });
-    const cmd = n.commands.split('\n'), seen = new Set();
-    cmd.forEach(l => { const m = /^(?:s?x\d+\s+)?s?(?:CCB?|1d100)\s*<=?\s*(\d{1,3})\s*[【〈《「\[]([^】〉》」\]\n]{1,24})[】〉》」\]]/i.exec(l.trim()); if (m && !seen.has(m[2])) { seen.add(m[2]); n.skills.push({ name: m[2], value: +m[1], known: true, include: true, damage: '', lv: 0, mod: 0, multi: false }); } });
+    const isLocalPath = v => /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(str(v).trim());
+    const isPortraitVal = v => {
+      const s = str(v).trim();
+      if (!s || isUnsafeImg(s)) return false;
+      return /^(?:@img:[a-z0-9]+|cloud-asset:|data:image\/|blob:|file:\/\/)/i.test(s) || isLocalPath(s);
+    };
+    const buildPortrait = (rawUrl, label, extra) => {
+      const s = str(rawUrl).trim();
+      if (!isPortraitVal(s)) return null;
+      const ex = extra && typeof extra === 'object' ? extra : {};
+      const lp = isLocalPath(s) ? s : str(ex.path || ex.filePath).trim();
+      const du = isLocalPath(s) ? '' : s;
+      return {
+        id: newId(),
+        label: str(label || ex.label || ex.name),
+        name: str(ex.name || label || ex.label),
+        path: lp,
+        filePath: lp,
+        dataUrl: du,
+        assetId: str(ex.assetId || ex.assetUid)
+      };
+    };
+    const faces = Array.isArray(d.faces) ? d.faces : [];
+    const portraits = [];
+    const seen = new Set();
+    const pushPortrait = item => {
+      if (!item) return;
+      const k = item.dataUrl || item.path || item.filePath;
+      if (k && seen.has(k)) return;
+      if (k) seen.add(k);
+      portraits.push(item);
+    };
+    const mainRaw = str(d.iconUrl).trim();
+    if (isPortraitVal(mainRaw)) {
+      const sameFace = faces.find(f => f && str(f.iconUrl).trim() === mainRaw);
+      pushPortrait(buildPortrait(mainRaw, (sameFace && sameFace.label) || d.iconName || '', sameFace || { name: d.iconName, path: d.iconPath, assetId: d.iconAssetId }));
+    }
+    faces.forEach(f => {
+      if (!f || typeof f !== 'object') return;
+      pushPortrait(buildPortrait(f.iconUrl, f.label, f));
+    });
+    const head = portraits[0] || null;
+    const iconDataUrl = head && head.dataUrl ? head.dataUrl : (isPortraitVal(mainRaw) && !isLocalPath(mainRaw) ? mainRaw : null);
+    const n = sanitizeNpc({ name: str(d.name, '名称未設定NPC'), memo: str(d.memo), initiative: d.initiative, externalUrl: str(d.externalUrl), status: d.status, params: d.params, commands: str(d.commands), portraits, iconDataUrl, iconName: str(d.iconName || (head && head.name) || ''), sysOpts: { statusPublic: !d.secret }, source: '', skills: [] });
+    const cmd = n.commands.split('\n'), seenCmd = new Set();
+    cmd.forEach(l => { const m = /^(?:s?x\d+\s+)?s?(?:CCB?|1d100)\s*<=?\s*(\d{1,3})\s*[【〈《「\[]([^】〉》」\]\n]{1,24})[】〉》」\]]/i.exec(l.trim()); if (m && !seenCmd.has(m[2])) { seenCmd.add(m[2]); n.skills.push({ name: m[2], value: +m[1], known: true, include: true, damage: '', lv: 0, mod: 0, multi: false }); } });
     n.edition = /CCB/i.test(n.commands) ? '6' : /CC</i.test(n.commands) ? '7' : n.edition; n.rollPrefix = /CCB/i.test(n.commands) ? 'CCB' : 'CC';
     return n;
   }

@@ -19,12 +19,15 @@
   const fileUrl = p => require('url').pathToFileURL(p).href;
   const isAssetRef = p => !!(window.WebBridge && WebBridge.isAssetRef(p));
   const isCloudRef = p => !!(window.CloudSync && CloudSync.isCloudAssetRef && CloudSync.isCloudAssetRef(p));
+  const isDocTextRef = p => /^doc-text:\/\//i.test(String(p || ''));
+  const isMissingDocRef = p => /^missing-doc:\/\//i.test(String(p || ''));
   const baseName = p => {
+    if (isMissingDocRef(p)) { try { return decodeURIComponent(String(p).slice('missing-doc://'.length)) || 'doc'; } catch (_) { return String(p).slice('missing-doc://'.length) || 'doc'; } }
     if (isCloudRef(p)) { const parsed = CloudSync.parseCloudAssetRef(p); return (parsed && parsed.name) || 'asset'; }
     return isAssetRef(p) ? WebBridge.assetBasename(p) : (nodePath ? nodePath.basename(p) : String(p || '').split(/[\\/]/).pop());
   };
   const LAYOUT_KEY = 'ccf_pdf_layout', EXT_KEY = 'ccf_ext_opts', MARK_KEY = 'ccf_marks_on';
-  const pkey = p => (isAssetRef(p) || isCloudRef(p)) ? String(p) : String(p || '').replace(/\//g, '\\').toLowerCase();
+  const pkey = p => (isAssetRef(p) || isCloudRef(p) || isDocTextRef(p) || isMissingDocRef(p)) ? String(p) : String(p || '').replace(/\//g, '\\').toLowerCase();
   /** 抽出オプション（ルビ除外・2段組整列・1行目の自動タイトル化）。メイン画面と別ウィンドウで共有（localStorage） */
   function extOpts() {
     const d = { ruby: true, twoCol: true, autoTitle: true };
@@ -88,11 +91,81 @@
     }
     return lib.getDocument({ data: u8, cMapUrl: PDFJS_CDN + 'cmaps/', cMapPacked: true, standardFontDataUrl: PDFJS_CDN + 'standard_fonts/', isEvalSupported: false }).promise;
   }
-  async function readFileBytes(p) {
+  function repairScenarioDocPath(scenarioId, origPathOrName, resolvedPath) {
+    try {
+      if (!scenarioId || !resolvedPath) return;
+      const list = (typeof appState !== 'undefined' && Array.isArray(appState.scenarios))
+        ? appState.scenarios
+        : (typeof window !== 'undefined' && window.CCF && typeof CCF.scenarioList === 'function' ? CCF.scenarioList() : []);
+      const sc = list.find(s => s && String(s.id) === String(scenarioId));
+      if (!sc || !Array.isArray(sc.docs)) return;
+      const targetBn = String(baseName(origPathOrName || resolvedPath) || '').normalize('NFKC').trim().toLowerCase();
+      const resolvedBn = String(baseName(resolvedPath) || '').normalize('NFKC').trim().toLowerCase();
+      const stripExt = s => String(s || '').replace(/\.[a-z0-9]{1,8}$/i, '');
+      const targetStem = stripExt(targetBn);
+      const resolvedStem = stripExt(resolvedBn);
+      let changed = false;
+      for (const d of sc.docs) {
+        if (!d || typeof d !== 'object') continue;
+        const cands = [d.origName, d.name, baseName(d.path || ''), baseName(d.ref || ''), baseName(d.rel || '')]
+          .map(v => String(v || '').normalize('NFKC').trim().toLowerCase())
+          .filter(Boolean);
+        const hit = cands.some(c =>
+          c === targetBn || c === resolvedBn ||
+          (targetStem && stripExt(c) === targetStem) ||
+          (resolvedStem && stripExt(c) === resolvedStem)
+        );
+        if (hit && d.path !== resolvedPath) {
+          d.path = resolvedPath;
+          if (!d.ref || !nodeFs || !nodeFs.existsSync(d.ref)) d.ref = resolvedPath;
+          try { if (nodeFs) d.mtime = nodeFs.statSync(resolvedPath).mtimeMs || d.mtime || 0; } catch (_) {}
+          changed = true;
+        }
+      }
+      if (changed && typeof saveState === 'function') {
+        try { saveState(); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+  async function tryReadResolvedLocal(scenarioId, origPath) {
+    if (!nodeFs) return null;
+    try {
+      const assets = typeof window !== 'undefined' && window.CCF && window.CCF.assets;
+      if (!assets || typeof assets.resolveScenarioLocalDocPath !== 'function') return null;
+      const bn = baseName(origPath);
+      const resolved = assets.resolveScenarioLocalDocPath(scenarioId, origPath) || (bn && bn !== origPath ? assets.resolveScenarioLocalDocPath(scenarioId, bn) : '');
+      if (resolved && nodeFs.existsSync(resolved)) {
+        repairScenarioDocPath(scenarioId, origPath, resolved);
+        const buf = nodeFs.promises ? await nodeFs.promises.readFile(resolved) : nodeFs.readFileSync(resolved);
+        return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength).slice();
+      }
+    } catch (_) {}
+    return null;
+  }
+  async function readFileBytes(p, opts) {
+    const o = opts || {};
+    const scenarioId = o.scenarioId || ((typeof window !== 'undefined' && window.CCF && CCF.S && CCF.S.key && CCF.S.key !== '_default') ? CCF.S.key : (typeof currentScenarioId !== 'undefined' && currentScenarioId ? currentScenarioId : ''));
     if (isCloudRef(p) && window.CloudSync && CloudSync.readCloudAssetBytes) {
-      const u8 = await CloudSync.readCloudAssetBytes(p, { download: true });
+      const u8 = await CloudSync.readCloudAssetBytes(p, { download: true, scenarioId });
       if (u8) return u8;
+      if (nodeFs) {
+        const u8l = await tryReadResolvedLocal(scenarioId, p);
+        if (u8l && u8l.length) return u8l;
+      }
       throw new Error('クラウドから資料を取得できませんでした（ログインまたは同期フォルダ設定を確認してください）');
+    }
+    if (isMissingDocRef(p)) {
+      if (nodeFs) {
+        const u8l = await tryReadResolvedLocal(scenarioId, p);
+        if (u8l && u8l.length) return u8l;
+      }
+      let name = '';
+      try { name = decodeURIComponent(String(p).slice('missing-doc://'.length)); } catch (_) { name = String(p).slice('missing-doc://'.length); }
+      if (name && window.CloudSync && CloudSync.readByPathOrName) {
+        const u8c = await CloudSync.readByPathOrName(name, { scenarioId });
+        if (u8c && u8c.length) return u8c;
+      }
+      throw new Error('資料をローカル・クラウドのどちらからも取得できませんでした');
     }
     if (isAssetRef(p) && window.WebBridge) {
       try {
@@ -100,7 +173,7 @@
         if (u8 && u8.length) return u8;
       } catch (_) {}
       if (window.CloudSync && CloudSync.ensureAssetByIdbRef) {
-        const u8c = await CloudSync.ensureAssetByIdbRef(p);
+        const u8c = await CloudSync.ensureAssetByIdbRef(p, { scenarioId });
         if (u8c && u8c.length) return u8c;
       }
       throw new Error('資料をローカル・クラウドのどちらからも取得できませんでした');
@@ -110,10 +183,16 @@
         const buf = nodeFs.promises ? await nodeFs.promises.readFile(p) : nodeFs.readFileSync(p);
         return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength).slice();
       }
+      const u8l = await tryReadResolvedLocal(scenarioId, p);
+      if (u8l && u8l.length) return u8l;
       if (window.CloudSync && CloudSync.readByPathOrName) {
-        const u8c = await CloudSync.readByPathOrName(p);
+        const u8c = await CloudSync.readByPathOrName(p, { scenarioId });
         if (u8c && u8c.length) return u8c;
       }
+      throw new Error('資料をローカル・クラウドのどちらからも取得できませんでした');
+    } else if (window.CloudSync && CloudSync.readByPathOrName) {
+      const u8c = await CloudSync.readByPathOrName(p, { scenarioId });
+      if (u8c && u8c.length) return u8c;
     }
     throw new Error('ブラウザ版ではPDFを選択またはドロップして開いてください');
   }
@@ -147,7 +226,7 @@
   function evictPaths(paths) {
     (paths || []).forEach(p => { if (p) evictKey(pkey(p)); });
   }
-  const mtimeOf = p => { try { return (nodeFs && !isAssetRef(p) && !isCloudRef(p)) ? nodeFs.statSync(p).mtimeMs : 0; } catch (e) { return 0; } };
+  const mtimeOf = p => { try { return (nodeFs && !isAssetRef(p) && !isCloudRef(p) && !isDocTextRef(p) && !isMissingDocRef(p)) ? nodeFs.statSync(p).mtimeMs : 0; } catch (e) { return 0; } };
   // 本文の索引（検索・見出し抽出）。PDFごとに1回だけ作る：{ pages:[{text,starts}], heads:[{page,text,level}] }
   const scanCache = new Map();   // key → { mtime, promise }
 
@@ -259,7 +338,7 @@
     const q = s => container.querySelector(s);
     const els = { body: q('.ccf-pdf-body'), empty: q('.ccf-pdf-empty'), pages: q('.ccf-pages'), pageNo: q('.ccf-pageno'), total: q('.ccf-pagetotal'), zoom: q('.ccf-zoomlabel'), help: q('.ccf-modehelp'), docsel: q('.ccf-docsel'), overlay: q('.ccf-pdf-overlay'), layoutBtn: q('.ccf-layoutbtn'),
       q: q('.ccf-q'), qall: q('.ccf-qall'), hitinfo: q('.ccf-hitinfo'), toc: q('.ccf-toc'), tocList: q('[data-k="toc"]'), bmList: q('[data-k="bm"]'), tocKind: q('.ccf-toc-kind'), back: q('[data-v="hback"]'), fwd: q('[data-v="hfwd"]'), marksBtn: q('[data-v="marks"]'), tocBtn: q('[data-v="toc"]') };
-    const st = { doc: null, ent: null, key: '', page: 1, zoom: 1.2, mode: 'text', layout: 'single', gen: 0, sizes: [], pages: [], path: '', name: '', ready: 0, lockUntil: 0, hist: [], hi: -1, marksOn: true, flash: null, toc: null, openTok: 0 };
+    const st = { doc: null, ent: null, key: '', page: 1, zoom: 1.2, mode: 'text', layout: 'single', gen: 0, sizes: [], pages: [], path: '', name: '', ready: 0, lockUntil: 0, hist: [], hi: -1, marksOn: true, flash: null, toc: null, openTok: 0, textMode: false, isSyncedText: false, textPages: [], textTotalPages: 1 };
     if (o.spread) { try { if (localStorage.getItem(LAYOUT_KEY) === 'spread') st.layout = 'spread'; } catch (e) { /* noop */ } }
     try { if (localStorage.getItem(MARK_KEY) === '0') st.marksOn = false; } catch (e) { /* noop */ }
     let io = null, ro = null, marks = [], bms = [], searchTimer = 0, visTimer = 0, visFollowTimer = 0, scrollTimer = 0, resizeTimer = 0, flashTimer = 0;
@@ -270,7 +349,7 @@
     let docList = [];
     /** 表示中のPDFをドロップダウンの選択状態に反映する */
     const syncDocSel = () => { const k = pkey(st.path), hit = docList.find(d => pkey(d.value) === k); els.docsel.value = hit ? hit.value : ''; };
-    const emitState = () => { syncDocSel(); o.onState({ path: st.path, name: st.name, page: st.page, zoom: st.zoom, pages: st.doc ? st.doc.numPages : 0, layout: st.layout }); };
+    const emitState = () => { syncDocSel(); o.onState({ path: st.path, name: st.name, page: st.page, zoom: st.zoom, pages: st.doc ? st.doc.numPages : (st.textMode ? (st.textTotalPages || 1) : 0), layout: st.layout }); };
     const pageOf = n => st.pages[n - 1] || null;
     function cancelPageTasks(p) {
       if (!p) return;
@@ -311,37 +390,137 @@
     const escHtml = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     async function openData(u8, name, p, ov) {
       if (T.TEXT_DOC_RE.test(String(name || baseName(p) || '')) || !hasPdfHeader(u8)) {
-        try { return renderTextDoc(String(name || baseName(p) || 'text.txt'), p || '', u8); } catch (e) { if (T.TEXT_DOC_RE.test(String(name || ''))) throw e; }
+        try { return await renderTextDoc(String(name || baseName(p) || 'text.txt'), p || '', u8, ov); } catch (e) { if (T.TEXT_DOC_RE.test(String(name || ''))) throw e; }
       }
       const tok = ++st.openTok;
       const doc = await getDoc(o.appDir, u8);
       if (tok !== st.openTok) { try { doc.destroy(); } catch (e) { /* noop */ } return; }
       return attach({ doc, sizes: null }, '', name, p, ov, tok);
     }
-    /** .txt/.html/.htm/.md を、選択して抽出できるテキスト表示で開く（文字コード自動判別） */
+    /** .txt/.html/.htm/.md および同期テキストを、選択して抽出できる白紙カード表示で開く */
     let textFont = 13.5, textRaw = '', textMarks = [], textCur = -1;
-    function renderTextDoc(nm, p, rawBuf) {
-      const d = T.loadTextDoc(nm, rawBuf);
-      teardown(); st.openTok++; st.name = nm; st.path = p; st.page = 1; st.sizes = []; st.textMode = true;
-      textRaw = d.text; textMarks = []; textCur = -1;
-      els.empty.hidden = true; els.pages.hidden = false; els.total.textContent = '/ 1'; els.pageNo.value = 1;
-      els.pages.classList.add('ccf-pages-text');
-      const ext = (String(nm).match(/\.([a-z0-9]+)$/i) || [])[1];
-      const icon = /^pdf$/i.test(ext || '') ? '📕' : '📃';
-      els.pages.innerHTML = '<div class="ccf-textdoc" data-n="1"><div class="ccf-texthead">' + icon + ' ' + escHtml(nm) + ' （文字コード: ' + escHtml(d.enc) + ' / ' + d.text.length.toLocaleString() + '文字）</div><div class="ccf-textbody"></div></div>';
-      applyTextSearch(false); emitState(); return true;
+    function parseTextPages(raw) {
+      const src = String(raw == null ? '' : raw).replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n');
+      const re = /^===\s*P\.(\d+)\s*===\s*$/gm;
+      const matches = [...src.matchAll(re)];
+      if (!matches.length) return null;
+      const pages = [];
+      const pre = src.slice(0, matches[0].index).replace(/^\n+|\n+$/g, '');
+      if (pre) pages.push({ page: 1, body: pre, marker: '' });
+      for (let i = 0; i < matches.length; i++) {
+        const m = matches[i];
+        const start = m.index + m[0].length;
+        const end = (i + 1 < matches.length) ? matches[i + 1].index : src.length;
+        const pgNum = Number(m[1]) || (pages.length + 1);
+        const body = src.slice(start, end).replace(/^\n+|\n+$/g, '');
+        pages.push({ page: pgNum, body, marker: m[0].trim() });
+      }
+      return pages.length ? pages : null;
+    }
+    function highlightPlainText(src, ql) {
+      const s = String(src == null ? '' : src);
+      if (!ql) return escHtml(s);
+      const lo = s.toLowerCase();
+      let html = '', from = 0, at, n = 0;
+      while (n < 2000 && (at = lo.indexOf(ql, from)) >= 0) {
+        html += escHtml(s.slice(from, at)) + '<mark class="ccf-texthit">' + escHtml(s.slice(at, at + ql.length)) + '</mark>';
+        from = at + Math.max(1, ql.length);
+        n++;
+      }
+      return html + escHtml(s.slice(from));
+    }
+    function scrollToTextPage(n) {
+      const b = textBodyEl(); if (!b) return;
+      const pages = [...b.querySelectorAll('.ccf-textpage')];
+      if (!pages.length) return;
+      let target = pages.find(el => Number(el.dataset.page) === n);
+      if (!target) target = pages.find(el => Number(el.dataset.page) >= n) || pages[pages.length - 1];
+      if (!target) return;
+      st.lockUntil = Date.now() + 300;
+      els.body.scrollTop = target.getBoundingClientRect().top - els.body.getBoundingClientRect().top + els.body.scrollTop - 12;
+    }
+    function currentTextPage() {
+      const b = textBodyEl(); if (!b) return st.page || 1;
+      const pages = [...b.querySelectorAll('.ccf-textpage')];
+      if (!pages.length) return 1;
+      const top = els.body.getBoundingClientRect().top + 28;
+      for (const el of pages) {
+        if (el.getBoundingClientRect().bottom > top) return Number(el.dataset.page) || 1;
+      }
+      return Number(pages[pages.length - 1].dataset.page) || pages.length || 1;
+    }
+    function openTextContent(nm, p, text, encLabel, ov) {
+      const bodyText = String(text == null ? '' : text);
+      const label = (encLabel != null && String(encLabel).trim()) ? String(encLabel).trim() : '同期テキスト';
+      const opts = ov || {};
+      const synced = opts.isSyncedText !== undefined ? !!opts.isSyncedText : (label === '同期テキスト' || isDocTextRef(p));
+      teardown();
+      st.openTok++;
+      st.name = String(nm || baseName(p) || '同期テキスト');
+      st.path = p || '';
+      st.sizes = [];
+      st.textMode = true;
+      st.isSyncedText = synced;
+      textRaw = bodyText;
+      textMarks = [];
+      textCur = -1;
+      const parsedPages = parseTextPages(bodyText);
+      st.textPages = parsedPages || [];
+      const totalPages = parsedPages ? Math.max(parsedPages.length, ...parsedPages.map(pg => pg.page || 0)) : 1;
+      st.textTotalPages = totalPages;
+      const initPage = Math.min(totalPages, Math.max(1, Math.round(Number(opts.page) || 1)));
+      st.page = initPage;
+      els.overlay.hidden = true;
+      els.overlay.innerHTML = '';
+      els.empty.hidden = true;
+      els.pages.hidden = false;
+      els.total.textContent = '/ ' + totalPages;
+      els.pageNo.max = totalPages;
+      els.pageNo.value = initPage;
+      els.pages.className = 'ccf-pages single ccf-pages-text';
+      els.pages.innerHTML = '<div class="ccf-textdoc" data-n="1"><div class="ccf-texthead">📄 ' + escHtml(st.name) + ' （文字コード: ' + escHtml(label) + ' / ' + bodyText.length.toLocaleString() + '文字）</div><div class="ccf-textbody"></div></div>';
+      applyTextSearch(false);
+      if (parsedPages && initPage > 1) {
+        const expectedTok = st.openTok;
+        setTimeout(() => { if (st.textMode && st.openTok === expectedTok) scrollToTextPage(initPage); }, 0);
+      } else {
+        els.body.scrollTop = 0;
+      }
+      emitState();
+      return true;
+    }
+    async function renderTextDoc(nm, p, rawBuf, ov) {
+      const d = (T && typeof T.loadTextDocAsync === 'function')
+        ? await T.loadTextDocAsync(nm, rawBuf)
+        : T.loadTextDoc(nm, rawBuf);
+      return openTextContent(nm, p, d.text, d.enc, Object.assign({ isSyncedText: false }, ov || {}));
     }
     function textBodyEl() { return els.pages.querySelector('.ccf-textbody'); }
-    function applyTextFont() { const b = textBodyEl(); if (b) b.style.fontSize = textFont + 'px'; }
+    function applyTextFont() {
+      const b = textBodyEl();
+      if (b) b.style.fontSize = textFont + 'px';
+      if (st.textMode && els.zoom) els.zoom.textContent = Math.round((textFont / 13.5) * 100) + '%';
+    }
     /** テキスト資料内の検索：一致箇所を <mark> でハイライトし、前/次へジャンプ */
     function applyTextSearch(jump) {
       const b = textBodyEl(); if (!b) return;
-      const qs = els.q.value.trim(), lo = textRaw.toLowerCase(), ql = qs.toLowerCase();
+      const qs = els.q.value.trim(), ql = qs.toLowerCase();
       textMarks = []; textCur = -1;
+      if (st.textPages && st.textPages.length) {
+        b.innerHTML = st.textPages.map(pg =>
+          '<div class="ccf-textpage" data-page="' + pg.page + '">' +
+            (pg.marker ? '<div class="ccf-textpage-sep">' + escHtml(pg.marker) + '</div>' : '') +
+            '<div class="ccf-textpage-body">' + highlightPlainText(pg.body, ql) + '</div>' +
+          '</div>'
+        ).join('');
+        applyTextFont();
+        if (!qs) { els.hitinfo.textContent = ''; return; }
+        textMarks = [...b.querySelectorAll('mark.ccf-texthit')];
+        if (textMarks.length) { textCur = 0; markTextCur(jump !== false); } else els.hitinfo.textContent = '0件';
+        return;
+      }
       if (!qs) { b.textContent = textRaw; applyTextFont(); els.hitinfo.textContent = ''; return; }
-      let html = '', from = 0, at, n = 0;
-      while (n < 2000 && (at = lo.indexOf(ql, from)) >= 0) { html += escHtml(textRaw.slice(from, at)) + '<mark class="ccf-texthit">' + escHtml(textRaw.slice(at, at + ql.length)) + '</mark>'; from = at + Math.max(1, ql.length); n++; }
-      html += escHtml(textRaw.slice(from)); b.innerHTML = html; applyTextFont();
+      b.innerHTML = highlightPlainText(textRaw, ql); applyTextFont();
       textMarks = [...b.querySelectorAll('mark.ccf-texthit')];
       if (textMarks.length) { textCur = 0; markTextCur(jump !== false); } else els.hitinfo.textContent = '0件';
     }
@@ -351,13 +530,19 @@
       const m = textMarks[textCur]; if (scroll && m && m.scrollIntoView) m.scrollIntoView({ block: 'center' });
     }
     function stepTextHit(d) { if (!textMarks.length) { applyTextSearch(true); return; } textCur = (textCur + d + textMarks.length) % textMarks.length; markTextCur(true); }
-    async function openTextDoc(p) {
+    async function openTextDoc(p, tok, ov) {
       const rawBuf = await readFileBytes(p);
-      return renderTextDoc(baseName(p), p, rawBuf);
+      if (tok != null && tok !== st.openTok) return false;
+      const nm = baseName(p);
+      const d = (T && typeof T.loadTextDocAsync === 'function')
+        ? await T.loadTextDocAsync(nm, rawBuf)
+        : T.loadTextDoc(nm, rawBuf);
+      if (tok != null && tok !== st.openTok) return false;
+      return openTextContent(nm, p, d.text, d.enc, Object.assign({ isSyncedText: false }, ov || {}));
     }
     async function openPath(p, ov) {
-      if (T.TEXT_DOC_RE.test(String(baseName(p) || p))) { try { return await openTextDoc(p); } catch (e) { console.error('[ccf] テキスト資料を開けません', e); if (o.onError) o.onError(e); return false; } }
       const tok = ++st.openTok;
+      if (T.TEXT_DOC_RE.test(String(baseName(p) || p))) { try { return await openTextDoc(p, tok, ov); } catch (e) { console.error('[ccf] テキスト資料を開けません', e); if (!(ov && ov.silentError) && o.onError) o.onError(e); return false; } }
       try {
         const key = pkey(p), mt = mtimeOf(p); let ent = docCache.get(key);
         if (ent && ent.mtime !== mt) {   // ファイルが更新されていたら読み直す（他で使用中なら触らない）
@@ -367,20 +552,20 @@
         if (!ent) {
           const u8 = await readFileBytes(p);
           if (tok !== st.openTok) return false;
-          if (!hasPdfHeader(u8) && !(window.CloudSync && isCloudRef(p) && false)) { try { return renderTextDoc(baseName(p) || 'text.txt', p, u8); } catch (e) { /* PDFとして扱う */ } }
+          if (!hasPdfHeader(u8) && !(window.CloudSync && isCloudRef(p) && false)) { try { return await renderTextDoc(baseName(p) || 'text.txt', p, u8, ov); } catch (e) { /* PDFとして扱う */ } }
           const doc = await getDoc(o.appDir, u8);
           if (tok !== st.openTok) { try { doc.destroy(); } catch (e) { /* noop */ } return false; }
           ent = { doc, sizes: null, mtime: mt }; docCache.set(key, ent);
         }
-        await attach(ent, key, baseName(p), p, ov, tok); return true;
-      } catch (e) { console.error('[ccf] PDF を開けません', e); if (o.onError) o.onError(e); return false; }
+        await attach(ent, key, baseName(p), p, ov, tok); return tok === st.openTok;
+      } catch (e) { console.error('[ccf] PDF を開けません', e); if (!(ov && ov.silentError) && o.onError) o.onError(e); return false; }
     }
     /** 描画中の処理をすべて止めて、ページ部品を破棄する（キャッシュ中のPDFは destroy しない＝再利用できる） */
     function teardown() {
       st.gen++; if (io) { io.disconnect(); io = null; }
       clearTimeout(visTimer); clearTimeout(visFollowTimer); clearTimeout(scrollTimer); clearTimeout(resizeTimer);
       cancelAllTasks();
-      st.pages = []; els.pages.innerHTML = ''; st.textMode = false; textMarks = []; textCur = -1; els.pages.classList.remove('ccf-pages-text');
+      st.pages = []; els.pages.innerHTML = ''; st.textMode = false; st.isSyncedText = false; st.textPages = []; st.textTotalPages = 1; textMarks = []; textCur = -1; els.pages.classList.remove('ccf-pages-text');
       inUse.delete(vid);
       if (st.doc && (!st.key || st.ent.stale)) { try { st.doc.destroy(); } catch (e) { /* noop */ } }
       st.doc = null; st.ent = null; st.key = ''; st.toc = null; renderToc();   // ここでは evict しない（同じPDFを開き直す途中で、解放直後のPDFが捨てられないように。attach 側で使用中にしてから evict する）
@@ -394,7 +579,7 @@
     }
     /** 「✕ 選択解除」：開いているPDFを閉じて初期表示へ戻す（呼び出し側にも知らせる） */
     function close() {
-      const had = !!(st.doc || st.path); clear(); if (o.onClose) o.onClose(had); return had;
+      const had = !!(st.doc || st.textMode || st.path); clear(); if (o.onClose) o.onClose(had); return had;
     }
 
     /** 全ページの枠を作って並べる（倍率・単ページ/見開きが変わるたびに作り直す）。中身は見える範囲だけ描画する。 */
@@ -581,6 +766,17 @@
       return st.pages.length || 1;
     }
     els.body.addEventListener('scroll', () => {
+      if (st.textMode && st.textPages && st.textPages.length > 1) {
+        clearTimeout(scrollTimer);
+        scrollTimer = setTimeout(() => {
+          if (!st.textMode || !st.textPages || !st.textPages.length) return;
+          if (Date.now() >= st.lockUntil) {
+            const n = currentTextPage();
+            if (n !== st.page) { st.page = n; els.pageNo.value = n; emitState(); }
+          }
+        }, 60);
+        return;
+      }
       if (!st.doc) return;
       clearTimeout(scrollTimer);
       scrollTimer = setTimeout(() => {
@@ -593,9 +789,9 @@
       }, 50);
     });
     els.body.addEventListener('wheel', e => {
-      if (!e.ctrlKey || !st.doc) return;
+      if (!e.ctrlKey || (!st.doc && !st.textMode)) return;
       e.preventDefault();
-      setZoom(st.zoom + (e.deltaY < 0 ? 0.15 : -0.15));
+      setZoom((st.textMode ? textFont / 13.5 : st.zoom) + (e.deltaY < 0 ? 0.15 : -0.15));
     }, { passive: false });
     const onViewportResize = () => {
       if (!st.doc || !container.isConnected) return;
@@ -613,6 +809,13 @@
     if (typeof ResizeObserver === 'function') { ro = new ResizeObserver(onViewportResize); ro.observe(els.body); }
 
     const goto = n => {
+      if (st.textMode) {
+        if (!st.textPages || !st.textPages.length) return;
+        const maxP = st.textTotalPages || st.textPages.length || 1;
+        n = Math.min(maxP, Math.max(1, Math.round(Number(n) || 1)));
+        st.page = n; els.pageNo.value = n; scrollToTextPage(n); emitState();
+        return;
+      }
       if (!st.doc) return; n = Math.min(st.doc.numPages, Math.max(1, Math.round(Number(n) || 1)));
       st.page = n; els.pageNo.value = n; scrollToPage(n); emitState();
     };
@@ -835,7 +1038,20 @@
     // ---- 操作の配線 ----
     container.addEventListener('click', e => {
       const v = e.target.closest('[data-v]'); if (v) { const k = v.dataset.v;
-        if (k === 'open') pick(); else if (k === 'close') close(); else if (k === 'prev') goto(st.page - 1); else if (k === 'next') goto(st.page + 1);
+        if (k === 'open') pick(); else if (k === 'close') close();
+        else if (k === 'prev' || k === 'next') {
+          if (st.textMode && st.textPages && st.textPages.length) {
+            const idx = st.textPages.findIndex(pg => pg.page === st.page);
+            if (idx >= 0) {
+              const ni = Math.min(st.textPages.length - 1, Math.max(0, idx + (k === 'next' ? 1 : -1)));
+              goto(st.textPages[ni].page);
+            } else {
+              goto(st.page + (k === 'next' ? 1 : -1));
+            }
+          } else {
+            goto(st.page + (k === 'next' ? 1 : -1));
+          }
+        }
         else if (k === 'zoom-in') setZoom(st.textMode ? textFont / 13.5 + 0.2 : st.zoom + 0.2); else if (k === 'zoom-out') setZoom(st.textMode ? textFont / 13.5 - 0.2 : st.zoom - 0.2); else if (k === 'fit') fit();
         else if (k === 'layout') setLayout(st.layout === 'spread' ? 'single' : 'spread');
         else if (k === 'hback') histMove(-1); else if (k === 'hfwd') histMove(1);
@@ -854,7 +1070,13 @@
       st.marksOn = !!on; els.marksBtn.setAttribute('aria-pressed', String(st.marksOn)); els.marksBtn.classList.toggle('active', st.marksOn);
       try { localStorage.setItem(MARK_KEY, st.marksOn ? '1' : '0'); } catch (e) { /* noop */ } redrawAll();
     }
-    els.pageNo.addEventListener('change', () => { if (st.doc) navigate(st.path, Math.min(st.doc.numPages, Math.max(1, Math.round(Number(els.pageNo.value) || 1)))); });
+    els.pageNo.addEventListener('change', () => {
+      if (st.textMode && st.textPages && st.textPages.length) {
+        navigate(st.path, Math.min(st.textTotalPages || st.textPages.length, Math.max(1, Math.round(Number(els.pageNo.value) || 1))));
+      } else if (st.doc) {
+        navigate(st.path, Math.min(st.doc.numPages, Math.max(1, Math.round(Number(els.pageNo.value) || 1))));
+      }
+    });
     els.q.addEventListener('input', () => scheduleSearch());
     els.q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); stepHit(e.shiftKey ? -1 : 1); } });
     els.qall.addEventListener('change', () => scheduleSearch(0));
@@ -862,12 +1084,12 @@
     els.docsel.addEventListener('change', () => { const val = els.docsel.value; if (val && o.docSelect && o.onPickDoc) o.onPickDoc(val); else syncDocSel(); });
     async function pick() {
       if (window.require) {
-        const r = await require('electron').ipcRenderer.invoke('ccf:pick', { title: 'PDFを開く', properties: ['openFile'], filters: [{ name: 'PDF / 資料', extensions: ['pdf', 'txt', 'html', 'htm', 'md'] }] });
+        const r = await require('electron').ipcRenderer.invoke('ccf:pick', { title: 'PDF / 資料を開く', properties: ['openFile'], filters: [{ name: 'PDF / 資料', extensions: ['pdf', 'txt', 'html', 'htm', 'md', 'markdown', 'docx'] }] });
         if (r && r[0]) (o.onOpenRequest || openPath)(r[0]);
         return;
       }
       if (!window.WebBridge) return;
-      const files = await WebBridge.pickFiles({ accept: '.pdf,.txt,.html,.htm,.md', multiple: false });
+      const files = await WebBridge.pickFiles({ accept: '.pdf,.txt,.html,.htm,.md,.markdown,.docx', multiple: false });
       const f = files && files[0]; if (!f) return;
       const ref = await WebBridge.saveAssetFile(f);
       if (ref) await (o.onOpenRequest || openPath)(ref);
@@ -900,7 +1122,16 @@
       const sel = window.getSelection(); if (!sel || sel.isCollapsed || !sel.rangeCount) return;
       const tlOf = n => { const el = n && (n.nodeType === 1 ? n : n.parentElement); const t = el && el.closest && el.closest('.textLayer, .ccf-textdoc'); return t && els.pages.contains(t) ? t : null; };
       const tl = tlOf(sel.anchorNode) || tlOf(sel.focusNode); if (!tl) return;
-      if (tl.classList.contains('ccf-textdoc')) { const raw = sel.toString(); if (raw.trim()) o.onExtract(raw, { shift: e.shiftKey, page: 1, via: 'text', src: { path: st.path, name: st.name, page: 1, rect: null } }); return; }
+      if (tl.classList.contains('ccf-textdoc')) {
+        const raw = sel.toString();
+        if (raw.trim()) {
+          const pgNodeOf = n => { const el = n && (n.nodeType === 1 ? n : n.parentElement); return el && el.closest ? el.closest('.ccf-textpage') : null; };
+          const pgEl = pgNodeOf(sel.anchorNode) || pgNodeOf(sel.focusNode);
+          const pgNo = (pgEl && pgEl.dataset && Number(pgEl.dataset.page)) || st.page || 1;
+          o.onExtract(raw, { shift: e.shiftKey, page: pgNo, via: 'text', src: { path: st.path, name: st.name, page: pgNo, rect: null } });
+        }
+        return;
+      }
       // 座標ベースの高精度抽出：選択範囲の矩形（行ごと）をページ座標へ直し、ルビ除外・2段組整列つきで取り出す。取れなければ従来の選択文字列
       let raw = ''; selSrc = null; try { raw = textFromSelection(sel); } catch (er) { console.warn('[ccf] 座標抽出に失敗', er); }
       if (!raw || !raw.trim()) raw = sel.toString();
@@ -913,15 +1144,15 @@
     container.addEventListener('drop', async e => {
       container.classList.remove('drop'); const dt = e.dataTransfer; if (!dt) return;
       const open = o.onOpenRequest || openPath, lp = dt.getData('text/ccf-path');
-      if (lp && /\.(?:pdf|txt|html?|md)$/i.test(lp)) { e.preventDefault(); e.stopPropagation(); return void open(lp); }
-      const f = [...(dt.files || [])].find(x => /\.(?:pdf|txt|html?|md)$/i.test(x.name)); if (!f) return; e.preventDefault(); e.stopPropagation();
+      if (lp && /\.(?:pdf|txt|html?|md|markdown|docx)$/i.test(lp)) { e.preventDefault(); e.stopPropagation(); return void open(lp); }
+      const f = [...(dt.files || [])].find(x => /\.(?:pdf|txt|html?|md|markdown|docx)$/i.test(x.name)); if (!f) return; e.preventDefault(); e.stopPropagation();
       let p = '';
       if (typeof require === 'function') { try { p = require('electron').webUtils.getPathForFile(f) || ''; } catch (er) { p = f.path || ''; } }
       if (p) open(p);
       else if (window.WebBridge && WebBridge.saveAssetFile) {
         const ref = await WebBridge.saveAssetFile(f);
         if (ref) await open(ref);
-      } else if (/\.pdf$/i.test(f.name)) {
+      } else if (/\.(?:pdf|txt|html?|md|markdown|docx)$/i.test(f.name)) {
         openData(new Uint8Array(await f.arrayBuffer()), f.name, '');
       }
     });
@@ -931,14 +1162,14 @@
     renderToc();
 
     return {
-      el: container, els, state: st, openPath, openData, clear, close, evictPaths, evictKey, render, goto, setZoom, fit, setMode, setLayout, clearRects, clearSelection, extractRect, cropImage, navigate,
+      el: container, els, state: st, openPath, openData, openTextContent, clear, close, evictPaths, evictKey, render, goto, setZoom, fit, setMode, setLayout, clearRects, clearSelection, extractRect, cropImage, navigate,
       setDocs(list) { docList = list || []; els.docsel.innerHTML = (docList.length ? `<option value="">📄 表示資料を切り替え (${docList.length}件)…</option>` : '<option value="">📄 登録資料なし（開く/D&amp;D）</option>') + docList.map(d => `<option value="${esc(d.value)}">${esc(d.label)}</option>`).join(''); els.docsel.style.display = ''; syncDocSel(); },
       /** しおり一覧を差し替える（呼び出し側のデータが正） */
       setBookmarks(list) { bms = (list || []).map(b => Object.assign({}, b)); renderBms(); },
       /** 抽出済みマーカー [{ kind:'text'|'npc', label, path, page, rect:{x,y,w,h}（倍率1） }] を差し替える */
       setMarks(list) { marks = list || []; redrawAll(); },
       setMarksOn,
-      setOverlay(html) { if (html == null) { els.overlay.hidden = true; els.overlay.innerHTML = ''; } else { els.overlay.innerHTML = html; els.overlay.hidden = false; } }
+      setOverlay(html) { if (html == null) { els.overlay.hidden = true; els.overlay.innerHTML = ''; els.empty.hidden = !!(st.doc || st.textMode); } else { els.overlay.innerHTML = html; els.overlay.hidden = false; els.empty.hidden = true; } }
     };
   }
   window.CCFPdfViewer = { create, loadPdfjs, loadPdfjsAsync, getDoc, readFileBytes, baseName, extOpts, setExtOpts, cache: { docCache, scanCache, inUse, inUseKeys, evictKey, evictPaths, max: CACHE_MAX } };

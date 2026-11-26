@@ -244,7 +244,7 @@
     selectedIds: new Set(),
     lastCheckedIdx: -1,
     batchSlots: { fg: true, bgm: true, bg: false, marker: false },
-    showHiddenGhost: true,
+    showHiddenGhost: false,
     snapGrid: true,
     zoomScale: 1,             // カメラ拡大倍率 (0.2〜2.5)
     panX: 0,                  // カメラX座標
@@ -395,9 +395,37 @@
     syncPreviewAudioButtons();
   }
 
+  function getEffectiveBoardSize(sc) {
+    const b = (S && S.proj && S.proj.board) || { width: 960, height: 720, grid: 24 };
+    const w = (sc && sc.boardWidth && Number(sc.boardWidth) > 0) ? Number(sc.boardWidth) : (Number(b.width) || 960);
+    const h = (sc && sc.boardHeight && Number(sc.boardHeight) > 0) ? Number(sc.boardHeight) : (Number(b.height) || 720);
+    const grid = Number(b.grid) || 24;
+    return { width: w, height: h, grid };
+  }
+  function getLayerDisplayOffset(origin, sc) {
+    if (origin !== 'global' && origin !== 'board') return { dx: 0, dy: 0 };
+    const b = (S && S.proj && S.proj.board) || { width: 960, height: 720 };
+    const eff = getEffectiveBoardSize(sc);
+    const bw = Number(b.width) || 960;
+    const bh = Number(b.height) || 720;
+    if (eff.width === bw && eff.height === bh) return { dx: 0, dy: 0 };
+    return { dx: Math.round((eff.width - bw) / 2), dy: Math.round((eff.height - bh) / 2) };
+  }
+  function getEffectiveFgFit(sc, activeFg) {
+    const valid = v => (v === 'contain' || v === 'cover' || v === 'fill') ? v : '';
+    return valid(sc && sc.fgFit) || valid(activeFg && activeFg.fitMode) || 'contain';
+  }
+
   function setBoardTarget(nextId) {
     const next = nextId || 'global';
-    if (UI.boardTarget !== next) stopPreviewAudio();
+    if (UI.boardTarget !== next) {
+      const prevSc = (S && S.proj && Array.isArray(S.proj.scenes)) ? S.proj.scenes.find(s => s && s.id === UI.boardTarget) : null;
+      const nextSc = (S && S.proj && Array.isArray(S.proj.scenes)) ? S.proj.scenes.find(s => s && s.id === next) : null;
+      const prevSz = getEffectiveBoardSize(prevSc);
+      const nextSz = getEffectiveBoardSize(nextSc);
+      if (prevSz.width !== nextSz.width || prevSz.height !== nextSz.height) UI.cameraFitted = false;
+      stopPreviewAudio();
+    }
     UI.boardTarget = next;
   }
 
@@ -488,6 +516,65 @@
     }
   }
 
+  function shouldInheritMarkers() {
+    ensureProjShape();
+    return !(S.proj.sceneParseConfig && S.proj.sceneParseConfig.inheritMarkersOnNewScene === false);
+  }
+
+  function getMarkerInheritSourceScene(preferredScene) {
+    ensureProjShape();
+    const scenes = S.proj.scenes || [];
+    if (!scenes.length) return null;
+    if (preferredScene) return preferredScene;
+    if (UI.boardTarget && UI.boardTarget !== 'global') {
+      const hit = scenes.find(s => s.id === UI.boardTarget);
+      if (hit) return hit;
+    }
+    return scenes[scenes.length - 1] || null;
+  }
+
+  function cloneSceneMarkersFromSource(srcScene) {
+    if (!srcScene || !Array.isArray(srcScene.markers) || !srcScene.markers.length) return [];
+    return srcScene.markers
+      .map(mk => mk ? M.sanitizeBoardItem(Object.assign({}, mk, { id: M.newId() }), 'marker') : null)
+      .filter(Boolean);
+  }
+
+  function cloneInheritedMarkers(preferredScene) {
+    if (!shouldInheritMarkers()) return [];
+    return cloneSceneMarkersFromSource(getMarkerInheritSourceScene(preferredScene));
+  }
+
+  function applySplitAtLineWithMarkers(idx, lineIdx) {
+    const srcScene = S.proj.scenes[idx];
+    const nextList = SM.splitSceneAtLine(S.proj.scenes, idx, lineIdx).map(M.sanitizeScene).filter(Boolean);
+    if (shouldInheritMarkers() && srcScene && nextList[idx + 1] && (!nextList[idx + 1].markers || !nextList[idx + 1].markers.length)) {
+      nextList[idx + 1].markers = cloneSceneMarkersFromSource(getMarkerInheritSourceScene(srcScene));
+    }
+    S.proj.scenes = nextList;
+  }
+
+  function applySplitByDelimiterWithMarkers(idx) {
+    const beforeScenes = S.proj.scenes;
+    const beforeLen = beforeScenes.length;
+    const srcScene = beforeScenes[idx];
+    const nextList = SM.splitSceneByDelimiter(beforeScenes, idx).map(M.sanitizeScene).filter(Boolean);
+    const addedCount = nextList.length - beforeLen;
+    if (addedCount <= 0) return 0;
+    cp('区切り線（---）で一括シーン分割');
+    if (shouldInheritMarkers()) {
+      const inheritSrc = getMarkerInheritSourceScene(srcScene);
+      for (let k = 1; k <= addedCount; k++) {
+        const newSc = nextList[idx + k];
+        if (newSc && (!newSc.markers || !newSc.markers.length)) {
+          newSc.markers = cloneSceneMarkersFromSource(inheritSrc);
+        }
+      }
+    }
+    S.proj.scenes = nextList;
+    return addedCount;
+  }
+
   function insertScenesAfterSelection(newScenes) {
     const list = Array.isArray(newScenes) ? newScenes.filter(Boolean) : (newScenes ? [newScenes] : []);
     if (!list.length) return [];
@@ -502,6 +589,43 @@
     }
     setBoardTarget(list[0].id);
     return list;
+  }
+
+  async function addScenesFromForegroundAssets() {
+    if (!CCF.assets || (!CCF.assets.pickAssets && !CCF.assets.pickAsset)) {
+      return say('⚠️ 素材ピッカーが利用できません');
+    }
+    const picker = CCF.assets.pickAssets || CCF.assets.pickAsset;
+    const assets = await picker({
+      key: S.key,
+      types: ['image'],
+      title: '新規シーンにする前景画像を一括選択（選択順に追加されます）',
+      multi: true
+    });
+    if (!Array.isArray(assets) || !assets.length) return;
+    ensureProjShape();
+    const stripExt = s => String(s || '').trim().replace(/\.(?:png|jpe?g|gif|webp|bmp|svg|avif)$/i, '').trim();
+    const inheritSrc = shouldInheritMarkers() ? getMarkerInheritSourceScene() : null;
+    const newScenes = assets.map((asset, i) => {
+      const rawName = (asset && (asset.name || asset.origName)) || (asset && asset.path ? String(asset.path).split(/[\\/]/).pop() : '');
+      const title = stripExt(rawName) || ('シーン ' + (S.proj.scenes.length + i + 1));
+      const fgItem = buildBoardItemFromAsset(asset, 'fg');
+      return M.sanitizeScene({
+        title,
+        text: '',
+        headingPattern: 'manual',
+        fg: fgItem,
+        markers: cloneSceneMarkersFromSource(inheritSrc),
+        manualSlots: { bg: false, fg: true, screen: false, marker: false, bgm: false }
+      });
+    });
+    cp('前景画像からシーンを一括追加');
+    insertScenesAfterSelection(newScenes);
+    CCF.saveProject();
+    refreshBoardContainers();
+    if (UI.subView === 'scenes') render();
+    say(`🖼️ 前景画像から ${newScenes.length}件のシーンを一括追加しました`);
+    return newScenes;
   }
 
   function duplicateSceneById(sceneId) {
@@ -920,6 +1044,7 @@
       });
       const sortedPages = [...pagesMap.keys()].sort((a, b) => a - b);
       cp(mode === 'per-page' ? 'ページ単位でシーン取り込み' : '指定範囲を1シーンとして取り込み');
+      const inheritSrc = shouldInheritMarkers() ? getMarkerInheritSourceScene() : null;
       const added = [];
       if (mode === 'per-page') {
         sortedPages.forEach(pg => {
@@ -934,7 +1059,8 @@
             page: pg,
             sourceName: loaded.name,
             sourcePath: loaded.path,
-            headingPattern: 'manual'
+            headingPattern: 'manual',
+            markers: cloneSceneMarkersFromSource(inheritSrc)
           });
           S.proj.scenes.push(sc);
           added.push(sc);
@@ -950,7 +1076,8 @@
           page: sp,
           sourceName: loaded.name,
           sourcePath: loaded.path,
-          headingPattern: 'manual'
+          headingPattern: 'manual',
+          markers: cloneSceneMarkersFromSource(inheritSrc)
         });
         S.proj.scenes.push(sc);
         added.push(sc);
@@ -1088,7 +1215,7 @@
       locked: !!prev.locked,
       lockAspect: prev.lockAspect !== false
     };
-    if (kind === 'fg') raw.fitMode = prev.fitMode === 'fill' ? 'fill' : 'cover';
+    if (kind === 'fg') raw.fitMode = (prev.fitMode === 'fill' || prev.fitMode === 'cover' || prev.fitMode === 'contain') ? prev.fitMode : 'contain';
     return M.sanitizeBoardItem(raw, kind);
   }
 
@@ -1162,7 +1289,8 @@
       page: sel.page || 1,
       sourceName: sel.sourceName || '',
       sourcePath: sel.sourcePath || '',
-      headingPattern: 'manual'
+      headingPattern: 'manual',
+      markers: cloneInheritedMarkers()
     });
     insertScenesAfterSelection(sc);
     computeCandidatesForScene(sc, getMatchSources());
@@ -1247,6 +1375,7 @@
       close();
       cp('登録テキストからシーンを追加');
       const cfg = S.proj.sceneParseConfig;
+      const inheritSrc = shouldInheritMarkers() ? getMarkerInheritSourceScene() : null;
       const added = [];
       if (act === 'each') {
         picked.forEach((st, i) => {
@@ -1256,7 +1385,8 @@
             title: st.title || T.stockTitle({ text }, 18) || `シーン ${S.proj.scenes.length + i + 1}`,
             text,
             page: st.page || null,
-            headingPattern: 'manual'
+            headingPattern: 'manual',
+            markers: cloneSceneMarkersFromSource(inheritSrc)
           });
           S.proj.scenes.push(sc);
           added.push(sc);
@@ -1268,7 +1398,8 @@
           title: picked[0].title || `シーン ${S.proj.scenes.length + 1}`,
           text,
           page: picked[0].page || null,
-          headingPattern: 'manual'
+          headingPattern: 'manual',
+          markers: cloneSceneMarkersFromSource(inheritSrc)
         });
         S.proj.scenes.push(sc);
         added.push(sc);
@@ -1622,7 +1753,8 @@
       sourceName: sc.sourceName || '',
       sourcePath: sc.sourcePath || '',
       headingPattern: 'manual',
-      checked: !!sc.checked
+      checked: !!sc.checked,
+      markers: cloneInheritedMarkers(sc)
     });
     S.proj.scenes.splice(idx + 1, 0, nextScene);
     UI.boardTarget = nextScene.id;
@@ -1660,14 +1792,10 @@
     ensureProjShape();
     const idx = S.proj.scenes.findIndex(s => s.id === sceneId);
     if (idx < 0) return;
-    const beforeLen = S.proj.scenes.length;
-    const nextList = SM.splitSceneByDelimiter(S.proj.scenes, idx).map(M.sanitizeScene).filter(Boolean);
-    const addedCount = nextList.length - beforeLen;
+    const addedCount = applySplitByDelimiterWithMarkers(idx);
     if (addedCount <= 0) {
       return say('⚠️ 本文内に「---」のみの区切り行が見つかりませんでした');
     }
-    cp('区切り線（---）で一括シーン分割');
-    S.proj.scenes = nextList;
     candidateCache.clear();
     CCF.saveProject();
     render();
@@ -1907,7 +2035,7 @@
         const li = +splitLineBtn.dataset.seSplitLine;
         if (!(li >= 1)) return;
         cp('シーン分割');
-        S.proj.scenes = SM.splitSceneAtLine(S.proj.scenes, idx, li).map(M.sanitizeScene).filter(Boolean);
+        applySplitAtLineWithMarkers(idx, li);
         const nextSc = S.proj.scenes[idx + 1] || S.proj.scenes[idx];
         if (nextSc) {
           activeSceneId = nextSc.id;
@@ -1994,7 +2122,8 @@
           sourceName: sc.sourceName || '',
           sourcePath: sc.sourcePath || '',
           headingPattern: 'manual',
-          checked: !!sc.checked
+          checked: !!sc.checked,
+          markers: cloneInheritedMarkers(sc)
         });
         S.proj.scenes.splice(idx + 1, 0, nextScene);
         activeSceneId = nextScene.id;
@@ -2028,14 +2157,10 @@
         return;
       }
       if (act === 'split-delim') {
-        const beforeLen = S.proj.scenes.length;
-        const nextList = SM.splitSceneByDelimiter(S.proj.scenes, idx).map(M.sanitizeScene).filter(Boolean);
-        const addedCount = nextList.length - beforeLen;
+        const addedCount = applySplitByDelimiterWithMarkers(idx);
         if (addedCount <= 0) {
           return say('⚠️ 本文内に「---」のみの区切り行が見つかりませんでした');
         }
-        cp('区切り線（---）で一括シーン分割');
-        S.proj.scenes = nextList;
         activeSceneId = S.proj.scenes[idx] ? S.proj.scenes[idx].id : activeSceneId;
         UI.boardTarget = activeSceneId;
         candidateCache.clear();
@@ -2550,8 +2675,9 @@
       if (!asset) return;
       if (kind === 'bg' || kind === 'fg') {
         const host = sc || S.proj.globalDecor;
+        const eff = getEffectiveBoardSize(sc);
         cp(kind === 'bg' ? '背景画像を設定' : '前景画像を設定');
-        host[kind] = buildBoardItemFromAsset(asset, kind, host[kind]);
+        host[kind] = buildBoardItemFromAsset(asset, kind, host[kind] || { width: eff.width, height: eff.height });
         CCF.saveProject();
         refreshBoardContainers();
         return;
@@ -2619,6 +2745,7 @@
     const g = S.proj.globalDecor;
     const sc = getBoardTargetScene(targetId);
     const activeFg = (sc && sc.fg) ? sc.fg : g.fg;
+    const oldEff = getEffectiveBoardSize(sc);
     if (!activeFg) return say('⚠️ 先に前景画像を設定してください');
     const dim = await measureImageSize(assetSrc(activeFg));
     if (!dim) return say('⚠️ 前景画像のサイズを読み取れませんでした');
@@ -2627,14 +2754,25 @@
     const scale = Math.min(1, 3840 / Math.max(dim.width, dim.height));
     const cols = Math.max(4, Math.min(maxCells, Math.round((dim.width * scale) / grid)));
     const rows = Math.max(4, Math.min(maxCells, Math.round((dim.height * scale) / grid)));
+    const nextW = cols * grid;
+    const nextH = rows * grid;
     cp('前景画像に盤面サイズを合わせる');
-    S.proj.board.width = cols * grid;
-    S.proj.board.height = rows * grid;
-    S.proj.board.customSize = true;
+    if (sc && sc.fg) {
+      sc.boardWidth = nextW;
+      sc.boardHeight = nextH;
+    } else {
+      S.proj.board.width = nextW;
+      S.proj.board.height = nextH;
+      S.proj.board.customSize = true;
+    }
+    if (activeFg.x === 0 && activeFg.y === 0 && activeFg.width === oldEff.width && activeFg.height === oldEff.height) {
+      activeFg.width = nextW;
+      activeFg.height = nextH;
+    }
     CCF.saveProject();
     UI.cameraFitted = false;
     refreshBoardContainers();
-    say(`📐 盤面サイズを ${cols} × ${rows} マス（${S.proj.board.width}×${S.proj.board.height}px）に合わせました`);
+    say(`📐 盤面サイズを ${cols} × ${rows} マス（${cols * grid}×${rows * grid}px）に合わせました`);
   }
 
   async function loadImageForOffscreenCanvas(item) {
@@ -2766,29 +2904,52 @@
     say(`🧩 ${selPanels.length}枚のパネルを1枚の透過PNGに結合しました（Ctrl+Zで元に戻せます）`);
   }
 
-  function renderFgControlsHtml(b, activeFg, isSceneFallback) {
-    const grid = Number(b.grid) || 24;
-    const cols = Math.max(4, Math.round((b.width || 960) / grid));
-    const rows = Math.max(4, Math.round((b.height || 720) / grid));
-    const fgFit = (activeFg && activeFg.fitMode === 'fill') ? 'fill' : 'cover';
+  const EYE_OPEN_SVG = '<svg class="ccf-eye-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const EYE_OFF_SVG = '<svg class="ccf-eye-svg" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.8 21.8 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 5c7 0 11 7 11 7a21.8 21.8 0 0 1-3.17 4.35"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+  const eyeIconSvg = vis => (vis !== false ? EYE_OPEN_SVG : EYE_OFF_SVG);
+
+  function renderFgControlsHtml(b, activeFg, isSceneFallback, sc) {
+    const eff = getEffectiveBoardSize(sc);
+    const grid = eff.grid || 24;
+    const cols = Math.max(4, Math.round((eff.width || 960) / grid));
+    const rows = Math.max(4, Math.round((eff.height || 720) / grid));
+    const fgFit = getEffectiveFgFit(sc, activeFg);
+    const fgX = activeFg && Number.isFinite(Number(activeFg.x)) ? Math.round(Number(activeFg.x)) : 0;
+    const fgY = activeFg && Number.isFinite(Number(activeFg.y)) ? Math.round(Number(activeFg.y)) : 0;
+    const fgW = activeFg && Number(activeFg.width) > 0 ? Math.round(Number(activeFg.width)) : eff.width;
+    const fgH = activeFg && Number(activeFg.height) > 0 ? Math.round(Number(activeFg.height)) : eff.height;
     return `<div class="ccf-bp-fg-ctrls">
       <div class="ccf-bp-fg-row">
         <span class="ccf-inline-lbl">盤面サイズ：横</span>
         <input type="number" min="4" max="166" class="ccf-bp-cell-inp" data-bp-board-dim="cols" value="${cols}" aria-label="盤面横マス数">
         <span class="ccf-inline-lbl">× 縦</span>
         <input type="number" min="4" max="166" class="ccf-bp-cell-inp" data-bp-board-dim="rows" value="${rows}" aria-label="盤面縦マス数">
-        <span class="ccf-inline-lbl">マス <small class="ccf-muted">(${b.width}×${b.height}px)</small></span>
+        <span class="ccf-inline-lbl">マス <small class="ccf-muted">(${eff.width}×${eff.height}px)</small></span>
         <button type="button" class="ccf-mini" data-bp="reset-board-40x30" title="盤面サイズを標準の40×30マス（960×720px）に戻します">↺ 40×30(標準)</button>
       </div>
       <div class="ccf-bp-fg-row ccf-fg-opts">
         <button type="button" class="ccf-mini" data-bp="fit-board-to-fg"${activeFg ? '' : ' disabled'} title="前景画像のピクセルサイズ・縦横比に合わせて盤面マス数（1マス=${grid}px）を変更します">📐 前景画像のサイズ・比率に盤面を合わせる</button>
         <label class="ccf-bp-fg-fit ccf-inline-field"><span class="ccf-inline-lbl">表示方式:</span>
           <select data-bp-fg-fit="1"${activeFg ? '' : ' disabled'}>
+            <option value="contain"${fgFit === 'contain' ? ' selected' : ''}>全体表示(contain・標準)</option>
             <option value="cover"${fgFit === 'cover' ? ' selected' : ''}>切り抜き(cover)</option>
             <option value="fill"${fgFit === 'fill' ? ' selected' : ''}>引き伸ばし(fill)</option>
           </select>
         </label>
         ${isSceneFallback ? '<span class="ccf-muted ccf-inline-lbl" style="font-size:.68rem;">※共通前景を表示中</span>' : ''}
+      </div>
+      ${activeFg ? `<div class="ccf-bp-fg-row ccf-bp-fg-rect">
+        <span class="ccf-inline-lbl">🎯 前景の位置・サイズ調整:</span>
+        <label class="ccf-inline-field"><span>X</span><input type="number" step="1" class="ccf-bp-cell-inp" data-bp-fg-rect="x" value="${fgX}" aria-label="前景X座標"></label>
+        <label class="ccf-inline-field"><span>Y</span><input type="number" step="1" class="ccf-bp-cell-inp" data-bp-fg-rect="y" value="${fgY}" aria-label="前景Y座標"></label>
+        <label class="ccf-inline-field"><span>幅(W)</span><input type="number" min="16" max="4000" step="1" class="ccf-bp-cell-inp" data-bp-fg-rect="width" value="${fgW}" aria-label="前景幅"></label>
+        <label class="ccf-inline-field"><span>高さ(H)</span><input type="number" min="16" max="4000" step="1" class="ccf-bp-cell-inp" data-bp-fg-rect="height" value="${fgH}" aria-label="前景高さ"></label>
+        <button type="button" class="ccf-mini" data-bp="fg-center" title="現在のサイズで盤面中央に配置">中央に配置</button>
+        <button type="button" class="ccf-mini" data-bp="fg-fit-board" title="前景画像の縦横比を保って盤面内にぴったり収めます">盤面にフィット</button>
+        <button type="button" class="ccf-mini" data-bp="fg-reset-rect" title="前景の位置・サイズを盤面全体（0, 0, ${eff.width}×${eff.height}）に戻します">リセット</button>
+      </div>` : ''}
+      <div class="ccf-bp-fg-row">
+        <button type="button" class="ccf-mini" data-bp="fix-legacy-coords" title="旧バージョンで取り込んだ部屋の全スクリーン・駒・マーカー座標を＋半盤面シフトして中央基準へ一括補正します（Ctrl+Zで元に戻せます）">📐 座標を中央基準へ一括補正</button>
       </div>
     </div>`;
   }
@@ -2895,19 +3056,28 @@
     const src = assetSrc(it);
     const isSel = UI.selectedIds && UI.selectedIds.has(it.id);
     const defName = (isMarker ? 'マーカーパネル ' : 'スクリーンパネル ') + (idx + 1);
-    const dispName = it.name || defName;
+    const hasText = !!String(it.text || '').trim();
+    const dispName = it.name || (hasText ? String(it.text).trim().split('\n')[0] : defName);
     const isVis = it.visible !== false;
     const isLocked = !!it.locked;
-    return `<div class="ccf-bp-mk-row${isSel ? ' sel' : ''}" data-bp-midsel="${esc(it.id)}" title="クリックで盤面上の該当パネルを選択／ダブルクリックで管理名を編集">
+    const grid = Number((S.proj && S.proj.board && S.proj.board.grid) || 24) || 24;
+    const wCells = Math.max(1, Math.round((Number(it.width) || grid) / grid));
+    const hCells = Math.max(1, Math.round((Number(it.height) || grid) / grid));
+    const zVal = Number.isFinite(Number(it.zIndex)) ? Number(it.zIndex) : 0;
+    return `<div class="ccf-bp-mk-row${isSel ? ' sel' : ''}${isVis ? '' : ' is-hidden-row'}" data-bp-midsel="${esc(it.id)}" title="クリックで盤面上の該当パネルを選択／ダブルクリックで管理名を編集">
       <div class="ccf-bp-mk-top">
         ${src ? `<img class="ccf-bp-mk-thumb" src="${esc(src)}" alt="" data-bp-img-item="${esc(it.id)}">` : `<span class="ccf-bp-mk-swatch" style="background:${esc(it.color || '#5865f2')};"></span>`}
         <div class="ccf-bp-mk-meta">
           <div class="ccf-bp-mk-name" data-bp-mk-name="${esc(it.id)}" title="${esc(dispName)}">${esc(dispName)}</div>
+          <div class="ccf-bp-mk-sub">
+            <span class="ccf-bp-mk-dim">[${zVal}] ${wCells} × ${hCells}</span>
+            ${!hasText ? '<span class="ccf-bp-mk-notext">NOTEXT</span>' : ''}
+          </div>
         </div>
         <div class="ccf-bp-mk-acts">
-          <button type="button" class="ccf-mini${isLocked ? ' active' : ''}" data-bp="pin" data-id="${esc(it.id)}" aria-pressed="${isLocked}" title="${isLocked ? '固定中（クリックで固定解除）' : '位置・サイズを固定'}">📌固定</button>
-          <button type="button" class="ccf-mini${isVis ? '' : ' is-hidden'}" data-bp="eye" data-id="${esc(it.id)}" title="${isVis ? '表示中（クリックで非表示）' : '非表示中（クリックで表示）'}">${isVis ? '👁️表示' : '🚫非表示'}</button>
-          <button type="button" class="ccf-mini danger" data-bp="del" data-id="${esc(it.id)}" title="削除">✕削除</button>
+          <button type="button" class="ccf-mini${isLocked ? ' active' : ''}" data-bp="pin" data-id="${esc(it.id)}" aria-pressed="${isLocked}" title="${isLocked ? '固定中（クリックで固定解除）' : '位置・サイズを固定'}">📌</button>
+          <button type="button" class="ccf-mini ccf-eye-btn${isVis ? ' is-vis' : ' is-hidden'}" data-bp="eye" data-id="${esc(it.id)}" aria-pressed="${isVis}" title="${isVis ? '表示中（クリックで非表示）' : '非表示中（クリックで表示）'}">${eyeIconSvg(isVis)}</button>
+          <button type="button" class="ccf-mini danger" data-bp="del" data-id="${esc(it.id)}" title="削除">✕</button>
         </div>
       </div>
       <input type="text" class="ccf-bp-mk-txtinp" data-bp-panel-text="${esc(it.id)}" value="${esc(it.text || '')}" placeholder="💬 パネル内テキスト（盤面表示・空欄で非表示）">
@@ -2922,7 +3092,7 @@
       <div class="ccf-bp-sechead ccf-bp-foldhead" data-bp-fold="${esc(foldKey)}" role="button" tabindex="0" aria-expanded="${!collapsed}">
         <div class="ccf-bp-fold-left">
           <span class="ccf-bp-fold-ico" aria-hidden="true">${collapsed ? '▸' : '▾'}</span>
-          <b>${titleHtml}</b>
+          <b${o.titleAttr ? ` ${o.titleAttr}` : ''}>${titleHtml}</b>
           ${o.badgeHtml || ''}
         </div>
         ${o.rightHtml ? `<div class="ccf-bp-fold-acts">${o.rightHtml}</div>` : ''}
@@ -2936,6 +3106,7 @@
   function renderGlobalScreensCardHtml() {
     const g = S.proj.globalDecor || {};
     const screens = Array.isArray(g.screens) ? g.screens : [];
+    const anyVis = screens.some(sr => sr && sr.visible !== false);
     const listHtml = screens.length
       ? `<div class="ccf-bp-mk-list">${screens.map((sr, si) => renderPanelListRowHtml(sr, si, false)).join('')}</div>`
       : '<div class="ccf-bp-panel-empty">なし（全シーン共通枠など）</div>';
@@ -2945,7 +3116,7 @@
       listHtml,
       {
         cardAttr: 'screen',
-        rightHtml: '<button type="button" class="ccf-mini" data-bp="add-screen" title="全シーン共通の部屋常駐スクリーンパネルを追加">＋ 追加</button>'
+        rightHtml: `<button type="button" class="ccf-mini ccf-eye-btn ccf-eye-bulk${anyVis ? ' is-vis' : ' is-hidden'}" data-bp="eye-all-screen" aria-pressed="${anyVis}"${screens.length ? '' : ' disabled'} title="${anyVis ? 'スクリーンパネルを一括で非表示にする' : 'スクリーンパネルを一括で表示する'}">${eyeIconSvg(anyVis)}</button><button type="button" class="ccf-mini" data-bp="add-screen" title="全シーン共通の部屋常駐スクリーンパネルを追加">＋ 追加</button>`
       }
     );
   }
@@ -2968,27 +3139,39 @@
 
   function renderSceneMarkersBlockHtml(sc, idx, m) {
     const g = S.proj.globalDecor || {};
+    const cfg = S.proj.sceneParseConfig || {};
+    const inheritMarkers = cfg.inheritMarkersOnNewScene !== false;
     const markers = sc ? (Array.isArray(sc.markers) ? sc.markers : []) : (Array.isArray(g.markers) ? g.markers : []);
+    const prevSc = (sc && idx > 0) ? S.proj.scenes[idx - 1] : null;
+    const canInheritPrev = !!(sc && !markers.length && prevSc && Array.isArray(prevSc.markers) && prevSc.markers.length);
     const listHtml = markers.length
       ? `<div class="ccf-bp-mk-list">${markers.map((mk, mi) => renderPanelListRowHtml(mk, mi, true)).join('')}</div>`
       : '<div class="ccf-bp-panel-empty">なし（場所固有パネル等）</div>';
 
+    const inheritChkHtml = `<div class="ccf-bp-panel-subacts">
+      <label class="ccf-chk" title="新しいシーンを追加・分割したとき、現在選択中のシーンのマーカーパネル一式をそのまま引き継ぎます（目玉アイコンで各シーンごとの表示/非表示を切り替えられます）"><input type="checkbox" data-bp-opt="inherit-markers"${inheritMarkers ? ' checked' : ''}> 新規シーン作成時に引き継ぐ</label>
+    </div>`;
+
     const extraActs = sc ? `<div class="ccf-bp-panel-subacts">
+      ${canInheritPrev ? `<button type="button" class="ccf-mini" data-bp="inherit-prev-markers" title="直前のシーン「${esc(prevSc.title || '無題のシーン')}」のマーカーパネル構成（${prevSc.markers.length}枚）をコピーします">🔄 直前シーンから引き継ぐ</button>` : ''}
       <button type="button" class="ccf-mini" data-scn-apply-one="marker" data-scn-id="${esc(sc.id)}"${markers.length ? '' : ' disabled'} title="チェック済みシーン（未チェック時は全シーン確認）へこのマーカーだけ一括適用">📋 他シーンへこのマーカーだけ適用</button>
       ${markers.length ? `<button type="button" class="ccf-mini danger" data-scn-clear="marker" data-i="${idx}" title="このシーンのマーカーパネルをすべて解除">✕ 全解除</button>` : ''}
-    </div>` : '';
+    </div>${inheritChkHtml}` : inheritChkHtml;
 
     const candWrap = sc
       ? `<div data-bp-marker-cands="${esc(sc.id)}">${renderMarkerCandStripHtml(sc, idx, m)}</div>`
       : '';
 
+    const visMarkerCount = markers.filter(mk => mk && mk.visible !== false).length;
+    const anyVis = visMarkerCount > 0;
     return renderCollapsibleSec(
       'marker',
-      `📌 マーカーパネル（シーン別・${markers.length}枚）`,
+      `📌 マーカーパネル（シーン別・${visMarkerCount}枚）`,
       `${listHtml}${extraActs}${candWrap}`,
       {
         cardAttr: 'marker',
-        rightHtml: '<button type="button" class="ccf-mini" data-bp="add-marker-menu" title="画像または色・テキスト枠のマーカーパネルを追加">＋ 追加</button>'
+        titleAttr: 'data-bp-marker-head="1"',
+        rightHtml: `<button type="button" class="ccf-mini ccf-eye-btn ccf-eye-bulk${anyVis ? ' is-vis' : ' is-hidden'}" data-bp="eye-all-marker" aria-pressed="${anyVis}"${markers.length ? '' : ' disabled'} title="${anyVis ? 'マーカーパネルを一括で非表示にする' : 'マーカーパネルを一括で表示する'}">${eyeIconSvg(anyVis)}</button><button type="button" class="ccf-mini" data-bp="add-marker-menu" title="画像または色・テキスト枠のマーカーパネルを追加">＋ 追加</button>`
       }
     );
   }
@@ -3081,7 +3264,7 @@
         <div class="ccf-bp-global-grid">
           <div class="ccf-bp-gslot"><span>🖼️ 共通背景:</span> <b>${esc(g.bg ? g.bg.name : '未設定')}</b> <button type="button" class="ccf-mini" data-bp="add-bg">選択</button>${g.bg ? '<button type="button" class="ccf-mini danger" data-bp="clr-g-bg">✕</button>' : ''}</div>
           <div class="ccf-bp-gslot"><span>🪟 共通前景:</span> <b>${esc(g.fg ? g.fg.name : '未設定')}</b> <button type="button" class="ccf-mini" data-bp="add-fg">選択</button>${g.fg ? '<button type="button" class="ccf-mini danger" data-bp="clr-g-fg">✕</button>' : ''}</div>
-          ${renderFgControlsHtml(b, g.fg, false)}
+          ${renderFgControlsHtml(b, g.fg, false, null)}
         </div>`;
       return [
         memoSec,
@@ -3099,7 +3282,7 @@
     const mediaSummary = `🪟前景${sc.fg ? 'あり' : 'なし'} / 🎵BGM${sc.bgm ? 'あり' : 'なし'} / 🖼️背景${sc.bg ? 'あり' : 'なし'}`;
     const mediaBody = `<div class="ccf-slots" data-bp-cands-host="${esc(sc.id)}">
         ${renderSlotRowHtml(sc, idx, 'fg', '🪟 前景（盤面）', sc.fg, m.fg, m.extracted, { compact: true })}
-        ${renderFgControlsHtml(b, activeFg, isFallbackFg)}
+        ${renderFgControlsHtml(b, activeFg, isFallbackFg, sc)}
         ${renderSlotRowHtml(sc, idx, 'bgm', '🎵 BGM', sc.bgm, m.bgm, m.extracted, { compact: true })}
         ${renderSlotRowHtml(sc, idx, 'bg', '🖼️ 背景（任意）', sc.bg, m.bg, m.extracted, { compact: true })}
       </div>
@@ -3154,7 +3337,7 @@
       <div class="ccf-bp-toggles">
         <button type="button" class="ccf-btn${sel.locked ? ' active' : ''}" data-bp="pin" data-id="${esc(sel.id)}" aria-pressed="${!!sel.locked}" title="ONで位置・サイズを固定し、パネル上のドラッグで視点移動できるようにします">${sel.locked ? '📌 固定 ON' : '📌 固定'}</button>
         <button type="button" class="ccf-btn${sel.lockAspect ? ' active' : ''}" data-bp="lock" data-id="${esc(sel.id)}" aria-pressed="${sel.lockAspect}">${sel.lockAspect ? '🔒 比率固定 ON' : '🔓 比率自由'}</button>
-        <button type="button" class="ccf-btn${sel.visible ? ' active' : ''}" data-bp="eye" data-id="${esc(sel.id)}">${sel.visible ? '👁️ 表示' : '🚫 非表示'}</button>
+        <button type="button" class="ccf-btn ccf-eye-btn${sel.visible !== false ? ' active is-vis' : ' is-hidden'}" data-bp="eye" data-id="${esc(sel.id)}" aria-pressed="${sel.visible !== false}">${eyeIconSvg(sel.visible !== false)}<span>${sel.visible !== false ? ' 表示' : ' 非表示'}</span></button>
         ${sel.kind !== 'piece'
           ? `<button type="button" class="ccf-btn${(sel.zIndex || 0) >= 101 ? ' active' : ''}" data-bp="toggle-z101" data-id="${esc(sel.id)}" title="優先度0（駒より下）と優先度101（駒より上）を切り替えます">${(sel.zIndex || 0) >= 101 ? '🔺 駒より上(101) ⇔ 駒より下(0)' : '🔻 駒より下(0) ⇔ 駒より上(101)'}</button>`
           : '<span class="ccf-muted" style="font-size:.7rem;">♟️ 駒は実質優先度100.5（最前面）</span>'}
@@ -3185,6 +3368,225 @@
     return '';
   }
 
+  function renderStageItemHtml(it, isSel, showHandles, cssZ, dispOffset) {
+    const kindLabel = k => k === 'screen' ? 'スクリーン' : k === 'marker' ? 'マーカー' : 'キャラ駒';
+    const src = assetSrc(it);
+    const isVis = it.visible !== false;
+    const offX = (dispOffset && dispOffset.dx) || 0;
+    const offY = (dispOffset && dispOffset.dy) || 0;
+    const cls = `ccf-bp-item kind-${it.kind}${isSel ? ' sel' : ''}${!isVis ? ' hidden-ghost' : ''}${it.locked ? ' locked' : ''}`;
+    const style = `left:${it.x + offX}px;top:${it.y + offY}px;width:${it.width}px;height:${it.height}px;z-index:${cssZ};`;
+    const bgStyle = it.kind === 'marker' && !src ? `background:${esc(it.color || 'rgba(88,101,242,.35)')};` : '';
+    const panelText = (it.kind !== 'piece' && String(it.text || '').trim())
+      ? `<div class="ccf-bp-paneltext">${esc(it.text)}</div>`
+      : '';
+    const content = src
+      ? `<img src="${esc(src)}" alt="" draggable="false" data-bp-img-item="${esc(it.id)}">${panelText}`
+      : (it.kind === 'piece'
+        ? `<div class="ccf-bp-ph">♟️<span>${esc(it.name)}</span></div>`
+        : `<div class="ccf-bp-ph">${panelText}</div>`);
+    const lockBadge = it.locked ? '<span class="ccf-bp-lockbadge" title="固定中（ドラッグで視点移動）">📌</span>' : '';
+    const handles = showHandles
+      ? '<span class="ccf-bp-h nw" data-bph="nw"></span><span class="ccf-bp-h ne" data-bph="ne"></span><span class="ccf-bp-h sw" data-bph="sw"></span><span class="ccf-bp-h se" data-bph="se"></span>'
+      : '';
+    return `<div class="${cls}" data-bpid="${esc(it.id)}" style="${style}${bgStyle}" title="${esc(it.name)} (${kindLabel(it.kind)})${it.locked ? ' [固定中]' : ''}">
+        ${content}
+        ${lockBadge}
+        ${it.kind === 'piece' ? `<div class="ccf-bp-nametag">${esc(it.name)}</div>` : ''}
+        ${handles}
+      </div>`;
+  }
+
+  function patchBoardVisibilityDom(targetId, changedItems) {
+    const hosts = [];
+    const inlineHost = $('ccfBoardInlineHost');
+    if (inlineHost) hosts.push(inlineHost);
+    if (UI.modalOpen && UI.modalEl) {
+      const mBox = UI.modalEl.querySelector('.ccf-bp-modal-body');
+      if (mBox) hosts.push(mBox);
+    }
+    if (!hosts.length) return;
+    const effTarget = targetId || UI.boardTarget || 'global';
+    const layers = collectBoardLayers(effTarget);
+    const selLayers = syncSelectionToLayers(layers);
+    const zById = new Map();
+    let pieceRank = 0;
+    layers.forEach(l => {
+      zById.set(l.item.id, cssZIndexOf(l.item, l.item.kind === 'piece' ? pieceRank++ : 0));
+    });
+    const list = Array.isArray(changedItems) ? changedItems.filter(Boolean) : [];
+    const sc = getBoardTargetScene(effTarget);
+    const g = (S.proj && S.proj.globalDecor) || {};
+    const screens = Array.isArray(g.screens) ? g.screens : [];
+    const markers = sc ? (Array.isArray(sc.markers) ? sc.markers : []) : (Array.isArray(g.markers) ? g.markers : []);
+    const anyScreenVis = screens.some(x => x && x.visible !== false);
+    const visMarkerCount = markers.filter(mk => mk && mk.visible !== false).length;
+    const anyMarkerVis = visMarkerCount > 0;
+
+    hosts.forEach(host => {
+      const cv = host.querySelector('.ccf-bp-canvas');
+      const guides = cv ? cv.querySelector('[data-bp-guides]') : null;
+      list.forEach(it => {
+        const id = it.id;
+        const escId = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(id) : id;
+        const isVis = it.visible !== false;
+        const shouldRender = isVis || !!UI.showHiddenGhost;
+        if (cv) {
+          const el = cv.querySelector(`[data-bpid="${escId}"]`);
+          if (!shouldRender) {
+            if (el) el.remove();
+          } else if (el) {
+            el.classList.toggle('hidden-ghost', !isVis);
+          } else {
+            const isSel = UI.selectedIds && UI.selectedIds.has(id);
+            const showHandles = isSel && selLayers.length === 1 && !it.locked;
+            const cssZ = zById.has(id) ? zById.get(id) : cssZIndexOf(it, 0);
+            const layerHit = layers.find(l => l.item.id === id);
+            const dispOff = getLayerDisplayOffset(layerHit ? layerHit.origin : '', sc);
+            const html = renderStageItemHtml(it, isSel, showHandles, cssZ, dispOff);
+            if (guides) guides.insertAdjacentHTML('beforebegin', html);
+            else cv.insertAdjacentHTML('beforeend', html);
+          }
+        }
+        host.querySelectorAll(`[data-bp-midsel="${escId}"]`).forEach(row => {
+          row.classList.toggle('is-hidden-row', !isVis);
+          const btn = row.querySelector('[data-bp="eye"]');
+          if (btn) {
+            btn.classList.toggle('is-vis', isVis);
+            btn.classList.toggle('is-hidden', !isVis);
+            btn.setAttribute('aria-pressed', String(isVis));
+            btn.title = isVis ? '表示中（クリックで非表示）' : '非表示中（クリックで表示）';
+            btn.innerHTML = eyeIconSvg(isVis);
+          }
+        });
+        host.querySelectorAll(`[data-bpl="${escId}"]`).forEach(row => {
+          row.classList.toggle('muted', !isVis);
+          row.classList.toggle('is-hidden-row', !isVis);
+          const btn = row.querySelector('[data-bp="eye"]');
+          if (btn) {
+            btn.classList.toggle('is-vis', isVis);
+            btn.classList.toggle('is-hidden', !isVis);
+            btn.setAttribute('aria-pressed', String(isVis));
+            btn.title = isVis ? '表示中（クリックで非表示）' : '非表示中（クリックで表示）';
+            btn.innerHTML = eyeIconSvg(isVis);
+          }
+        });
+        const inspBtn = host.querySelector(`.ccf-bp-inspector [data-bp="eye"][data-id="${escId}"]`);
+        if (inspBtn) {
+          inspBtn.classList.toggle('active', isVis);
+          inspBtn.classList.toggle('is-vis', isVis);
+          inspBtn.classList.toggle('is-hidden', !isVis);
+          inspBtn.setAttribute('aria-pressed', String(isVis));
+          inspBtn.innerHTML = `${eyeIconSvg(isVis)}<span>${isVis ? ' 表示' : ' 非表示'}</span>`;
+        }
+      });
+      const bulkScr = host.querySelector('[data-bp="eye-all-screen"]');
+      if (bulkScr) {
+        bulkScr.classList.toggle('is-vis', anyScreenVis);
+        bulkScr.classList.toggle('is-hidden', !anyScreenVis);
+        bulkScr.setAttribute('aria-pressed', String(anyScreenVis));
+        bulkScr.title = anyScreenVis ? 'スクリーンパネルを一括で非表示にする' : 'スクリーンパネルを一括で表示する';
+        bulkScr.innerHTML = eyeIconSvg(anyScreenVis);
+      }
+      const bulkMk = host.querySelector('[data-bp="eye-all-marker"]');
+      if (bulkMk) {
+        bulkMk.classList.toggle('is-vis', anyMarkerVis);
+        bulkMk.classList.toggle('is-hidden', !anyMarkerVis);
+        bulkMk.setAttribute('aria-pressed', String(anyMarkerVis));
+        bulkMk.title = anyMarkerVis ? 'マーカーパネルを一括で非表示にする' : 'マーカーパネルを一括で表示する';
+        bulkMk.innerHTML = eyeIconSvg(anyMarkerVis);
+      }
+      const mkHead = host.querySelector('[data-bp-marker-head]');
+      if (mkHead) {
+        mkHead.textContent = `📌 マーカーパネル（シーン別・${visMarkerCount}枚）`;
+      }
+      const ghostChk = host.querySelector('[data-bp-opt="ghost"]');
+      if (ghostChk) ghostChk.checked = !!UI.showHiddenGhost;
+    });
+  }
+
+  function detectLegacyCenterOriginRoom(proj) {
+    if (!proj || !proj.board) return null;
+    const cv = Number(proj.board.coordVersion) || 0;
+    if (cv >= 2) return null;
+    const bw = Number(proj.board.width) || 960;
+    const bh = Number(proj.board.height) || 720;
+    const items = [];
+    const gScreens = (proj.globalDecor && Array.isArray(proj.globalDecor.screens)) ? proj.globalDecor.screens : [];
+    const bPieces = Array.isArray(proj.board.pieces) ? proj.board.pieces : [];
+    const scList = Array.isArray(proj.scenes) ? proj.scenes : [];
+    gScreens.forEach(it => { if (it && typeof it === 'object') items.push(it); });
+    bPieces.forEach(it => { if (it && typeof it === 'object') items.push(it); });
+    scList.forEach(sc => {
+      if (sc && Array.isArray(sc.markers)) {
+        sc.markers.forEach(it => { if (it && typeof it === 'object') items.push(it); });
+      }
+    });
+    if (!items.length) return null;
+    let negCount = 0;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    items.forEach(it => {
+      const x = Number(it.x) || 0;
+      const y = Number(it.y) || 0;
+      const w = Math.max(0, Number(it.width) || 0);
+      const h = Math.max(0, Number(it.height) || 0);
+      if (x < 0 || y < 0) negCount++;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x + w > maxX) maxX = x + w;
+      if (y + h > maxY) maxY = y + h;
+    });
+    if (negCount <= items.length / 2) return null;
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    if (Math.abs(centerX) < bw * 0.35 && Math.abs(centerY) < bh * 0.35) {
+      return { total: items.length, negCount, centerX, centerY };
+    }
+    return null;
+  }
+
+  function migrateLegacyRoomCoords() {
+    ensureProjShape();
+    const b = S.proj.board;
+    const g = S.proj.globalDecor;
+    const bw = Number(b.width) || 960;
+    const bh = Number(b.height) || 720;
+    const dxBoard = Math.round(bw / 2);
+    const dyBoard = Math.round(bh / 2);
+    cp('旧インポート部屋の座標を一括補正');
+    let shifted = 0;
+    (Array.isArray(g.screens) ? g.screens : []).forEach(it => {
+      if (!it || typeof it !== 'object') return;
+      it.x = Math.round((Number(it.x) || 0) + dxBoard);
+      it.y = Math.round((Number(it.y) || 0) + dyBoard);
+      shifted++;
+    });
+    (Array.isArray(b.pieces) ? b.pieces : []).forEach(it => {
+      if (!it || typeof it !== 'object') return;
+      it.x = Math.round((Number(it.x) || 0) + dxBoard);
+      it.y = Math.round((Number(it.y) || 0) + dyBoard);
+      shifted++;
+    });
+    (Array.isArray(S.proj.scenes) ? S.proj.scenes : []).forEach(sc => {
+      if (!sc || !Array.isArray(sc.markers) || !sc.markers.length) return;
+      const eff = getEffectiveBoardSize(sc);
+      const dxSc = Math.round(eff.width / 2);
+      const dySc = Math.round(eff.height / 2);
+      sc.markers.forEach(mk => {
+        if (!mk || typeof mk !== 'object') return;
+        mk.x = Math.round((Number(mk.x) || 0) + dxSc);
+        mk.y = Math.round((Number(mk.y) || 0) + dySc);
+        shifted++;
+      });
+    });
+    b.coordVersion = 2;
+    UI.cameraFitted = false;
+    CCF.saveProject(true);
+    refreshBoardContainers();
+    say(`📐 旧インポート部屋の座標を中央基準へ一括補正しました（${shifted}要素をシフト）`);
+    return shifted;
+  }
+
   function boardEditorHtml(targetId, inModal) {
     ensureProjShape();
     const b = S.proj.board;
@@ -3192,6 +3594,7 @@
     const sc = getBoardTargetScene(targetId);
     const scIdx = sc ? S.proj.scenes.findIndex(s => s.id === sc.id) : -1;
     const effTarget = sc ? sc.id : 'global';
+    const effBoard = getEffectiveBoardSize(sc);
     const layers = collectBoardLayers(effTarget);
     const selLayers = syncSelectionToLayers(layers);
     const sel = selLayers.length === 1 ? selLayers[0].item : null;
@@ -3203,39 +3606,23 @@
     const activeBgSrc = activeBg && activeBg.visible !== false ? assetSrc(activeBg) : '';
     const activeFg = (sc && sc.fg) ? sc.fg : g.fg;
     const activeFgSrc = activeFg && activeFg.visible !== false ? assetSrc(activeFg) : '';
-    const fgFit = (activeFg && activeFg.fitMode === 'fill') ? 'fill' : 'cover';
+    const fgFit = getEffectiveFgFit(sc, activeFg);
+    const hasCustomFgRect = !!(activeFg && activeFg.width > 0 && activeFg.height > 0 && (activeFg.x !== 0 || activeFg.y !== 0 || activeFg.width !== effBoard.width || activeFg.height !== effBoard.height));
+    const fgLayerStyle = hasCustomFgRect
+      ? ` style="left:${activeFg.x}px;top:${activeFg.y}px;width:${activeFg.width}px;height:${activeFg.height}px;"`
+      : '';
 
     const kindLabel = k => k === 'screen' ? 'スクリーン' : k === 'marker' ? 'マーカー' : 'キャラ駒';
 
     let pieceRank = 0;
     const stageItems = layers.map(l => {
       const it = l.item;
-      if (!it.visible && !UI.showHiddenGhost) return '';
-      const src = assetSrc(it);
+      if (it.visible === false && !UI.showHiddenGhost) return '';
       const isSel = UI.selectedIds.has(it.id);
       const showHandles = isSel && selLayers.length === 1 && !it.locked;
       const cssZ = cssZIndexOf(it, it.kind === 'piece' ? pieceRank++ : 0);
-      const cls = `ccf-bp-item kind-${it.kind}${isSel ? ' sel' : ''}${!it.visible ? ' hidden-ghost' : ''}${it.locked ? ' locked' : ''}`;
-      const style = `left:${it.x}px;top:${it.y}px;width:${it.width}px;height:${it.height}px;z-index:${cssZ};`;
-      const bgStyle = it.kind === 'marker' && !src ? `background:${esc(it.color || 'rgba(88,101,242,.35)')};` : '';
-      const panelText = (it.kind !== 'piece' && String(it.text || '').trim())
-        ? `<div class="ccf-bp-paneltext">${esc(it.text)}</div>`
-        : '';
-      const content = src
-        ? `<img src="${esc(src)}" alt="" draggable="false" data-bp-img-item="${esc(it.id)}">${panelText}`
-        : (it.kind === 'piece'
-          ? `<div class="ccf-bp-ph">♟️<span>${esc(it.name)}</span></div>`
-          : `<div class="ccf-bp-ph">${panelText}</div>`);
-      const lockBadge = it.locked ? '<span class="ccf-bp-lockbadge" title="固定中（ドラッグで視点移動）">📌</span>' : '';
-      const handles = showHandles
-        ? '<span class="ccf-bp-h nw" data-bph="nw"></span><span class="ccf-bp-h ne" data-bph="ne"></span><span class="ccf-bp-h sw" data-bph="sw"></span><span class="ccf-bp-h se" data-bph="se"></span>'
-        : '';
-      return `<div class="${cls}" data-bpid="${esc(it.id)}" style="${style}${bgStyle}" title="${esc(it.name)} (${kindLabel(it.kind)})${it.locked ? ' [固定中]' : ''}">
-        ${content}
-        ${lockBadge}
-        ${it.kind === 'piece' ? `<div class="ccf-bp-nametag">${esc(it.name)}</div>` : ''}
-        ${handles}
-      </div>`;
+      const dispOff = getLayerDisplayOffset(l.origin, sc);
+      return renderStageItemHtml(it, isSel, showHandles, cssZ, dispOff);
     }).join('');
 
     const sceneListHtml = `
@@ -3262,11 +3649,12 @@
     const layerRows = layers.slice().reverse().map(l => {
       const it = l.item;
       const isSel = UI.selectedIds.has(it.id);
+      const isVis = it.visible !== false;
       const originTag = l.origin === 'global' ? '共通' : l.origin === 'board' ? '初期' : 'ｼｰﾝ';
       const prioTag = it.kind === 'piece' ? '100.5' : String(it.zIndex || 0);
-      return `<div class="ccf-bp-layer${isSel ? ' sel' : ''}${!it.visible ? ' muted' : ''}" data-bpl="${esc(it.id)}" title="クリックで選択 / Ctrl+クリックで複数選択">
+      return `<div class="ccf-bp-layer${isSel ? ' sel' : ''}${!isVis ? ' muted is-hidden-row' : ''}" data-bpl="${esc(it.id)}" title="クリックで選択 / Ctrl+クリックで複数選択">
         <span class="ccf-scn-drag" draggable="true" data-bp-layer-drag="${esc(it.id)}" title="ドラッグして重ね順を並べ替え">⠿</span>
-        <button type="button" class="ccf-mini" data-bp="eye" data-id="${esc(it.id)}" title="一時表示/非表示切替">${it.visible ? '👁️' : '🚫'}</button>
+        <button type="button" class="ccf-mini ccf-eye-btn${isVis ? ' is-vis' : ' is-hidden'}" data-bp="eye" data-id="${esc(it.id)}" aria-pressed="${isVis}" title="${isVis ? '表示中（クリックで非表示）' : '非表示中（クリックで表示）'}">${eyeIconSvg(isVis)}</button>
         <button type="button" class="ccf-mini${it.locked ? ' active' : ''}" data-bp="pin" data-id="${esc(it.id)}" aria-pressed="${!!it.locked}" title="${it.locked ? '固定中（クリックで固定解除）' : '📌 位置・サイズを固定'}">${it.locked ? '📌固定' : '📌'}</button>
         <span class="ccf-badge">${originTag}:${kindLabel(it.kind)}</span>
         <span class="ccf-bp-lname" title="${esc(it.name)}">${esc(it.name || kindLabel(it.kind))}</span>
@@ -3282,6 +3670,7 @@
     const scnListBody = `<div class="ccf-bp-scnlist-acts">
       <button type="button" class="ccf-mini" data-bp="add-empty-scn">＋空シーン</button>
       <button type="button" class="ccf-mini" data-bp="add-sel-scn" title="左のPDF/TXT選択テキストから新規シーンを作成">📥選択テキスト</button>
+      <button type="button" class="ccf-mini" data-bp="add-fg-scenes" title="前景画像を複数選択し、現在選択中のシーンの後ろへ1枚＝1シーンで一括追加">🖼️ 前景から一括追加</button>
       <button type="button" class="ccf-mini" data-bp="dup-cur-scn"${sc ? '' : ' disabled'} title="選択中のシーンを丸ごと複製してすぐ下に挿入">📋複製</button>
       <button type="button" class="ccf-mini danger" data-bp="del-cur-scn"${sc ? '' : ' disabled'} title="選択中のシーンを削除 (Ctrl+Zで元に戻せます)">🗑️削除</button>
       <button type="button" class="ccf-mini" data-bp="chk-all-scn"${scenes.length ? '' : ' disabled'}>${allChecked ? '☑解除' : '☐全選択'}</button>
@@ -3302,10 +3691,18 @@
     const canRedo = window.AppHistory && window.AppHistory.canRedo ? window.AppHistory.canRedo() : false;
     const safeBgCss = activeBgSrc ? activeBgSrc.replace(/'/g, '%27').replace(/"/g, '%22') : '';
     const zoomPct = Math.round((UI.zoomScale || 1) * 100);
+    const legacyCoordInfo = detectLegacyCenterOriginRoom(S.proj);
+    const legacyBannerHtml = legacyCoordInfo
+      ? `<div class="ccf-bp-legacy-banner" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:6px 12px;background:rgba(245,158,11,0.18);border-bottom:1px solid rgba(245,158,11,0.45);color:#fde68a;font-size:.78rem;">
+          <span>⚠️ 旧バージョンで取り込んだ部屋のため前景とパネルが半盤面ズレています</span>
+          <button type="button" class="ccf-btn primary" data-bp="fix-legacy-coords" style="padding:3px 10px;font-size:.76rem;">📐 座標を中央基準へ一括補正</button>
+        </div>`
+      : '';
     return `<div class="ccf-bp-wrap" data-bp-target="${esc(effTarget)}">
       <div class="ccf-bp-bar">
         <button type="button" class="ccf-btn" data-bp="add-bg">＋背景</button>
         <button type="button" class="ccf-btn" data-bp="add-fg">＋前景</button>
+        <button type="button" class="ccf-btn" data-bp="add-fg-scenes" title="前景画像を複数選択し、現在選択中のシーンの後ろへ1枚＝1シーンで一括追加">🖼️ 前景から一括追加</button>
         <button type="button" class="ccf-btn" data-bp="add-screen" title="全シーン共通の常駐スクリーンパネルを追加">＋スクリーンパネル</button>
         <button type="button" class="ccf-btn" data-bp="add-marker" title="現在のシーン専用のマーカーパネルを追加">＋マーカーパネル</button>
         <button type="button" class="ccf-btn" data-bp="sync-npcs">♟️登録NPCを一括配置</button>
@@ -3316,7 +3713,7 @@
           <input type="range" min="20" max="250" step="5" data-bp-zoom-slider value="${zoomPct}" aria-label="盤面ズーム倍率">
           <span class="ccf-bp-zoom-pct" data-bp-zoom-pct>${zoomPct}%</span>
           <button type="button" class="ccf-mini" data-bp="zoom-in" title="拡大">＋</button>
-          <button type="button" class="ccf-mini" data-bp="zoom-fit" title="盤面全体をステージ中央にフィット">🎯 中央フィット</button>
+          <button type="button" class="ccf-mini" data-bp="zoom-fit" title="盤面全体と表示中パネルをステージ中央にフィット">🎯 中央フィット</button>
         </div>
         <button type="button" class="ccf-mini${UI.marqueeMode ? ' active' : ''}" data-bp="marquee-mode" aria-pressed="${UI.marqueeMode}" title="ONで左ドラッグが矩形範囲選択になります（OFF時はShift+ドラッグで範囲選択／余白・固定パネルドラッグで視点移動）">▭ 範囲選択</button>
         <span class="ccf-sep"></span>
@@ -3328,11 +3725,12 @@
         <button type="button" class="ccf-mini" data-bp="redo"${canRedo ? '' : ' disabled'} title="やり直す (Ctrl+Y)">↪️ Redo</button>
         ${inModal ? '<button type="button" class="ccf-btn" data-bp="close-modal">✕ 閉じる</button>' : ''}
       </div>
+      ${legacyBannerHtml}
       <div class="ccf-bp-body">
         <div class="ccf-bp-stage-wrap${UI.marqueeMode ? ' marquee-mode' : ''}">
           ${safeBgCss ? `<div class="ccf-bp-stage-bg" style="background-image:url('${esc(safeBgCss)}');"></div>` : ''}
-          <div class="ccf-bp-canvas" data-bp-canvas="1" style="width:${b.width}px;height:${b.height}px;--ccf-grid:${b.grid}px;">
-            <div class="ccf-bp-fg-layer">${activeFgSrc ? `<img class="ccf-bp-fg-img fit-${fgFit}" src="${esc(activeFgSrc)}" alt="" draggable="false" data-bp-img-fg="1">` : ''}</div>
+          <div class="ccf-bp-canvas" data-bp-canvas="1" style="width:${effBoard.width}px;height:${effBoard.height}px;--ccf-grid:${effBoard.grid}px;">
+            <div class="ccf-bp-fg-layer${hasCustomFgRect ? ' is-custom' : ''}"${fgLayerStyle}>${activeFgSrc ? `<img class="ccf-bp-fg-img fit-${fgFit}" src="${esc(activeFgSrc)}" alt="" draggable="false" data-bp-img-fg="1">` : ''}</div>
             <div class="ccf-bp-grid-layer${b.showGrid ? ' grid' : ''}"></div>
             ${stageItems}
             <div class="ccf-bp-guides" data-bp-guides="1"></div>
@@ -3355,16 +3753,38 @@
     if (!container) return false;
     const wrap = container.querySelector('.ccf-bp-stage-wrap');
     if (!wrap) return false;
-    const bw = Number((S.proj && S.proj.board && S.proj.board.width) || 960);
-    const bh = Number((S.proj && S.proj.board && S.proj.board.height) || 720);
+    const sc = getBoardTargetScene(UI.boardTarget);
+    const effTarget = sc ? sc.id : 'global';
+    const eff = getEffectiveBoardSize(sc);
+    const bw = eff.width;
+    const bh = eff.height;
     const w = wrap.clientWidth;
     const h = wrap.clientHeight;
     if (w < 40 || h < 40) return false;
+    let minX = 0, minY = 0, maxX = bw, maxY = bh;
+    const clampX = v => Math.max(-bw * 2, Math.min(bw * 3, v));
+    const clampY = v => Math.max(-bh * 2, Math.min(bh * 3, v));
+    const layers = collectBoardLayers(effTarget);
+    layers.forEach(l => {
+      const it = l && l.item;
+      if (!it || it.visible === false) return;
+      const off = getLayerDisplayOffset(l.origin, sc);
+      const ix0 = (Number(it.x) || 0) + (off.dx || 0);
+      const iy0 = (Number(it.y) || 0) + (off.dy || 0);
+      const ix1 = ix0 + Math.max(0, Number(it.width) || 0);
+      const iy1 = iy0 + Math.max(0, Number(it.height) || 0);
+      minX = Math.min(minX, clampX(ix0));
+      minY = Math.min(minY, clampY(iy0));
+      maxX = Math.max(maxX, clampX(ix1));
+      maxY = Math.max(maxY, clampY(iy1));
+    });
+    const boxW = Math.max(bw, maxX - minX);
+    const boxH = Math.max(bh, maxY - minY);
     const pad = 28;
-    const fit = clampBoardZoom(Math.min((w - pad) / bw, (h - pad) / bh));
+    const fit = clampBoardZoom(Math.min((w - pad) / boxW, (h - pad) / boxH));
     UI.zoomScale = Math.round(fit * 1000) / 1000;
-    UI.panX = Math.round((w - bw * UI.zoomScale) / 2);
-    UI.panY = Math.round((h - bh * UI.zoomScale) / 2);
+    UI.panX = Math.round(w / 2 - ((minX + maxX) / 2) * UI.zoomScale);
+    UI.panY = Math.round(h / 2 - ((minY + maxY) / 2) * UI.zoomScale);
     UI._fittedStageW = w;
     UI._fittedStageH = h;
     UI.cameraFitted = true;
@@ -3423,8 +3843,9 @@
 
   async function applyInspectorScaleAction(container, act, it) {
     if (!it) return;
-    const bw = Number((S.proj && S.proj.board && S.proj.board.width) || 960);
-    const bh = Number((S.proj && S.proj.board && S.proj.board.height) || 720);
+    const eff = getEffectiveBoardSize(getBoardTargetScene(UI.boardTarget));
+    const bw = eff.width;
+    const bh = eff.height;
     if (act === 'center-item') {
       cp('盤面要素を中央に配置');
       it.x = Math.round((bw - it.width) / 2);
@@ -3466,6 +3887,80 @@
     }
     CCF.saveProject();
     refreshBoardContainers();
+  }
+
+  async function applyFgRectAction(container, targetId, act) {
+    ensureProjShape();
+    const sc = getBoardTargetScene(targetId);
+    const activeFg = (sc && sc.fg) ? sc.fg : (S.proj.globalDecor && S.proj.globalDecor.fg);
+    if (!activeFg) return say('⚠️ 先に前景画像を設定してください');
+    const eff = getEffectiveBoardSize(sc);
+    const bw = eff.width;
+    const bh = eff.height;
+    if (act === 'fg-center') {
+      const w = Number(activeFg.width) > 0 ? Math.round(activeFg.width) : bw;
+      const h = Number(activeFg.height) > 0 ? Math.round(activeFg.height) : bh;
+      cp('前景を盤面中央に配置');
+      activeFg.x = Math.round((bw - w) / 2);
+      activeFg.y = Math.round((bh - h) / 2);
+      activeFg.width = w;
+      activeFg.height = h;
+    } else if (act === 'fg-reset-rect') {
+      cp('前景の位置・サイズをリセット');
+      activeFg.x = 0;
+      activeFg.y = 0;
+      activeFg.width = bw;
+      activeFg.height = bh;
+    } else if (act === 'fg-fit-board') {
+      let natW = 0, natH = 0;
+      const imgEl = container && container.querySelector('[data-bp-img-fg]');
+      if (imgEl && imgEl.naturalWidth > 0 && imgEl.naturalHeight > 0) {
+        natW = imgEl.naturalWidth;
+        natH = imgEl.naturalHeight;
+      } else {
+        const dim = await measureImageSize(assetSrc(activeFg));
+        if (dim) { natW = dim.width; natH = dim.height; }
+      }
+      cp('前景を盤面にフィット');
+      if (natW > 0 && natH > 0) {
+        const r = fitRectInsideBoard(natW, natH, bw, bh);
+        activeFg.x = r.x;
+        activeFg.y = r.y;
+        activeFg.width = r.width;
+        activeFg.height = r.height;
+      } else {
+        activeFg.x = 0;
+        activeFg.y = 0;
+        activeFg.width = bw;
+        activeFg.height = bh;
+      }
+    }
+    CCF.saveProject();
+    refreshBoardContainers();
+  }
+
+  function patchFgLayerRectDom(sc, fgObj) {
+    if (!fgObj) return;
+    const eff = getEffectiveBoardSize(sc);
+    const isCustom = fgObj.width > 0 && fgObj.height > 0 && (fgObj.x !== 0 || fgObj.y !== 0 || fgObj.width !== eff.width || fgObj.height !== eff.height);
+    const hosts = [$('ccfBoardInlineHost'), (UI.modalOpen && UI.modalEl) ? UI.modalEl : null].filter(Boolean);
+    hosts.forEach(host => {
+      const layer = host.querySelector('.ccf-bp-fg-layer');
+      if (layer) {
+        layer.classList.toggle('is-custom', isCustom);
+        if (isCustom) {
+          layer.style.left = fgObj.x + 'px';
+          layer.style.top = fgObj.y + 'px';
+          layer.style.width = fgObj.width + 'px';
+          layer.style.height = fgObj.height + 'px';
+        } else {
+          layer.style.left = '';
+          layer.style.top = '';
+          layer.style.width = '';
+          layer.style.height = '';
+        }
+      }
+    });
   }
 
   function handleSlotActionClick(e, refreshFn) {
@@ -3588,8 +4083,9 @@
   function alignBoardItems(targetId, idSet, mode) {
     const layers = collectBoardLayers(targetId).filter(l => idSet && idSet.has(l.item.id));
     if (!layers.length) return;
-    const bw = Number((S.proj && S.proj.board && S.proj.board.width) || 960);
-    const bh = Number((S.proj && S.proj.board && S.proj.board.height) || 720);
+    const eff = getEffectiveBoardSize(getBoardTargetScene(targetId));
+    const bw = eff.width;
+    const bh = eff.height;
     cp('盤面要素を整列');
     if (layers.length === 1 || mode === 'board-center') {
       layers.forEach(l => {
@@ -4224,9 +4720,9 @@
       if (c === 'toggle-vis') {
         cp('表示切替');
         const nextVis = !allVisible;
-        selLayers.forEach(l => { l.item.visible = nextVis; });
+        const changed = selLayers.map(l => { l.item.visible = nextVis; return l.item; });
         CCF.saveProject();
-        return refreshBoardContainers();
+        return patchBoardVisibilityDom(targetId, changed);
       }
       if (c === 'toggle-z101') {
         if (it.kind === 'piece') return;
@@ -4403,9 +4899,11 @@
 
     const collectOtherBoxes = excludeIds => {
       const out = [];
+      const tSc = getBoardTargetScene(activeTarget());
       collectBoardLayers(activeTarget()).forEach(l => {
         if (excludeIds.has(l.item.id) || l.item.visible === false) return;
-        out.push({ x: l.item.x, y: l.item.y, w: l.item.width, h: l.item.height });
+        const off = getLayerDisplayOffset(l.origin, tSc);
+        out.push({ x: l.item.x + off.dx, y: l.item.y + off.dy, w: l.item.width, h: l.item.height });
       });
       return out;
     };
@@ -4530,21 +5028,31 @@
       const escSel = v => (CSS && CSS.escape ? CSS.escape(v) : v);
       const selectedHits = handle ? [hit] : allLayers.filter(l => UI.selectedIds.has(l.item.id) && !l.item.locked);
       if (!selectedHits.length) return;
-      const items = selectedHits.map(l => ({
-        item: l.item,
-        el: cv.querySelector(`[data-bpid="${escSel(l.item.id)}"]`),
-        origX: l.item.x,
-        origY: l.item.y,
-        origW: l.item.width,
-        origH: l.item.height
-      }));
+      const tSc = getBoardTargetScene(tId);
+      const items = selectedHits.map(l => {
+        const off = getLayerDisplayOffset(l.origin, tSc);
+        return {
+          item: l.item,
+          origin: l.origin,
+          offX: off.dx,
+          offY: off.dy,
+          el: cv.querySelector(`[data-bpid="${escSel(l.item.id)}"]`),
+          origX: l.item.x,
+          origY: l.item.y,
+          origDispX: l.item.x + off.dx,
+          origDispY: l.item.y + off.dy,
+          origW: l.item.width,
+          origH: l.item.height
+        };
+      });
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       items.forEach(d => {
-        minX = Math.min(minX, d.origX);
-        minY = Math.min(minY, d.origY);
-        maxX = Math.max(maxX, d.origX + d.origW);
-        maxY = Math.max(maxY, d.origY + d.origH);
+        minX = Math.min(minX, d.origDispX);
+        minY = Math.min(minY, d.origDispY);
+        maxX = Math.max(maxX, d.origDispX + d.origW);
+        maxY = Math.max(maxY, d.origDispY + d.origH);
       });
+      const hitOff = getLayerDisplayOffset(hit.origin, tSc);
       const excludeSet = new Set(items.map(d => d.item.id));
 
       drag = {
@@ -4555,6 +5063,10 @@
         startY: e.clientY,
         origX: it.x,
         origY: it.y,
+        origDispX: it.x + hitOff.dx,
+        origDispY: it.y + hitOff.dy,
+        offX: hitOff.dx,
+        offY: hitOff.dy,
         origW: it.width,
         origH: it.height,
         origUnion: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
@@ -4718,10 +5230,13 @@
         const cy2 = (y2 - UI.panY) / sc;
 
         const nextSel = marqueeDrag.additive ? new Set(marqueeDrag.baseIds) : new Set();
+        const mSc = getBoardTargetScene(activeTarget());
         (marqueeDrag.layers || collectBoardLayers(activeTarget())).forEach(l => {
           const it = l.item;
           if (it.visible === false && !UI.showHiddenGhost) return;
-          if (it.x < cx2 && (it.x + it.width) > cx1 && it.y < cy2 && (it.y + it.height) > cy1) {
+          const off = getLayerDisplayOffset(l.origin, mSc);
+          const ix = it.x + off.dx, iy = it.y + off.dy;
+          if (ix < cx2 && (ix + it.width) > cx1 && iy < cy2 && (iy + it.height) > cy1) {
             nextSel.add(it.id);
           }
         });
@@ -4740,8 +5255,9 @@
       }
       if (!drag.moved) return;
 
-      const bw = Number((S.proj && S.proj.board && S.proj.board.width) || 960);
-      const bh = Number((S.proj && S.proj.board && S.proj.board.height) || 720);
+      const effB = getEffectiveBoardSize(getBoardTargetScene(activeTarget()));
+      const bw = effB.width;
+      const bh = effB.height;
       const snapStep = UI.snapGrid ? Math.max(4, Math.min(48, Math.round((S.proj.board.grid || 24) / 2))) : 1;
       const tol = Math.max(4, 7 / drag.scale);
 
@@ -4756,21 +5272,23 @@
         const mdx = Math.round(res.x - drag.origUnion.x);
         const mdy = Math.round(res.y - drag.origUnion.y);
         drag.items.forEach(d => {
-          d.item.x = d.origX + mdx;
-          d.item.y = d.origY + mdy;
+          const dispX = d.origDispX + mdx;
+          const dispY = d.origDispY + mdy;
+          d.item.x = dispX - d.offX;
+          d.item.y = dispY - d.offY;
           if (d.el) {
-            d.el.style.left = d.item.x + 'px';
-            d.el.style.top = d.item.y + 'px';
+            d.el.style.left = dispX + 'px';
+            d.el.style.top = dispY + 'px';
           }
         });
         renderSmartGuides(guidesEl, res);
       } else {
         const it = drag.item;
-        const origBox = { x: drag.origX, y: drag.origY, w: drag.origW, h: drag.origH };
+        const origBox = { x: drag.origDispX, y: drag.origDispY, w: drag.origW, h: drag.origH };
         const res = computeResizeSmartGuides(origBox, drag.dir, dx, dy, !!it.lockAspect, drag.ratio, drag.others, bw, bh, tol, snapStep);
-        it.x = res.x; it.y = res.y; it.width = res.w; it.height = res.h;
-        drag.el.style.left = it.x + 'px';
-        drag.el.style.top = it.y + 'px';
+        it.x = res.x - drag.offX; it.y = res.y - drag.offY; it.width = res.w; it.height = res.h;
+        drag.el.style.left = res.x + 'px';
+        drag.el.style.top = res.y + 'px';
         drag.el.style.width = it.width + 'px';
         drag.el.style.height = it.height + 'px';
         renderSmartGuides(guidesEl, res);
@@ -4922,22 +5440,64 @@
         if (act === 'add-bg') return addPanelViaPicker('bg', tId);
         if (act === 'add-fg') return addPanelViaPicker('fg', tId);
         if (act === 'fit-board-to-fg') return fitBoardToForeground(tId);
+        if (act === 'fix-legacy-coords') return migrateLegacyRoomCoords();
+        if (act === 'fg-center' || act === 'fg-fit-board' || act === 'fg-reset-rect') {
+          return applyFgRectAction(container, tId, act);
+        }
         if (act === 'reset-board-40x30') {
           ensureProjShape();
           cp('盤面サイズを40×30(標準)に戻す');
+          const sc = getBoardTargetScene(tId);
+          const oldEff = getEffectiveBoardSize(sc);
+          const activeFg = (sc && sc.fg) ? sc.fg : (S.proj.globalDecor && S.proj.globalDecor.fg);
+          if (sc) { sc.boardWidth = null; sc.boardHeight = null; }
           S.proj.board.width = 960;
           S.proj.board.height = 720;
           S.proj.board.customSize = false;
+          if (activeFg && activeFg.x === 0 && activeFg.y === 0 && activeFg.width === oldEff.width && activeFg.height === oldEff.height) {
+            activeFg.width = 960;
+            activeFg.height = 720;
+          }
           UI.cameraFitted = false;
           CCF.saveProject();
           refreshBoardContainers();
           say('↺ 盤面サイズを標準の 40 × 30 マス（960×720px）に戻しました');
           return;
         }
+        if (act === 'eye-all-screen' || act === 'eye-all-marker') {
+          e.stopPropagation();
+          ensureProjShape();
+          const sc = getBoardTargetScene(tId);
+          const list = act === 'eye-all-screen'
+            ? (Array.isArray(S.proj.globalDecor.screens) ? S.proj.globalDecor.screens : [])
+            : (sc ? (Array.isArray(sc.markers) ? sc.markers : []) : (Array.isArray(S.proj.globalDecor.markers) ? S.proj.globalDecor.markers : []));
+          if (!list.length) return;
+          const nextVis = !list.some(x => x && x.visible !== false);
+          cp(act === 'eye-all-screen' ? 'スクリーンパネル一括表示切替' : 'マーカーパネル一括表示切替');
+          list.forEach(x => { if (x) x.visible = nextVis; });
+          CCF.saveProject();
+          return patchBoardVisibilityDom(tId, list);
+        }
         if (act === 'add-screen') return addPanelViaPicker('screen', tId);
         if (act === 'add-marker') return addPanelViaPicker('marker', tId);
         if (act === 'add-marker-menu') return openMarkerAddMenu(b, tId);
         if (act === 'add-blank-marker') return addBlankMarker(tId);
+        if (act === 'inherit-prev-markers') {
+          ensureProjShape();
+          const sc = getBoardTargetScene(tId);
+          if (!sc) return;
+          const curIdx = S.proj.scenes.findIndex(s => s.id === sc.id);
+          const prevSc = curIdx > 0 ? S.proj.scenes[curIdx - 1] : null;
+          if (!prevSc || !Array.isArray(prevSc.markers) || !prevSc.markers.length) {
+            return say('⚠️ 直前のシーンに引き継げるマーカーパネルがありません');
+          }
+          cp('直前シーンからマーカーパネルを引き継ぎ');
+          sc.markers = cloneSceneMarkersFromSource(prevSc);
+          CCF.saveProject();
+          refreshBoardContainers();
+          say(`🔄 直前のシーン「${prevSc.title || '無題のシーン'}」から ${sc.markers.length}枚のマーカーパネルを引き継ぎました`);
+          return;
+        }
         if (act === 'sync-npcs') return syncNpcsToBoard();
         if (act === 'pick-npc-menu') return openNpcSinglePickerMenu(b);
         if (act === 'combine-panels') return combineSelectedPanels(tId);
@@ -4952,12 +5512,17 @@
         if (act === 'clr-scn-fg') { const sc = getBoardTargetScene(tId); if (sc) { cp('シーン前景を解除'); sc.fg = null; CCF.saveProject(); refreshBoardContainers(); } return; }
         if (act === 'add-empty-scn') {
           cp('空シーン追加');
-          const sc = M.sanitizeScene({ title: 'シーン ' + (S.proj.scenes.length + 1), text: '' });
+          const sc = M.sanitizeScene({
+            title: 'シーン ' + (S.proj.scenes.length + 1),
+            text: '',
+            markers: cloneInheritedMarkers()
+          });
           insertScenesAfterSelection(sc);
           CCF.saveProject();
           return refreshBoardContainers();
         }
         if (act === 'add-sel-scn') { createSceneFromSelection(); return; }
+        if (act === 'add-fg-scenes') { void addScenesFromForegroundAssets(); return; }
         if (act === 'dup-cur-scn') return duplicateSceneById(tId);
         if (act === 'del-cur-scn') return deleteSceneById(tId);
         if (act === 'dup-scn') return duplicateSceneById(b.dataset.scnId);
@@ -5020,7 +5585,7 @@
         if (act === 'scale-50' || act === 'scale-100' || act === 'fit-board' || act === 'center-item') {
           return applyInspectorScaleAction(container, act, it);
         }
-        if (act === 'eye') { cp('表示切替'); it.visible = !it.visible; CCF.saveProject(); return refreshBoardContainers(); }
+        if (act === 'eye') { cp('表示切替'); it.visible = !(it.visible !== false); CCF.saveProject(); return patchBoardVisibilityDom(tId, [it]); }
         if (act === 'pin') { cp('位置・サイズ固定切替'); it.locked = !it.locked; CCF.saveProject(); return refreshBoardContainers(); }
         if (act === 'lock') { cp('縦横比固定切替'); it.lockAspect = !it.lockAspect; CCF.saveProject(); return refreshBoardContainers(); }
         if (act === 'del') { if (removeLayerById(tId, id)) refreshBoardContainers(); return; }
@@ -5135,23 +5700,64 @@
       const dimInp = e.target.closest('[data-bp-board-dim]');
       if (dimInp) {
         const b = S.proj.board;
+        const sc = getBoardTargetScene(activeTarget());
+        const oldEff = getEffectiveBoardSize(sc);
+        const activeFg = (sc && sc.fg) ? sc.fg : (S.proj.globalDecor && S.proj.globalDecor.fg);
         const grid = Number(b.grid) || 24;
         const cells = Math.max(4, Math.min(166, Math.round(Number(dimInp.value) || 20)));
+        const px = Math.max(96, Math.min(4000, cells * grid));
         cp('盤面サイズ変更');
-        if (dimInp.dataset.bpBoardDim === 'cols') b.width = Math.max(96, Math.min(4000, cells * grid));
-        else b.height = Math.max(96, Math.min(4000, cells * grid));
-        b.customSize = true;
+        if (sc && (sc.boardWidth || sc.boardHeight)) {
+          if (dimInp.dataset.bpBoardDim === 'cols') sc.boardWidth = px;
+          else sc.boardHeight = px;
+        } else {
+          if (dimInp.dataset.bpBoardDim === 'cols') b.width = px;
+          else b.height = px;
+          b.customSize = true;
+        }
+        const nextEff = getEffectiveBoardSize(sc);
+        if (activeFg && activeFg.x === 0 && activeFg.y === 0 && activeFg.width === oldEff.width && activeFg.height === oldEff.height) {
+          activeFg.width = nextEff.width;
+          activeFg.height = nextEff.height;
+        }
         UI.cameraFitted = false;
         CCF.saveProject();
         return refreshBoardContainers();
+      }
+      const fgRectInp = e.target.closest('[data-bp-fg-rect]');
+      if (fgRectInp) {
+        e.stopPropagation();
+        const sc = getBoardTargetScene(activeTarget());
+        const fgObj = (sc && sc.fg) ? sc.fg : (S.proj.globalDecor && S.proj.globalDecor.fg);
+        if (!fgObj) return;
+        if (!fgRectInp._cpDone) cp('前景の位置・サイズ調整');
+        fgRectInp._cpDone = false;
+        const k = fgRectInp.dataset.bpFgRect;
+        const eff = getEffectiveBoardSize(sc);
+        const raw = Number(fgRectInp.value);
+        const fallback = k === 'width' ? eff.width : k === 'height' ? eff.height : 0;
+        const val = Number.isFinite(raw)
+          ? ((k === 'width' || k === 'height') ? Math.max(16, Math.min(4000, Math.round(raw))) : Math.round(raw))
+          : fallback;
+        fgObj[k] = val;
+        fgRectInp.value = String(val);
+        [$('ccfBoardInlineHost'), (UI.modalOpen && UI.modalEl) ? UI.modalEl : null].filter(Boolean).forEach(host => {
+          const inp = host.querySelector(`[data-bp-fg-rect="${k}"]`);
+          if (inp && inp !== fgRectInp) inp.value = String(val);
+        });
+        patchFgLayerRectDom(sc, fgObj);
+        CCF.saveProject();
+        return;
       }
       const fgFitSel = e.target.closest('[data-bp-fg-fit]');
       if (fgFitSel) {
         const sc = getBoardTargetScene(activeTarget());
         const fgObj = (sc && sc.fg) || (S.proj.globalDecor && S.proj.globalDecor.fg);
-        if (fgObj) {
+        const nextFit = (fgFitSel.value === 'fill' || fgFitSel.value === 'cover' || fgFitSel.value === 'contain') ? fgFitSel.value : 'contain';
+        if (fgObj || sc) {
           cp('前景表示方式変更');
-          fgObj.fitMode = fgFitSel.value === 'fill' ? 'fill' : 'cover';
+          if (fgObj) fgObj.fitMode = nextFit;
+          if (sc) sc.fgFit = nextFit;
           CCF.saveProject();
           refreshBoardContainers();
         }
@@ -5182,9 +5788,20 @@
       const opt = e.target.closest('[data-bp-opt]');
       if (opt) {
         const k = opt.dataset.bpOpt;
-        if (k === 'grid') { cp('グリッド表示切替'); S.proj.board.showGrid = opt.checked; CCF.saveProject(); }
-        else if (k === 'snap') UI.snapGrid = opt.checked;
-        else if (k === 'ghost') UI.showHiddenGhost = opt.checked;
+        if (k === 'grid') { cp('グリッド表示切替'); S.proj.board.showGrid = opt.checked; CCF.saveProject(); return refreshBoardContainers(); }
+        else if (k === 'snap') { UI.snapGrid = opt.checked; return; }
+        else if (k === 'ghost') {
+          UI.showHiddenGhost = opt.checked;
+          const tId = activeTarget();
+          return patchBoardVisibilityDom(tId, collectBoardLayers(tId).map(l => l.item));
+        }
+        else if (k === 'inherit-markers') {
+          ensureProjShape();
+          cp('新規シーン作成時のマーカー引き継ぎ設定を変更');
+          S.proj.sceneParseConfig.inheritMarkersOnNewScene = !!opt.checked;
+          CCF.saveProject();
+          return refreshBoardContainers();
+        }
         return refreshBoardContainers();
       }
       const batchChk = e.target.closest('[data-bp-batch]');
@@ -5224,6 +5841,31 @@
     };
 
     const onInput = e => {
+      const fgRectInp = e.target.closest('[data-bp-fg-rect]');
+      if (fgRectInp) {
+        e.stopPropagation();
+        const sc = getBoardTargetScene(activeTarget());
+        const fgObj = (sc && sc.fg) ? sc.fg : (S.proj.globalDecor && S.proj.globalDecor.fg);
+        if (!fgObj) return;
+        if (!fgRectInp._cpDone) {
+          cp('前景の位置・サイズ調整');
+          fgRectInp._cpDone = true;
+        }
+        const k = fgRectInp.dataset.bpFgRect;
+        const raw = Number(fgRectInp.value);
+        if (!Number.isFinite(raw)) return;
+        const val = (k === 'width' || k === 'height')
+          ? Math.max(16, Math.min(4000, Math.round(raw)))
+          : Math.round(raw);
+        fgObj[k] = val;
+        [$('ccfBoardInlineHost'), (UI.modalOpen && UI.modalEl) ? UI.modalEl : null].filter(Boolean).forEach(host => {
+          const inp = host.querySelector(`[data-bp-fg-rect="${k}"]`);
+          if (inp && inp !== fgRectInp) inp.value = String(val);
+        });
+        patchFgLayerRectDom(sc, fgObj);
+        CCF.saveProject();
+        return;
+      }
       const panelTxtInp = e.target.closest('[data-bp-panel-text]');
       if (panelTxtInp) {
         e.stopPropagation();
@@ -5598,7 +6240,7 @@
     withPreservedScroll(() => {
       if (host) {
         host.innerHTML = `${renderSlotRowHtml(sc, idx, 'fg', '🪟 前景（盤面）', sc.fg, m.fg, m.extracted, { compact: true })}
-          ${renderFgControlsHtml(b, activeFg, isFallbackFg)}
+          ${renderFgControlsHtml(b, activeFg, isFallbackFg, sc)}
           ${renderSlotRowHtml(sc, idx, 'bgm', '🎵 BGM', sc.bgm, m.bgm, m.extracted, { compact: true })}
           ${renderSlotRowHtml(sc, idx, 'bg', '🖼️ 背景（任意）', sc.bg, m.bg, m.extracted, { compact: true })}`;
       }
@@ -6177,7 +6819,11 @@
         if (k === 'clean-scenes-breaks') return cleanLineBreaksInScenes();
         if (k === 'add-empty') {
           cp('空シーン追加');
-          const nSc = M.sanitizeScene({ title: 'シーン ' + (S.proj.scenes.length + 1), text: '' });
+          const nSc = M.sanitizeScene({
+            title: 'シーン ' + (S.proj.scenes.length + 1),
+            text: '',
+            markers: cloneInheritedMarkers()
+          });
           insertScenesAfterSelection(nSc);
           CCF.saveProject(); render(); return;
         }
@@ -6372,7 +7018,7 @@
         const lineIdx = +(splitBtn.dataset.line != null ? splitBtn.dataset.line : splitBtn.dataset.scnLine);
         if (!(lineIdx >= 1)) return;
         cp('シーン分割');
-        S.proj.scenes = SM.splitSceneAtLine(S.proj.scenes, idx, lineIdx).map(M.sanitizeScene).filter(Boolean);
+        applySplitAtLineWithMarkers(idx, lineIdx);
         if (S.proj.scenes[idx + 1]) UI.expandedScenes.add(S.proj.scenes[idx + 1].id);
         candidateCache.clear();
         CCF.saveProject(); render();

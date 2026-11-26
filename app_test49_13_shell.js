@@ -1,6 +1,7 @@
 /* app_test49_13_shell.js — 左サイドバー＋右メインのレイアウトまわり（ページ名・検索バー・絞り込みタグ・ホームのカード拡張・D&D統合・ライブラリ取込） */
 const shEl = id => document.getElementById(id);
 let dbTagSel = new Set();   // サイドバーで選んだ絞り込みタグ
+let dbTimeSel = new Set();  // サイドバーで選んだプレイ時間区分
 const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿・編集', galleryTab: '🖼️ 共通ギャラリー', historyTab: '📜 投稿履歴（全体）' };
 (function () {
   const st = switchTab; switchTab = function (tabId, evt) { if (tabId === 'ccfTab' && document.body && document.body.dataset.activeTab === 'ccfTab') return; st(tabId, evt); const pn = shEl('pageName'); if (pn) pn.textContent = PAGE_NAMES[tabId] || ''; if (tabId === 'galleryTab' || tabId === 'postTab') { try { if (typeof window.flushGalleryOnTabSwitch === 'function') window.flushGalleryOnTabSwitch(); else if (tabId === 'galleryTab' && typeof renderGalleryAll === 'function') renderGalleryAll(); } catch (er) { console.error(er); } } const m = shEl('mainArea'); if (m) m.scrollTop = 0; };   // 切り替えたら、ページ名を更新して先頭へ（同期ディスク保存は行わない）
@@ -194,6 +195,10 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     const sysLine = firstSpecLine(sc, 'system');
     const pplLine = firstSpecLine(sc, 'playerCount');
     const timeLine = firstSpecLine(sc, 'playTime');
+    const pplCard = (typeof formatPlayerCountForCard === 'function') ? formatPlayerCountForCard(pplLine) : pplLine;
+    const timeCard = (typeof formatPlayTimeForCard === 'function') ? formatPlayTimeForCard(timeLine) : timeLine;
+    const author = String(sc.author || '').trim();
+    const authorHtml = author ? `<div class="scenario-card-author" data-act="search-author" data-author="${escapeHTML(author)}" title="クリックでこの作者のシナリオを検索">✍️ ${escapeHTML(author)}</div>` : '';
     const psInfo = PLAY_STATUS_MAP[normalizePlayStatus(sc.playStatus)];
     const psBadge = (psInfo && psInfo.badge) ? `<span class="play-status-badge ${psInfo.cls}">${escapeHTML(psInfo.badge)}</span>` : '';
     const slots = getScenarioThumbSlots(sc);
@@ -223,8 +228,8 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     return `<div class="scenario-db-card${isSel ? ' is-selected' : ''}" draggable="true" data-sid="${sid}">
       <div class="scenario-card-thumb-wrap">${selHtml}${cacheIconHtml}${thumbHtml}${spoilerHtml}${hoverIndHtml}${preloadHtml}</div>
       <div class="scenario-card-body"><div>
-        <div class="scenario-card-tags">${psBadge}${sysLine ? `<span class="scenario-badge system">${escapeHTML(sysLine)}</span>` : ''}${pplLine ? `<span class="scenario-badge">${escapeHTML(pplLine)}</span>` : ''}${timeLine ? `<span class="scenario-badge time">🕒 ${escapeHTML(timeLine)}</span>` : ''}</div>
-        <div class="scenario-card-title"><span class="fav-star${sc.favorite ? ' on' : ''}" data-act="fav" data-id="${sid}" role="button" tabindex="0" aria-pressed="${!!sc.favorite}" title="${sc.favorite ? 'お気に入りを解除' : 'お気に入りに追加'}">${sc.favorite ? '★' : '☆'}</span>${escapeHTML(sc.title)}</div>${linksHtml}
+        <div class="scenario-card-tags">${psBadge}${sysLine ? `<span class="scenario-badge system">${escapeHTML(sysLine)}</span>` : ''}${pplCard ? `<span class="scenario-badge"${pplLine ? ` title="${escapeHTML(pplLine)}"` : ''}>${escapeHTML(pplCard)}</span>` : ''}${timeCard ? `<span class="scenario-badge time"${timeLine ? ` title="${escapeHTML(timeLine)}"` : ''}>🕒 ${escapeHTML(timeCard)}</span>` : ''}</div>
+        <div class="scenario-card-title"><span class="fav-star${sc.favorite ? ' on' : ''}" data-act="fav" data-id="${sid}" role="button" tabindex="0" aria-pressed="${!!sc.favorite}" title="${sc.favorite ? 'お気に入りを解除' : 'お気に入りに追加'}">${sc.favorite ? '★' : '☆'}</span>${escapeHTML(sc.title)}</div>${authorHtml}${linksHtml}
       </div>
       <div class="scenario-card-footer">${postBadge.isPosted ? `<span class="badge badge-posted badge-click" data-act="status" data-id="${sid}" title="${escapeHTML(postBadge.title)}">${escapeHTML(postBadge.text)}</span>` : `<span class="badge badge-unposted badge-click" data-act="status" data-id="${sid}" title="${escapeHTML(postBadge.title)}">${escapeHTML(postBadge.text)}</span>`}
         <div style="display:flex; gap:4px; flex-shrink:0;"><button type="button" class="btn-sort db-cloud-pin-btn${isPinned ? ' on' : ''}" data-offline-pin="${sid}" title="${isPinned ? '📌 常時保持中（クリックで解除）' : '📌 この端末に常にダウンロードしておく（オフライン対応）'}">📌</button><button class="btn-sort" data-act="load" data-id="${sid}" style="padding:4px 8px; font-weight:bold;" title="詳細を開かず、すぐ「Discord投稿・編集」画面で開く">📝 編集</button><button class="btn-sort btn-danger" data-act="del" data-id="${sid}" style="padding:4px 8px;">🗑️</button></div>
@@ -240,6 +245,10 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     const sysLine = firstSpecLine(sc, 'system');
     const pplLine = firstSpecLine(sc, 'playerCount');
     const timeLine = firstSpecLine(sc, 'playTime');
+    const pplCard = (typeof formatPlayerCountForCard === 'function') ? formatPlayerCountForCard(pplLine) : pplLine;
+    const timeCard = (typeof formatPlayTimeForCard === 'function') ? formatPlayTimeForCard(timeLine) : timeLine;
+    const author = String(sc.author || '').trim();
+    const authorRowHtml = author ? `<div class="db-row-author" data-act="search-author" data-author="${escapeHTML(author)}" title="クリックでこの作者のシナリオを検索">✍️ ${escapeHTML(author)}</div>` : '';
     const psInfo = PLAY_STATUS_MAP[normalizePlayStatus(sc.playStatus)];
     const psBadge = (psInfo && psInfo.badge) ? `<span class="play-status-badge ${psInfo.cls}" style="margin-right:6px;">${escapeHTML(psInfo.badge)}</span>` : '';
     const csInfo = (window.CloudSync && CloudSync.getScenarioCacheStatus)
@@ -257,8 +266,8 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     return `<tr data-sid="${sid}" class="${isSel ? 'is-selected' : ''}">
       <td class="db-sel-td"><label class="db-sel-label-tbl" title="複数選択（Shift+クリックで範囲選択）"><input type="checkbox" class="db-sel-chk" data-sel-id="${sid}"${isSel ? ' checked' : ''} aria-label="${escapeHTML(sc.title || 'シナリオ')}を選択"></label></td>
       <td>${(() => { const m0 = getScenarioThumbSlots(sc)[0] || ''; return m0 ? `<img ${coverImgAttr(m0)} class="db-thumb" loading="lazy" decoding="async">` : '<div class="db-thumb-placeholder">📁</div>'; })()}</td>
-      <td class="db-title"><span class="fav-star${sc.favorite ? ' on' : ''}" data-act="fav" data-id="${sid}" role="button" tabindex="0" aria-pressed="${!!sc.favorite}" title="${sc.favorite ? 'お気に入りを解除' : 'お気に入りに追加'}">${sc.favorite ? '★' : '☆'}</span>${cacheIconHtml}${psBadge}${escapeHTML(sc.title)}${safeUrl(sc.shopUrl) ? `<br><a href="${escapeHTML(safeUrl(sc.shopUrl))}" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem; color:var(--dc-accent); font-weight:normal;">🔗 ショップ</a>` : ''}</td>
-      <td>${escapeHTML(sysLine || '-')}</td><td>${escapeHTML(pplLine || '-')} / ${escapeHTML(timeLine || '-')}</td>
+      <td class="db-title"><span class="fav-star${sc.favorite ? ' on' : ''}" data-act="fav" data-id="${sid}" role="button" tabindex="0" aria-pressed="${!!sc.favorite}" title="${sc.favorite ? 'お気に入りを解除' : 'お気に入りに追加'}">${sc.favorite ? '★' : '☆'}</span>${cacheIconHtml}${psBadge}${escapeHTML(sc.title)}${authorRowHtml}${safeUrl(sc.shopUrl) ? `<br><a href="${escapeHTML(safeUrl(sc.shopUrl))}" target="_blank" rel="noopener noreferrer" style="font-size:0.75rem; color:var(--dc-accent); font-weight:normal;">🔗 ショップ</a>` : ''}</td>
+      <td>${escapeHTML(sysLine || '-')}</td><td><span${pplLine ? ` title="${escapeHTML(pplLine)}"` : ''}>${escapeHTML(pplCard || '-')}</span> / <span${timeLine ? ` title="${escapeHTML(timeLine)}"` : ''}>${escapeHTML(timeCard || '-')}</span></td>
       <td>${postBadge.isPosted ? `<span class="badge badge-posted badge-click" data-act="status" data-id="${sid}" title="${escapeHTML(postBadge.title)}">${escapeHTML(postBadge.text)}</span>` : `<span class="badge badge-unposted badge-click" data-act="status" data-id="${sid}" title="${escapeHTML(postBadge.title)}">${escapeHTML(postBadge.text)}</span>`}</td>
       <td><div class="db-ch-list">${pTags || '-'}</div></td>
       <td><div class="db-actions"><button type="button" class="btn-sort db-cloud-pin-btn${isPinned ? ' on' : ''}" data-offline-pin="${sid}" title="${isPinned ? '📌 常時保持中' : '📌 この端末に常時保持'}">📌</button><button class="btn-sort" data-act="load" data-id="${sid}" title="詳細を開かず、すぐ「Discord投稿・編集」画面で開く">📝 編集</button><button class="btn-sort" data-act="status" data-id="${sid}">📌 状態</button><button class="btn-sort btn-danger" data-act="del" data-id="${sid}">🗑️ 削除</button></div></td></tr>`;
@@ -333,18 +342,23 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
         const scTags = sc.tags || [];
         if (![...dbTagSel].every(sel => scTags.includes(sel))) continue;
       }
+      if (typeof dbTimeSel !== 'undefined' && dbTimeSel.size) {
+        const bid = (typeof getScenarioPlayTimeBucketId === 'function') ? getScenarioPlayTimeBucketId(sc) : '';
+        if (!bid || !dbTimeSel.has(bid)) continue;
+      }
       if (!matchQuery(sc, terms)) continue;
       filtered.push({ sc, index });
     }
     const rc = shEl('dbResultCount');
-    if (rc) rc.textContent = (terms.length || chf || filter !== 'all' || playFilter !== 'all' || (typeof dbTagSel !== 'undefined' && dbTagSel.size)) ? `${filtered.length} / ${appState.scenarios.length} 件` : '';
+    if (rc) rc.textContent = (terms.length || chf || filter !== 'all' || playFilter !== 'all' || (typeof dbTagSel !== 'undefined' && dbTagSel.size) || (typeof dbTimeSel !== 'undefined' && dbTimeSel.size)) ? `${filtered.length} / ${appState.scenarios.length} 件` : '';
 
     if (sortOrder === 'unposted_first') filtered.sort((a, b) => { const aP = a.sc.postedChannels && a.sc.postedChannels.length > 0, bP = b.sc.postedChannels && b.sc.postedChannels.length > 0; if (aP === bP) return b.index - a.index; return aP ? 1 : -1; });
     else if (sortOrder === 'title') filtered.sort((a, b) => (a.sc.title || '').localeCompare(b.sc.title || '', 'ja'));
     else filtered.sort((a, b) => b.index - a.index);
 
     if ((shEl('dbFavFirst') || { checked: true }).checked) filtered.sort((a, b) => (b.sc.favorite ? 1 : 0) - (a.sc.favorite ? 1 : 0));
-    const _sig = [filter, playFilter, sortOrder, chf, terms.join(' '), [...dbTagSel].join(',')].join('|');
+    const _sig = [filter, playFilter, sortOrder, chf, terms.join(' '), [...dbTagSel].join(','), [...dbTimeSel].join(',')].join('|');
+    const isSameSig = (_sig === dbSig && force !== true);
     if (_sig !== dbSig) { dbSig = _sig; dbLimit = DB_CHUNK_SIZE; }
     const initLimit = Math.min(Math.max(DB_CHUNK_SIZE, dbLimit), filtered.length);
     const shown = filtered.slice(0, initLimit);
@@ -360,6 +374,25 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     if (shEl('unpostedScenarioCount')) shEl('unpostedScenarioCount').innerText = total - posted;
 
     lastFilteredIds = filtered.map(x => String(x.sc.id));
+    const mainArea = isSameSig ? shEl('mainArea') : null;
+    const activeContainer = dbViewMode === 'card' ? shEl('dbCardContainer') : shEl('dbTableBody');
+    let savedScrollTop = 0, anchorSid = '', anchorTop = 0;
+    if (isSameSig && mainArea && activeContainer) {
+      savedScrollTop = mainArea.scrollTop;
+      const mainTop = mainArea.getBoundingClientRect().top;
+      const sel = dbViewMode === 'card' ? '.scenario-db-card[data-sid]' : 'tr[data-sid]';
+      let bestDist = Infinity;
+      activeContainer.querySelectorAll(sel).forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (r.bottom <= mainTop) return;
+        const d = Math.abs(r.top - mainTop);
+        if (d < bestDist) {
+          bestDist = d;
+          anchorSid = el.dataset.sid || '';
+          anchorTop = r.top;
+        }
+      });
+    }
     if (dbViewMode === 'card') {
       if (shEl('dbTableContainer')) shEl('dbTableContainer').style.display = 'none';
       const container = shEl('dbCardContainer');
@@ -373,6 +406,17 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
       tc.style.display = 'block';
       tbody.innerHTML = shown.map(x => renderScenarioRowHtml(x.sc)).join('');
     }
+    if (isSameSig && mainArea && activeContainer) {
+      mainArea.scrollTop = savedScrollTop;
+      if (anchorSid) {
+        const sidEsc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(anchorSid) : anchorSid.replace(/"/g, '\\"');
+        const newEl = activeContainer.querySelector(`[data-sid="${sidEsc}"]`);
+        if (newEl) {
+          const diff = newEl.getBoundingClientRect().top - anchorTop;
+          if (Math.abs(diff) > 1) mainArea.scrollTop += diff;
+        }
+      }
+    }
     dbPageState = filtered.length > shown.length ? { list: filtered, offset: shown.length, mode: dbViewMode } : null;
     updateDbMoreUi();
     updateBulkActionBar();
@@ -380,6 +424,39 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     if (typeof window.updateScnWatchButtonTitle === 'function') window.updateScnWatchButtonTitle();
   }
   renderDBView = renderEnhancedDBView;
+
+  /**
+   * フィルタ・並び順に影響しない変更時に対象シナリオ1件のDOMだけを差分更新する
+   */
+  window.patchScenarioDBCard = function (scId, opts) {
+    const sc = (appState.scenarios || []).find(s => s && String(s.id) === String(scId));
+    if (!sc) { renderEnhancedDBView(); return false; }
+    const filterEl = shEl('dbFilterStatus'), playEl = shEl('dbFilterPlayStatus'), sortEl = shEl('dbSortOrder');
+    const filter = filterEl ? filterEl.value : 'all';
+    const playFilter = playEl ? playEl.value : 'all';
+    const sortOrder = sortEl ? sortEl.value : 'newest';
+    const searchVal = (shEl('dbSearchInput') || {}).value || '';
+    const chf = (shEl('dbFilterChannel') || {}).value || '';
+    const hasTag = typeof dbTagSel !== 'undefined' && dbTagSel.size > 0;
+    const hasTime = typeof dbTimeSel !== 'undefined' && dbTimeSel.size > 0;
+    const field = opts && opts.field ? opts.field : '';
+    const sortAffected = (sortOrder === 'title' && (!field || field === 'title'))
+      || (sortOrder === 'unposted_first' && field === 'status');
+    if (String(searchVal).trim() || chf || filter !== 'all' || playFilter !== 'all' || hasTag || hasTime || sortAffected) {
+      renderEnhancedDBView();
+      return false;
+    }
+    const sidStr = String(sc.id);
+    const sidEsc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(sidStr) : sidStr.replace(/"/g, '\\"');
+    const selector = dbViewMode === 'card'
+      ? `#dbCardContainer .scenario-db-card[data-sid="${sidEsc}"]`
+      : `#dbTableBody tr[data-sid="${sidEsc}"]`;
+    const targetEl = document.querySelector(selector);
+    if (!targetEl) { renderEnhancedDBView(); return false; }
+    targetEl.outerHTML = dbViewMode === 'card' ? renderScenarioCardHtml(sc) : renderScenarioRowHtml(sc);
+    if (typeof renderSidebarTags === 'function') renderSidebarTags();
+    return true;
+  };
 })();
 
 // ---- ホーム画面：ホバー画像スライドショー／カードD&D重ね合わせ統合（マージ）／ライブラリ取込4ボタン ----
@@ -456,7 +533,7 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
 
   function mergeIntoScenario(src, dst) {
     if (!src || !dst || src === dst) return;
-    const strFields = ['system', 'playerCount', 'playTime', 'reqSkills', 'recSkills', 'semiRecSkills', 'lostRate', 'aftereffect', 'shopUrl', 'imageUrl', 'trailer', 'autoReply', 'playStatus', 'sourcePath'];
+    const strFields = ['author', 'system', 'playerCount', 'playTime', 'reqSkills', 'recSkills', 'semiRecSkills', 'lostRate', 'aftereffect', 'shopUrl', 'imageUrl', 'trailer', 'autoReply', 'playStatus', 'sourcePath'];
     strFields.forEach(f => { if (!String(dst[f] || '').trim() && String(src[f] || '').trim()) dst[f] = src[f]; });
     if (src.sourcePath && dst.sourcePath && isAncestorPath(src.sourcePath, dst.sourcePath)) {
       dst.sourcePath = src.sourcePath;
@@ -664,16 +741,6 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
       if (M && M.isGenericRoleTitle && M.isGenericRoleTitle(t)) return true;
       return isPureAssetName(t) || isAssetSubdir(t);
     };
-    const isAbbrevSubsequence = (shortRaw, longRaw) => {
-      const s = normMatch(shortRaw), l = normMatch(longRaw);
-      if (!s || !l || s.length < 2 || s.length > 4 || l.length < s.length + 2) return false;
-      if (s[0] !== l[0]) return false;
-      let j = 0;
-      for (let i = 0; i < l.length && j < s.length; i++) {
-        if (l[i] === s[j]) j++;
-      }
-      return j === s.length;
-    };
     const parentOfPath = p => {
       const s = String(p || '').replace(/[\\/]+$/, '');
       const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
@@ -793,7 +860,40 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
       metaMap.set(String(sc.id), { sc, cleanT, system: parsed.system, normK, path: effPath, rawPath: effRawPath, isSubTitle, isBoiler, boilerTargetTitle });
     });
 
-    // ① 同一正規化タイトル（大文字小文字違い・ver番号・更新日・記号違い等）をグループ化
+    // 独立フォルダ同士（双方が有効な sourcePath を持ち親子関係にない）の誤統合を防止するガード付き union
+    const isParentChildPath = (pa, pb) => !!(pa && pb && pa !== pb && (pb.startsWith(pa + '/') || pa.startsWith(pb + '/')));
+    const areIndependentPaths = (pa, pb) => !!(pa && pb && pa !== pb && !isParentChildPath(pa, pb));
+    const compPaths = new Map();
+    cands.forEach(sc => {
+      const id = String(sc.id);
+      const p = metaMap.get(id).path;
+      compPaths.set(id, p ? [p] : []);
+    });
+    const canUnionSafely = (a, b) => {
+      const ra = find(a), rb = find(b);
+      if (ra === rb) return true;
+      const paList = compPaths.get(ra) || [];
+      const pbList = compPaths.get(rb) || [];
+      for (const pa of paList) {
+        for (const pb of pbList) {
+          if (areIndependentPaths(pa, pb)) return false;
+        }
+      }
+      return true;
+    };
+    const safeUnion = (a, b, opts) => {
+      const ra = find(a), rb = find(b);
+      if (ra === rb) return true;
+      if (!(opts && opts.allowSiblingSubfolders) && !canUnionSafely(ra, rb)) return false;
+      union(ra, rb);
+      const newRoot = find(ra);
+      const otherRoot = (newRoot === ra) ? rb : ra;
+      const mergedPaths = [...new Set([...(compPaths.get(newRoot) || []), ...(compPaths.get(otherRoot) || [])])];
+      compPaths.set(newRoot, mergedPaths);
+      return true;
+    };
+
+    // ① 同一正規化タイトル（先頭記号・ソート頭文字・空白・全角半角・大文字小文字・末尾ver/日付/版違い等）をグループ化
     const byKey = new Map();
     cands.forEach(sc => {
       const m = metaMap.get(String(sc.id));
@@ -802,7 +902,9 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
       byKey.get(m.normK).push(String(sc.id));
     });
     byKey.forEach(ids => {
-      for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) safeUnion(ids[i], ids[j]);
+      }
     });
 
     // ② sourcePath の親子包含（親シナリオ A の配下にある子・孫サブフォルダカード B を回収）
@@ -813,7 +915,7 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
       for (let j = 0; j < withPath.length; j++) {
         if (i === j) continue;
         const b = withPath[j], mb = metaMap.get(String(b.id));
-        if (mb.path.startsWith(ma.path + '/')) union(String(a.id), String(b.id));
+        if (mb.path.startsWith(ma.path + '/')) safeUnion(String(a.id), String(b.id));
       }
     }
 
@@ -831,8 +933,8 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
         const segK = normMatch(seg);
         const hits = segK ? byKey.get(segK) : null;
         if (hits && hits.length) {
-          union(hits[0], String(b.id));
-          break;
+          const matchedHit = hits.find(hid => safeUnion(hid, String(b.id)));
+          if (matchedHit) break;
         }
         cur = dirOfPath(cur);
       }
@@ -872,9 +974,9 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
       if (!m.isSubTitle && !isSubfolderMisextractTitle(baseFolder)) return;
       const pInfo = resolveTrueParentFolder(m.rawPath, m.path);
       if (!pInfo) return;
-      const existingParentId = byNormPath.get(pInfo.normPath) || (byKey.get(normMatch(pInfo.title)) || [])[0];
-      if (existingParentId) {
-        union(existingParentId, String(sc.id));
+      const existingParentId = byNormPath.get(pInfo.normPath)
+        || (byKey.get(normMatch(pInfo.title)) || []).find(hid => canUnionSafely(hid, String(sc.id)));
+      if (existingParentId && safeUnion(existingParentId, String(sc.id))) {
         return;
       }
       if (!splitByParent.has(pInfo.normPath)) splitByParent.set(pInfo.normPath, { info: pInfo, ids: [] });
@@ -884,37 +986,20 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     const compTargetMeta = new Map(); // rootId -> { targetTitle, targetSourcePath }
     splitByParent.forEach(({ info, ids }) => {
       if (!ids.length) return;
-      for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+      for (let i = 1; i < ids.length; i++) safeUnion(ids[0], ids[i], { allowSiblingSubfolders: true });
       compTargetMeta.set(find(ids[0]), { targetTitle: info.title, targetSourcePath: info.rawPath });
     });
 
-    // ④ sourcePath が無いWeb取込等でも、サブフォルダ名・略称パターンから既存親シナリオへ統合
-    const fullerCands = cands.filter(sc => {
-      const m = metaMap.get(String(sc.id));
-      return m.normK && m.normK.length >= 3 && !m.isSubTitle;
-    });
+    // ④ サブフォルダ名接頭辞パターン（例：「〇〇_NPC立ち絵」）から正規化タイトルが完全一致する既存親シナリオへ統合
+    //    ※ 単純な前方一致・部分一致・略称部分列による統合は誤統合（例：「同居人」と「同居人がウニになった」）の原因となるため禁止
     cands.forEach(sc => {
-      const m = metaMap.get(String(sc.id));
       const prefMatch = RE_PREFIXED_PART.exec(String(sc.title || '').normalize('NFKC').trim());
       if (prefMatch && prefMatch[1]) {
         const stem = prefMatch[1].trim();
         const stemK = normMatch(stem);
         const exact = stemK ? byKey.get(stemK) : null;
         if (exact && exact.length) {
-          union(exact[0], String(sc.id));
-          return;
-        }
-        const abbrevHits = fullerCands.filter(a => String(a.id) !== String(sc.id) && isAbbrevSubsequence(stem, a.title));
-        if (abbrevHits.length === 1) {
-          union(String(abbrevHits[0].id), String(sc.id));
-          return;
-        }
-      }
-      const hasImportant = (sc.postedChannels && sc.postedChannels.length) || String(sc.notes || '').trim() || sc.favorite;
-      if (!hasImportant && m.normK && m.normK.length >= 2 && m.normK.length <= 3) {
-        const abbrevHits = fullerCands.filter(a => String(a.id) !== String(sc.id) && isAbbrevSubsequence(m.normK, a.title));
-        if (abbrevHits.length === 1) {
-          union(String(abbrevHits[0].id), String(sc.id));
+          exact.find(hid => safeUnion(hid, String(sc.id)));
         }
       }
     });
@@ -2351,17 +2436,26 @@ const PAGE_NAMES = { databaseTab: '🏠 ホーム', postTab: '📝 Discord投稿
     }
   });
 })();
-// ---- 左サイドバー「🏷️ 絞り込みタグ」：3段アコーディオン（🎲システム／👥人数／🏷️傾向・その他）----
+// ---- 左サイドバー「🏷️ 絞り込みタグ」：4段アコーディオン（🎲システム／👥人数／⏱️プレイ時間／🏷️傾向・その他）----
 const SB_GROUPS = TAG_GROUP_DEFS;
 const SB_PRESET = DEFAULT_TAG_PRESETS;
-const sbAcc = { sys: false, ppl: false, etc: false };   // 初期状態は3つとも閉じる（▶）。以降は開閉状態を保持（タグ選択中も開閉可）
+const sbAcc = { sys: false, ppl: false, time: false, etc: false };   // 初期状態は全て閉じる（▶）。以降は開閉状態を保持（タグ選択中も開閉可）
 let sbShowZero = false;   // 0件のタグを表示するか
 const sbGroupOf = (t, sysSet) => tagGroupOf(t, sysSet);
 function sbPplRank(t) { return t === 'ソロ' ? 0 : t === 'タイマン' ? 1 : 1 + (parseInt(t, 10) || 99); }
 function renderSidebarTags() {
   const box = shEl('sbTags'); if (!box) return;
   const counts = new Map(), sysSet = (typeof rawSystemKeys === 'function') ? rawSystemKeys() : new Set();
-  appState.scenarios.forEach(sc => { (sc.tags || []).forEach(t => counts.set(t, (counts.get(t) || 0) + 1)); (sc.autoSystemTags || []).forEach(t => sysSet.add(t)); });
+  const timeBuckets = (typeof PLAY_TIME_BUCKETS !== 'undefined' && Array.isArray(PLAY_TIME_BUCKETS)) ? PLAY_TIME_BUCKETS : [];
+  const timeCounts = new Map(timeBuckets.map(b => [b.id, 0]));
+  appState.scenarios.forEach(sc => {
+    (sc.tags || []).forEach(t => counts.set(t, (counts.get(t) || 0) + 1));
+    (sc.autoSystemTags || []).forEach(t => sysSet.add(t));
+    if (typeof getScenarioPlayTimeBucketId === 'function') {
+      const bid = getScenarioPlayTimeBucketId(sc);
+      if (bid && timeCounts.has(bid)) timeCounts.set(bid, timeCounts.get(bid) + 1);
+    }
+  });
   const groups = { sys: new Map(), ppl: new Map(), etc: new Map() };
   counts.forEach((n, t) => groups[tagGroupOf(t, sysSet)].set(t, n));
   const seenKeys = new Set([...counts.keys()].map(t => typeof tagKey === 'function' ? tagKey(t) : t));
@@ -2376,8 +2470,20 @@ function renderSidebarTags() {
   (Array.isArray(appState.customTags) ? appState.customTags : []).forEach(t => { if (t) addZero(tagGroupOf(t, sysSet), t); });
   dbTagSel.forEach(t => { const g = tagGroupOf(t, sysSet); if (!groups[g].has(t)) groups[g].set(t, 0); });   // 選択中のタグは0件でも必ず出す
   const chip = (t, n) => { const on = dbTagSel.has(t); return `<button type="button" class="sb-tag${on ? ' on' : ''}${n ? '' : ' zero'}" data-sbtag="${escapeHTML(t)}" aria-pressed="${on}">${on ? '✓ ' : ''}${escapeHTML(t)} <span>${n}</span></button>`; };
+  const renderTimeAccordion = () => {
+    const selLabels = timeBuckets.filter(b => dbTimeSel.has(b.id)).map(b => b.label);
+    const open = !!sbAcc.time;
+    const chipsHtml = timeBuckets.map(b => {
+      const n = timeCounts.get(b.id) || 0;
+      const on = dbTimeSel.has(b.id);
+      return `<button type="button" class="sb-tag${on ? ' on' : ''}${n ? '' : ' zero'}" data-sbtime="${escapeHTML(b.id)}" title="${escapeHTML(b.title)}" aria-pressed="${on}">${on ? '✓ ' : ''}${escapeHTML(b.label)} <span>${n}</span></button>`;
+    }).join('');
+    return `<div class="sb-acc${open ? '' : ' closed'}" data-acc-group="time"><button type="button" class="sb-acc-head" data-sbacc="time" aria-expanded="${open}"><span class="sb-acc-caret">${open ? '▼' : '▶'}</span>⏱️ プレイ時間 <span class="sb-acc-cnt">(${timeBuckets.length})</span>${selLabels.length ? `<span class="sb-acc-sel">[選択中: ${escapeHTML(selLabels.join(', '))}]</span>` : ''}</button>`
+      + `<div class="sb-acc-body">${chipsHtml || '<span class="sb-acc-empty">該当する区分はありません</span>'}</div></div>`;
+  };
   let html = '', hiddenZero = 0;
   TAG_GROUP_DEFS.forEach(([g, label]) => {
+    if (g === 'etc') html += renderTimeAccordion();
     let items = [...groups[g].entries()];
     hiddenZero += items.filter(([t, n]) => !n && !dbTagSel.has(t)).length;
     if (!sbShowZero) items = items.filter(([t, n]) => n > 0 || dbTagSel.has(t));
@@ -2388,17 +2494,23 @@ function renderSidebarTags() {
   });
   html += `<button type="button" class="sb-zero" data-sbzero="1">${sbShowZero ? '－ 0件のタグを隠す' : '＋ 0件のタグも表示'}${!sbShowZero && hiddenZero ? ` (${hiddenZero})` : ''}</button>`;
   box.innerHTML = html;
+  const selTimes = timeBuckets.filter(b => dbTimeSel.has(b.id));
+  const hasSel = dbTagSel.size > 0 || selTimes.length > 0;
   // スクロール枠の外：選択中フィルタバー（個別解除チップ＋すべて解除）
   const bar = shEl('sbSelBar');
   if (bar) {
-    if (dbTagSel.size) {
+    if (hasSel) {
       bar.style.display = '';
-      bar.innerHTML = [...dbTagSel].map(t => `<button type="button" class="sb-tag on" data-sbtag="${escapeHTML(t)}" title="クリックでこのタグだけ解除">✓ ${escapeHTML(t)} ✕</button>`).join('') + '<button type="button" class="sb-clear-all" data-sbtag-clear="1">すべて解除</button>';
+      bar.innerHTML = [...dbTagSel].map(t => `<button type="button" class="sb-tag on" data-sbtag="${escapeHTML(t)}" title="クリックでこのタグだけ解除">✓ ${escapeHTML(t)} ✕</button>`).join('')
+        + selTimes.map(b => `<button type="button" class="sb-tag on" data-sbtime="${escapeHTML(b.id)}" title="クリックでこの時間区分だけ解除">✓ ⏱️ ${escapeHTML(b.label)} ✕</button>`).join('')
+        + '<button type="button" class="sb-clear-all" data-sbtag-clear="1">すべて解除</button>';
     } else { bar.style.display = 'none'; bar.innerHTML = ''; }
   }
   // ホーム画面の件数表示横：選択中タグチップ＋タグ解除
   const st = shEl('dbSelTags');
-  if (st) st.innerHTML = dbTagSel.size ? [...dbTagSel].map(t => `<button type="button" class="sb-tag on" data-sbtag="${escapeHTML(t)}" title="クリックで解除">✓ ${escapeHTML(t)}</button>`).join('') + '<button type="button" class="sb-clear-all" data-sbtag-clear="1">タグ解除</button>' : '';
+  if (st) st.innerHTML = hasSel ? [...dbTagSel].map(t => `<button type="button" class="sb-tag on" data-sbtag="${escapeHTML(t)}" title="クリックで解除">✓ ${escapeHTML(t)}</button>`).join('')
+    + selTimes.map(b => `<button type="button" class="sb-tag on" data-sbtime="${escapeHTML(b.id)}" title="クリックで解除">✓ ⏱️ ${escapeHTML(b.label)} ✕</button>`).join('')
+    + '<button type="button" class="sb-clear-all" data-sbtag-clear="1">タグ解除</button>' : '';
 }
 function activateScenario(id) { if (appState.scenarios.some(s => s.id === id)) openScenarioDetail(id); }   // ホームのカード・一覧のクリック：まず「📋 シナリオ詳細モーダル」を開く
 function loadAndGo(id, after) {   // そのシナリオを読み込んでから after を実行（作業中の未保存内容があれば確認）
@@ -2428,30 +2540,76 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
     switchTab('databaseTab'); renderDBView();
   });
   document.addEventListener('click', e => {
+    const authorBtn = e.target.closest && e.target.closest('[data-act="search-author"]');
+    if (!authorBtn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const author = String(authorBtn.dataset.author || '').trim();
+    if (!author) return;
+    const dbInp = shEl('dbSearchInput');
+    const sbInp = shEl('sbSearch');
+    if (dbInp) dbInp.value = author;
+    if (sbInp) sbInp.value = author;
+    renderDBView();
+  }, true);
+  document.addEventListener('click', e => {
     const ah = e.target.closest && e.target.closest('[data-sbacc]');   // アコーディオン見出し：開閉だけ行う（絞り込みは変えない）
     if (ah) { const g = ah.dataset.sbacc; sbAcc[g] = !sbAcc[g]; renderSidebarTags(); return; }
     if (e.target.closest && e.target.closest('[data-sbzero]')) { sbShowZero = !sbShowZero; renderSidebarTags(); return; }
-    const t = e.target.closest && e.target.closest('[data-sbtag],[data-sbtag-clear]'); if (!t) return;
-    if (t.dataset.sbtagClear) dbTagSel.clear(); else { const k = t.dataset.sbtag; if (dbTagSel.has(k)) dbTagSel.delete(k); else dbTagSel.add(k); }
+    const t = e.target.closest && e.target.closest('[data-sbtag],[data-sbtime],[data-sbtag-clear]'); if (!t) return;
+    if (t.dataset.sbtagClear) { dbTagSel.clear(); dbTimeSel.clear(); }
+    else if (t.dataset.sbtime) { const bid = t.dataset.sbtime; if (dbTimeSel.has(bid)) dbTimeSel.delete(bid); else dbTimeSel.add(bid); }
+    else { const k = t.dataset.sbtag; if (dbTagSel.has(k)) dbTagSel.delete(k); else dbTagSel.add(k); }
     switchTab('databaseTab'); renderDBView();
   });
 })();
 
 // ======================================================================
-// 全体を通した「元に戻す（Ctrl+Z）/ やり直す（Ctrl+Y / Ctrl+Shift+Z）」履歴スタック（最大20ステップ）
+// 全体を通した「元に戻す（Ctrl+Z）/ やり直す（Ctrl+Y / Ctrl+Shift+Z）」履歴スタック（最大8ステップ）
 // ======================================================================
 (function () {
-  const MAX_STEPS = 20;
+  const MAX_STEPS = 8;
+  const AUTO_RECORD_DEBOUNCE_MS = 1200;
   const undoStack = [];
   const redoStack = [];
   let baseline = null;
   let restoring = false;
   let explicitDepth = 0;
+  let autoRecordTimer = null;
+  let pendingAutoLabel = '';
+
+  function isHistorySyncActive() {
+    try {
+      if (window.CloudSync) {
+        if (typeof window.CloudSync.isSyncActive === 'function' && window.CloudSync.isSyncActive()) return true;
+        if (typeof window.CloudSync.isSyncing === 'function' && window.CloudSync.isSyncing()) return true;
+      }
+      if (typeof window.getFirebaseSyncStatus === 'function' && window.getFirebaseSyncStatus().syncing) return true;
+    } catch (_) {}
+    return false;
+  }
+
+  function serializeAppStateForHistory(o) {
+    const toRef = typeof urlToRef === 'function' ? urlToRef : null;
+    return JSON.stringify(o, (k, v) => {
+      if (k === 'docTexts' || k === 'assetCatalog') return undefined;
+      if (toRef && typeof v === 'string' && (k !== 'botAvatarData' || (v.startsWith('data:image/') && v.length >= 5000))) {
+        return toRef(v);
+      }
+      return v;
+    });
+  }
+
+  function shortHash(s) {
+    const str = String(s || '');
+    if (typeof hashStr === 'function') return hashStr(str);
+    return str.length.toString(36) + ':' + str.slice(0, 32);
+  }
 
   function capture() {
     const ccf = window.CCF;
     const snap = {
-      appStateJson: typeof serializeState === 'function' ? serializeState(appState) : JSON.stringify(appState),
+      appStateJson: serializeAppStateForHistory(appState),
       blockOrderJson: typeof serializeState === 'function' && typeof blockOrder !== 'undefined' ? serializeState(blockOrder) : '[]',
       secretHOsJson: typeof serializeState === 'function' && typeof secretHOs !== 'undefined' ? serializeState(secretHOs) : '[]',
       currentScenarioId: typeof currentScenarioId !== 'undefined' ? currentScenarioId : null,
@@ -2461,7 +2619,15 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
       ccfView: ccf && ccf.S ? ccf.S.view : 'stocks',
       ccfUnlinkedJson: (ccf && ccf.S && ccf.S.key === '_default' && ccf.ccfReplacer) ? JSON.stringify(ccf.S.rooms || [], ccf.ccfReplacer) : null
     };
-    snap.sig = snap.appStateJson + '|' + snap.blockOrderJson + '|' + snap.secretHOsJson + '|' + snap.currentScenarioId + '|' + snap.ccfKey + '|' + snap.ccfRoomId + '|' + (snap.ccfUnlinkedJson || '');
+    snap.sig = [
+      shortHash(snap.appStateJson),
+      shortHash(snap.blockOrderJson),
+      shortHash(snap.secretHOsJson),
+      String(snap.currentScenarioId || ''),
+      String(snap.ccfKey || ''),
+      String(snap.ccfRoomId || ''),
+      snap.ccfUnlinkedJson ? shortHash(snap.ccfUnlinkedJson) : ''
+    ].join('|');
     return snap;
   }
 
@@ -2481,6 +2647,11 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
 
   function checkpoint(label) {
     if (restoring) return;
+    if (autoRecordTimer) {
+      clearTimeout(autoRecordTimer);
+      autoRecordTimer = null;
+      pendingAutoLabel = '';
+    }
     try {
       const snap = capture();
       pushEntry(snap, label || '');
@@ -2489,8 +2660,9 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
     } catch (e) { if (typeof logSoft === 'function') logSoft('AppHistory.checkpoint', e); }
   }
 
-  function autoRecord(label) {
+  function runAutoRecordNow(label) {
     if (restoring || explicitDepth > 0) { if (!restoring) syncBaseline(); return; }
+    if (isHistorySyncActive()) return;
     try {
       const cur = capture();
       if (!baseline) { baseline = cur; return; }
@@ -2501,10 +2673,55 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
     } catch (e) { if (typeof logSoft === 'function') logSoft('AppHistory.autoRecord', e); }
   }
 
+  function autoRecord(label) {
+    if (restoring || explicitDepth > 0) { if (!restoring) syncBaseline(); return; }
+    if (isHistorySyncActive()) return;
+    if (label) pendingAutoLabel = label;
+    if (autoRecordTimer) clearTimeout(autoRecordTimer);
+    autoRecordTimer = setTimeout(() => {
+      autoRecordTimer = null;
+      const lbl = pendingAutoLabel;
+      pendingAutoLabel = '';
+      runAutoRecordNow(lbl);
+    }, AUTO_RECORD_DEBOUNCE_MS);
+  }
+
   async function applySnapshot(snap) {
+    if (autoRecordTimer) {
+      clearTimeout(autoRecordTimer);
+      autoRecordTimer = null;
+      pendingAutoLabel = '';
+    }
     restoring = true;
     try {
+      const prevDocTextsById = new Map();
+      const prevAssetCatalogById = new Map();
+      const prevTopAssetCatalog = (typeof appState !== 'undefined' && appState && appState.assetCatalog !== undefined) ? appState.assetCatalog : undefined;
+      if (typeof appState !== 'undefined' && appState && Array.isArray(appState.scenarios)) {
+        appState.scenarios.forEach(sc => {
+          if (sc && sc.id) {
+            const sid = String(sc.id);
+            if (sc.docTexts !== undefined) prevDocTextsById.set(sid, sc.docTexts);
+            if (sc.assetCatalog !== undefined) prevAssetCatalogById.set(sid, sc.assetCatalog);
+          }
+        });
+      }
       const nextApp = JSON.parse(snap.appStateJson);
+      if (nextApp && nextApp.assetCatalog === undefined && prevTopAssetCatalog !== undefined) {
+        nextApp.assetCatalog = prevTopAssetCatalog;
+      }
+      if (nextApp && Array.isArray(nextApp.scenarios) && (prevDocTextsById.size || prevAssetCatalogById.size)) {
+        nextApp.scenarios.forEach(sc => {
+          if (!sc || !sc.id) return;
+          const sid = String(sc.id);
+          if (sc.docTexts === undefined && prevDocTextsById.has(sid)) {
+            sc.docTexts = prevDocTextsById.get(sid);
+          }
+          if (sc.assetCatalog === undefined && prevAssetCatalogById.has(sid)) {
+            sc.assetCatalog = prevAssetCatalogById.get(sid);
+          }
+        });
+      }
       if (typeof hydrateRefs === 'function') await hydrateRefs(nextApp);
       else if (typeof replaceRefs === 'function') replaceRefs(nextApp);
       appState = nextApp;
@@ -2641,13 +2858,18 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
 
   // 既存関数（saveState / renderBlockUI）の変更を暗黙検知してバックアップ履歴を記録
   window.addEventListener('DOMContentLoaded', () => {
-    setTimeout(syncBaseline, 900);
+    if (typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(() => syncBaseline(), { timeout: 3000 });
+    } else {
+      setTimeout(syncBaseline, 3000);
+    }
     if (typeof saveState === 'function') {
       const origSave = saveState;
       saveState = function (...args) {
         if (window.CCF && CCF.library && typeof CCF.library.markSelfSave === 'function') CCF.library.markSelfSave(2000);
         const res = origSave.apply(this, args);
-        if (!restoring && baseline) autoRecord('');
+        const opts = args[1];
+        if (!restoring && baseline && !(opts && opts.skipCloud) && !isHistorySyncActive()) autoRecord('');
         return res;
       };
     }
@@ -3000,6 +3222,11 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
           const thumb = sc.imageUrl || (Array.isArray(sc.hoverImages) && sc.hoverImages[0]) || '';
           const psInfo = (typeof PLAY_STATUS_MAP !== 'undefined' && typeof normalizePlayStatus === 'function') ? PLAY_STATUS_MAP[normalizePlayStatus(sc.playStatus)] : null;
           const csInfo = (window.CloudSync && CloudSync.getScenarioCacheStatus) ? CloudSync.getScenarioCacheStatus(sc) : { status: 'cached', label: '💻 保持済み' };
+          const sysLine = typeof getScenarioSpecFirstLine === 'function' ? getScenarioSpecFirstLine(sc, 'system') : String(sc.system || '').split(/\r?\n/)[0].trim();
+          const pplLine = typeof getScenarioSpecFirstLine === 'function' ? getScenarioSpecFirstLine(sc, 'playerCount') : String(sc.playerCount || '').split(/\r?\n/)[0].trim();
+          const timeLine = typeof getScenarioSpecFirstLine === 'function' ? getScenarioSpecFirstLine(sc, 'playTime') : String(sc.playTime || '').split(/\r?\n/)[0].trim();
+          const pplCard = (typeof formatPlayerCountForCard === 'function') ? formatPlayerCountForCard(pplLine) : pplLine;
+          const timeCard = (typeof formatPlayTimeForCard === 'function') ? formatPlayTimeForCard(timeLine) : timeLine;
           return `<div class="mr-card" data-mr-open="${E(sc.id)}">
             <div class="mr-card-thumb">${thumb ? `<img ${coverAttr(thumb)} loading="lazy" alt="">` : '<div class="mr-card-ph">📖</div>'}</div>
             <div class="mr-card-body">
@@ -3007,8 +3234,9 @@ function goEditScenario(id) {   // 📝 編集：そのシナリオを選択し�
               <div class="mr-card-badges">
                 <span class="cloud-cache-pill status-${E(csInfo.status)}">${E(csInfo.label)}</span>
                 ${psInfo && psInfo.badge ? `<span class="play-status-badge ${psInfo.cls}">${E(psInfo.badge)}</span>` : ''}
-                ${(typeof getScenarioSpecFirstLine === 'function' ? getScenarioSpecFirstLine(sc, 'system') : String(sc.system || '').split(/\r?\n/)[0].trim()) ? `<span class="scenario-badge system">${E(typeof getScenarioSpecFirstLine === 'function' ? getScenarioSpecFirstLine(sc, 'system') : String(sc.system || '').split(/\r?\n/)[0].trim())}</span>` : ''}
-                ${(typeof getScenarioSpecFirstLine === 'function' ? getScenarioSpecFirstLine(sc, 'playerCount') : String(sc.playerCount || '').split(/\r?\n/)[0].trim()) ? `<span class="scenario-badge">${E(typeof getScenarioSpecFirstLine === 'function' ? getScenarioSpecFirstLine(sc, 'playerCount') : String(sc.playerCount || '').split(/\r?\n/)[0].trim())}</span>` : ''}
+                ${sysLine ? `<span class="scenario-badge system">${E(sysLine)}</span>` : ''}
+                ${pplCard ? `<span class="scenario-badge"${pplLine ? ` title="${E(pplLine)}"` : ''}>${E(pplCard)}</span>` : ''}
+                ${timeCard ? `<span class="scenario-badge time"${timeLine ? ` title="${E(timeLine)}"` : ''}>🕒 ${E(timeCard)}</span>` : ''}
               </div>
               <div class="mr-card-sub">${E((sc.notes || sc.trailer || '').replace(/\s+/g, ' ').slice(0, 60))}</div>
             </div>

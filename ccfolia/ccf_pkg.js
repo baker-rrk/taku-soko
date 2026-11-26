@@ -220,6 +220,13 @@
       cache.set(k, h); return h;
     }
 
+    const rs = sel.room;
+    const round3 = v => (Math.round(v * 1000) / 1000) || 0;
+    const roomFieldWidth = clamp(Math.round(toNum(rs && rs.fieldWidth) || Math.round((Number(o.boardWidth) || 960) / grid) || 40), 1, 200);
+    const roomFieldHeight = clamp(Math.round(toNum(rs && rs.fieldHeight) || Math.round((Number(o.boardHeight) || 720) / grid) || 30), 1, 200);
+    const roomBwPx = roomFieldWidth * grid;
+    const roomBhPx = roomFieldHeight * grid;
+
     async function character(src, idx) {
       src = src || {};
       const owner = { npcName: str(src.name), iconName: str(src.iconName) };
@@ -235,8 +242,8 @@
       }
       const secret = src.secret !== undefined ? !!src.secret : !!(src.sysOpts && src.sysOpts.statusPublic === false);
       const onBoard = src.onBoard === true;
-      const x = onBoard ? (Math.round(toNum(src.x) / grid) || 0) : 0;
-      const y = onBoard ? (Math.round(toNum(src.y) / grid) || 0) : 0;
+      const x = onBoard ? round3((toNum(src.x) - roomBwPx / 2) / grid) : 0;
+      const y = onBoard ? round3((toNum(src.y) - roomBhPx / 2) / grid) : 0;
       const width = onBoard && src.width != null ? Math.max(1, Math.round(toNum(src.width) / grid)) : 4;
       const height = onBoard && src.height != null ? Math.max(1, Math.round(toNum(src.height) / grid)) : 4;
       return {
@@ -259,21 +266,26 @@
       };
     }
     const bgmLines = [];
-    const rs = sel.room;
+    const normFit = v => (v === 'fill' || v === 'cover' || v === 'contain') ? v : '';
+    const pickFit = (...vals) => { for (const v of vals) { const f = normFit(v); if (f) return f; } return 'contain'; };
     async function scene(s, sceneIndex) {
       const bgm = s.bgm && (s.bgm.path || s.bgm.name || s.bgm.assetUid) ? s.bgm : null, bgmHash = bgm ? await hashOf(bgm, 'audio', 'シーン「' + str(s.title) + '」のBGM') : null;
       if (bgm) {
         const label = str(bgm.name || (bgm.path ? bgm.path.split(/[\\/]/).pop() : ''), 'BGM');
         bgmLines.push('シーン「' + str(s.title || s.name, '無題のシーン') + '」: ' + label + (bgmHash ? ' (' + bgmHash + ')' : ''));
       }
+      const scFieldWidth = clamp(Math.round(toNum(s.boardWidth ? s.boardWidth / grid : 0) || Math.round((Number(o.boardWidth) || 960) / grid) || 40), 0, 200);
+      const scFieldHeight = clamp(Math.round(toNum(s.boardHeight ? s.boardHeight / grid : 0) || Math.round((Number(o.boardHeight) || 720) / grid) || 30), 0, 200);
+      const scBwPx = scFieldWidth * grid;
+      const scBhPx = scFieldHeight * grid;
       const markers = {};
       for (const mk of (Array.isArray(s.markers) ? s.markers : [])) {
-        if (!mk || typeof mk !== 'object') continue;
+        if (!mk || typeof mk !== 'object' || mk.visible === false) continue;
         const hasImg = !!(mk.dataUrl || mk.path || mk.filePath || mk.assetId || mk.assetUid || mk.url);
         const imgHash = hasImg ? await hashOf(mk, 'image', str(mk.name, 'マーカーパネル')) : '';
         markers[genId()] = {
-          x: Math.round(toNum(mk.x) / grid) || 0,
-          y: Math.round(toNum(mk.y) / grid) || 0,
+          x: round3((toNum(mk.x) - scBwPx / 2) / grid),
+          y: round3((toNum(mk.y) - scBhPx / 2) / grid),
           z: toInt(mk.zIndex != null ? mk.zIndex : 1),
           width: Math.max(1, Math.round(toNum(mk.width) / grid)),
           height: Math.max(1, Math.round(toNum(mk.height) / grid)),
@@ -291,9 +303,9 @@
         name: str(s.title || s.name, '無題のシーン'),
         backgroundUrl: bgSrc ? await hashOf(bgSrc, 'image', 'シーン「' + str(s.title) + '」の背景') : null,
         foregroundUrl: fgSrc ? await hashOf(fgSrc, 'image', 'シーン「' + str(s.title) + '」の前景') : null,
-        fieldObjectFit: (s.fgFit === 'fill' || (fgSrc && (fgSrc.fit === 'fill' || fgSrc.fitMode === 'fill'))) ? 'fill' : 'cover',
-        fieldWidth: clamp(Math.round(toNum(s.boardWidth ? s.boardWidth / grid : 0) || Math.round((Number(o.boardWidth) || 960) / grid) || 40), 0, 200),
-        fieldHeight: clamp(Math.round(toNum(s.boardHeight ? s.boardHeight / grid : 0) || Math.round((Number(o.boardHeight) || 720) / grid) || 30), 0, 200),
+        fieldObjectFit: pickFit(s.fgFit, fgSrc && fgSrc.fitMode, fgSrc && fgSrc.fit),
+        fieldWidth: scFieldWidth,
+        fieldHeight: scFieldHeight,
         displayGrid: false,
         gridSize: 1,
         markers,
@@ -305,21 +317,22 @@
       };
     }
     async function item(it, itemIndex) {
+      const isVis = it.visible !== false && !it.invisible;
       return {
-        x: Math.round(toNum(it.x) / grid) || 0,
-        y: Math.round(toNum(it.y) / grid) || 0,
+        x: round3((toNum(it.x) - roomBwPx / 2) / grid),
+        y: round3((toNum(it.y) - roomBhPx / 2) / grid),
         z: toInt(it.zIndex),
         angle: toInt(it.angle),
         width: Math.max(1, Math.round(toNum(it.width) / grid)),
         height: Math.max(1, Math.round(toNum(it.height) / grid)),
         deckId: null,
         locked: !!it.locked,
-        visible: it.visible !== false && !it.invisible,
+        visible: isVis,
         closed: false,
         withoutOwner: false,
         freezed: false,
         type: 'object',
-        active: true,
+        active: isVis,
         memo: str(it.text),
         imageUrl: (await hashOf(it, 'image', str(it.name, '盤面オブジェクト'))) || '',
         coverImageUrl: null,
@@ -345,9 +358,9 @@
       embedUrl: null,
       thumbnailUrl: null,
       mapType: null,
-      fieldWidth: clamp(Math.round(toNum(rs && rs.fieldWidth) || Math.round((Number(o.boardWidth) || 960) / grid) || 40), 1, 200),
-      fieldHeight: clamp(Math.round(toNum(rs && rs.fieldHeight) || Math.round((Number(o.boardHeight) || 720) / grid) || 30), 1, 200),
-      fieldObjectFit: ((roomFgSrc && (roomFgSrc.fit === 'fill' || roomFgSrc.fitMode === 'fill')) || (!(rs && rs.fg) && firstScene && firstScene.fgFit === 'fill')) ? 'fill' : 'cover',
+      fieldWidth: roomFieldWidth,
+      fieldHeight: roomFieldHeight,
+      fieldObjectFit: pickFit(!(rs && rs.fg) && firstScene ? firstScene.fgFit : '', rs && rs.fgFit, roomFgSrc && roomFgSrc.fitMode, roomFgSrc && roomFgSrc.fit),
       alignWithGrid: false,
       messageChannels: [],
       messageGroups: [],
@@ -380,18 +393,39 @@
     return { data, files: bag.files, warnings, counts };
   }
 
+  /** ココフォリア v1.1.0 の items / markers / characters の x,y が「ピクセル単位 (scale=1)」か「マス単位 (scale=grid)」かを判定する */
+  function detectCoordScale(entities, opts) {
+    const o = opts || {};
+    const grid = Math.max(1, Number(o.grid) || 24);
+    const list = Array.isArray(entities) ? entities : [];
+    for (const e of list) {
+      if (!e || typeof e !== 'object') continue;
+      const x = Number(e.x), y = Number(e.y);
+      if (Number.isFinite(x) && Math.abs(x) > 500) return 1;
+      if (Number.isFinite(y) && Math.abs(y) > 500) return 1;
+    }
+    return grid;
+  }
+
   /** __data.json（オブジェクト）→ 読みやすい形。ココフォリアのルームZIPでなければ例外 */
   function parsePackage(data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('__data.json の形式が不正です');
     const ent = data.entities;
     if (!ent || typeof ent !== 'object') throw new Error('entities が見つかりません（ココフォリアのルームZIPではありません）');
     const list = m => (m && typeof m === 'object' ? Object.keys(m).map(id => (m[id] && typeof m[id] === 'object' ? Object.assign({ _id: id }, m[id]) : null)).filter(Boolean) : []);
-    const scenes = list(ent.scenes).map(sc => Object.assign({}, sc, {
+    const sortByOrder = arr => arr
+      .map((v, i) => ({ v, i, ord: (v && v.order !== '' && v.order != null && Number.isFinite(Number(v.order))) ? Number(v.order) : Infinity }))
+      .sort((a, b) => (a.ord !== b.ord ? a.ord - b.ord : a.i - b.i))
+      .map(x => x.v);
+    const scenes = sortByOrder(list(ent.scenes)).map(sc => Object.assign({}, sc, {
       text: str(sc.text),
       sceneMessage: str(sc.text),
       markers: Array.isArray(sc.markers) ? sc.markers.filter(mk => mk && typeof mk === 'object') : list(sc.markers)
     }));
-    return { version: str(data.meta && data.meta.version), room: ent.room && typeof ent.room === 'object' ? ent.room : {}, characters: list(ent.characters), scenes, items: list(ent.items), notes: list(ent.notes), effects: list(ent.effects), resources: data.resources && typeof data.resources === 'object' ? data.resources : {} };
+    const items = sortByOrder(list(ent.items)).map(it => Object.assign({}, it, {
+      visible: !(it.active === false || it.visible === false || it.closed === true)
+    }));
+    return { version: str(data.meta && data.meta.version), room: ent.room && typeof ent.room === 'object' ? ent.room : {}, characters: list(ent.characters), scenes, items, notes: list(ent.notes), effects: list(ent.effects), resources: data.resources && typeof data.resources === 'object' ? data.resources : {} };
   }
 
   /** 素材の参照（ハッシュ名／URL／ファイル名）に対応する ZIP のエントリ名を探す。無ければ '' */
@@ -420,7 +454,7 @@
     return out;
   }
 
-  const api = { VERSION, toInt, toNum, toStr, sha256Hex, sha256HexAsync, buildToken, buildZipEntries, isSha256, genId, mimeOfName, extOfMime, sniffMime, mimeOf, parseDataUrl, createBag, buildPackage, parsePackage, findZipEntry, normName, matchByName };
+  const api = { VERSION, toInt, toNum, toStr, sha256Hex, sha256HexAsync, buildToken, buildZipEntries, isSha256, genId, mimeOfName, extOfMime, sniffMime, mimeOf, parseDataUrl, createBag, buildPackage, detectCoordScale, parsePackage, findZipEntry, normName, matchByName };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (typeof window !== 'undefined') window.CCFPkg = api;
 })();

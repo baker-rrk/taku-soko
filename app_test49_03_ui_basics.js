@@ -190,7 +190,6 @@
       const autoFile = path.join(DATA_ROOT, 'autosave_state.json');
       try {
         if (fs.existsSync(autoFile)) {
-          if (typeof window.rotateDiskBackups === 'function') window.rotateDiskBackups(true);
           saved = await fs.promises.readFile(autoFile, 'utf8');
         }
       } catch (e) { logSoft('appInit disk read', e); }
@@ -208,10 +207,39 @@
       }
     }
     if (stateCorrupt) setTimeout(() => toast('⚠️ 保存データを読み込めませんでした。元のデータは退避してあります（設定タブの「🕰 移行前データをJSONで書き出し」から取り出せます）'), 1200);
+    const hydrateBootCovers = async st => {
+      if (!st || typeof st !== 'object') return;
+      const initRefs = new Set();
+      if (typeof st.botAvatarData === 'string' && st.botAvatarData.startsWith('@img:')) {
+        initRefs.add(st.botAvatarData.slice(5));
+      }
+      const topScs = Array.isArray(st.scenarios) ? st.scenarios.slice(0, 60) : [];
+      for (const sc of topScs) {
+        if (sc && typeof sc.imageUrl === 'string' && sc.imageUrl.startsWith('@img:')) {
+          initRefs.add(sc.imageUrl.slice(5));
+        }
+      }
+      if (!initRefs.size) return;
+      const refList = [...initRefs];
+      let idx = 0;
+      await Promise.all(Array.from({ length: Math.min(6, refList.length) }, async () => {
+        while (idx < refList.length) await ensureLocalUrl(refList[idx++]);
+      }));
+      if (typeof st.botAvatarData === 'string' && st.botAvatarData.startsWith('@img:')) {
+        const u = hashToUrl.get(st.botAvatarData.slice(5));
+        if (u) st.botAvatarData = u;
+      }
+      for (const sc of topScs) {
+        if (sc && typeof sc.imageUrl === 'string' && sc.imageUrl.startsWith('@img:')) {
+          const u = hashToUrl.get(sc.imageUrl.slice(5));
+          if (u) sc.imageUrl = u;
+        }
+      }
+    };
     try {
-      await hydrateRefs(appState);
+      await hydrateBootCovers(appState);
       if ((saved || '').replace(/"botAvatarData":"[^"]*"/, '').includes('data:image/')) {   // 旧形式（画像が状態に埋まっている）を移行
-        const o = JSON.parse(serializeState(appState)); await persistChain; await hydrateRefs(o); appState = o; saveState();
+        const o = JSON.parse(serializeState(appState)); await persistChain; await hydrateBootCovers(o); appState = o; saveState();
       }
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
     } catch (e) { console.error(e); }

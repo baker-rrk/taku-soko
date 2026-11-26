@@ -43,6 +43,13 @@
     return { id, name };
   }
 
+  function parseZipViewUrl(u) {
+    const m = /^zipview:\/\/([^/]+)\/(.+)$/.exec(String(u || ''));
+    if (!m) return null;
+    const id = m[1].toLowerCase(), name = m[2].split('/').map(decodeURIComponent).join('/');
+    return { id, name };
+  }
+
   async function open(p) {
     const isMemSource = (typeof p !== 'string') || (window.WebBridge && WebBridge.isAssetRef(p)) || !ipc;
     if (isMemSource) {
@@ -107,17 +114,11 @@
 
   /** zipview:// または zipmem:// の中身を data URL にする（立ち絵への取り込み用。大きい画像は縮小） */
   async function toDataUrl(u) {
-    const mem = await readMemBuffer(u);
-    if (mem) {
-      const blob = new Blob([mem.buf], { type: mem.mime || 'image/png' });
-      const f = new File([blob], (mem.name || 'image').split('/').pop(), { type: blob.type });
-      if (typeof imageFileToDataUrl === 'function') return imageFileToDataUrl(f);
-      return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(f); });
-    }
-    const res = await fetch(u);
-    if (!res.ok) throw new Error('ZIP内の画像を読み込めませんでした (HTTP ' + res.status + ')');
-    const blob = await res.blob();
-    const f = new File([blob], decodeURIComponent(u.split('/').pop()), { type: blob.type || 'image/png' });
+    const r = await readBuffer(u);
+    const parsed = parseMemUrl(u) || parseZipViewUrl(u);
+    const fileName = parsed ? (parsed.name.split('/').pop() || 'image') : (() => { try { return decodeURIComponent(String(u || '').split('/').pop() || 'image'); } catch (_) { return 'image'; } })();
+    const blob = new Blob([r.buf], { type: r.mime || 'image/png' });
+    const f = new File([blob], fileName, { type: blob.type || 'image/png' });
     if (typeof imageFileToDataUrl === 'function') return imageFileToDataUrl(f);
     return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(f); });
   }
@@ -126,6 +127,15 @@
   async function readBuffer(u) {
     const mem = await readMemBuffer(u);
     if (mem) return { buf: mem.buf, mime: mem.mime };
+    const parsed = parseZipViewUrl(u);
+    if (parsed && ipc) {
+      const r = await ipc.invoke('ccf:zip-read', parsed.id, parsed.name);
+      if (!r || !r.ok) throw new Error((r && r.error) || 'ZIP内のファイルを読み込めませんでした');
+      const buf = typeof Buffer !== 'undefined'
+        ? (Buffer.isBuffer(r.buf) ? r.buf : Buffer.from(r.buf))
+        : (r.buf instanceof Uint8Array ? r.buf : new Uint8Array(r.buf));
+      return { buf, mime: r.mime || '' };
+    }
     const res = await fetch(u);
     if (!res.ok) throw new Error('ZIP内のファイルを読み込めませんでした (HTTP ' + res.status + ')');
     const ab = await res.arrayBuffer();

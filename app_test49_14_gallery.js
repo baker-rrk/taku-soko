@@ -6,8 +6,8 @@ const galViewMode = {
   scenario: 'list'
 };
 const galFilter = {
-  common: { q: '', tags: [], sort: 'manual', type: '' },
-  scenario: { q: '', tags: [], sort: 'manual', type: '' }
+  common: { q: '', tags: [], sort: 'manual', type: '', usedScn: '' },
+  scenario: { q: '', tags: [], sort: 'manual', type: '', usedScn: '' }
 };
 const galTagPickerOpen = { common: null, scenario: null };
 const GAL_INCSUB_KEY = 'taku_gal_incsub_v1';
@@ -275,12 +275,20 @@ function galSortItems(scope, items) {
   return out;
 }
 
+function galUsedCommonUidSet(scenarioId) {
+  if (!scenarioId || !(window.CCF && CCF.assets && typeof CCF.assets.commonAssetsUsedByScenario === 'function')) return null;
+  const rows = CCF.assets.commonAssetsUsedByScenario(String(scenarioId)) || [];
+  return new Set(rows.map(r => r && r.item && r.item.uid).filter(Boolean));
+}
+
 function galVisibleItems(scope, items) {
   const f = galFilter[scope], selCat = galSel[scope] || GAL_ALL, M = galM();
   const parsed = M ? M.parseSearchQuery(f.q) : null;
   const selTags = Array.isArray(f.tags) ? f.tags : [];
   const incSub = !!galIncSub[scope];
+  const usedUidSet = (scope === 'common' && f.usedScn) ? galUsedCommonUidSet(f.usedScn) : null;
   const out = items.filter(it => {
+    if (usedUidSet && !usedUidSet.has(it.uid)) return false;
     if (f.type && it.type !== f.type) return false;
     const cat = galItemCat(it);
     if (selCat === GAL_NONE ? cat : (selCat !== GAL_ALL && !galInFolder(cat, selCat, incSub))) return false;
@@ -316,6 +324,9 @@ function galRenderCardHtml(scope, it, selTags, isLibPlaying) {
   const editBtn = `<button type="button" class="gal-edit-btn" data-gal="edit-item" data-gscope="${scope}" data-gid="${escapeHTML(it.uid)}" title="詳細・編集（ダブルクリックでも開けます）">✏️</button>`;
   const mvBtns = `<div class="gal-mvbar"><button type="button" class="gal-mvbtn" data-gal="mv-prev" data-gscope="${scope}" data-gid="${escapeHTML(it.uid)}" title="1つ前へ移動">◀</button><button type="button" class="gal-mvbtn" data-gal="mv-next" data-gscope="${scope}" data-gid="${escapeHTML(it.uid)}" title="1つ後ろへ移動">▶</button></div>`;
   const tagsHtml = (it.tags || []).slice(0, 4).map(t => `<span class="gal-tag${galHasTag(selTags, t) ? ' on' : ''}" data-gal="picktag" data-gscope="${scope}" data-tagv="${escapeHTML(t)}" title="クリックで絞り込みに追加／解除">${escapeHTML(t)}</span>`).join('');
+  const usageHtml = (scope === 'common' && window.CCF && CCF.assets && typeof CCF.assets.usageBadge === 'function')
+    ? CCF.assets.usageBadge(it)
+    : '';
   const checked = galChk.img.has(it.uid);
   return `<div class="gal-item${checked ? ' is-selected' : ''}" draggable="true" data-gid="${escapeHTML(it.uid)}" data-gscope="${scope}" title="${escapeHTML(it.path || it.name)}${it.missing ? '（ファイル未検出）' : ''}">
     <input type="checkbox" class="gal-chk" data-gal="chk-img" data-gid="${escapeHTML(it.uid)}" ${checked ? 'checked' : ''} title="選択">
@@ -323,7 +334,7 @@ function galRenderCardHtml(scope, it, selTags, isLibPlaying) {
     ${playBtn}
     ${media}
     <div class="gal-namerow"><div class="gal-name">${escapeHTML(it.name)}${it.missing ? ' ⚠️' : ''}</div>${mvBtns}</div>
-    ${tagsHtml ? `<div class="gal-tags">${tagsHtml}</div>` : ''}
+    ${(tagsHtml || usageHtml) ? `<div class="gal-tags">${tagsHtml}${usageHtml}</div>` : ''}
   </div>`;
 }
 
@@ -335,7 +346,8 @@ function galComputeViewData(scope, ctx) {
   const curCat = galSel[scope] || GAL_ALL;
   const f = galFilter[scope];
   const selTags = Array.isArray(f.tags) ? f.tags : (f.tags = []);
-  const typedItems = f.type ? allItems.filter(it => it.type === f.type) : allItems;
+  const usedUidSet = (scope === 'common' && f.usedScn) ? galUsedCommonUidSet(f.usedScn) : null;
+  const typedItems = allItems.filter(it => (!usedUidSet || usedUidSet.has(it.uid)) && (!f.type || it.type === f.type));
   const byCat = new Map();
   for (let i = 0; i < typedItems.length; i++) {
     const it = typedItems[i];
@@ -382,7 +394,7 @@ function galComputeViewData(scope, ctx) {
   const allTags = [...tagMap.values()].filter(t => (tagCounts.get(String(t).toLowerCase()) || 0) > 0)
     .sort((a, b) => a.localeCompare(b, 'ja', { numeric: true }));
   const isFolderView = scope === 'common' && galViewMode.common === 'folder';
-  const isFiltering = !!(f.q.trim() || selTags.length);
+  const isFiltering = !!(f.q.trim() || selTags.length || (scope === 'common' && f.usedScn));
   const showFolderCards = isFolderView && curCat === GAL_ALL && !isFiltering;
   const tagOpen = !!galTagPickerOpen[scope];
   const countOf = catKey => catKey === GAL_ALL ? typedItems.length : catKey === GAL_NONE ? ((byCat.get(GAL_NONE) || []).length) : (totalMap.get(catKey) || 0);
@@ -617,18 +629,26 @@ function galleryHtml(scope) {
   const incSubChk = (curCat !== GAL_ALL && curCat !== GAL_NONE)
     ? `<label class="gal-incsub-lbl" title="OFFにするとこのフォルダ直下の素材だけを表示します"><input type="checkbox" data-gal="incsub" data-gscope="${scope}" ${galIncSub[scope] ? 'checked' : ''}> <span>サブフォルダも含めて表示</span></label>`
     : '';
+  const usedScns = (scope === 'common' && window.CCF && CCF.assets && typeof CCF.assets.scenariosUsingCommonAssets === 'function')
+    ? CCF.assets.scenariosUsingCommonAssets()
+    : [];
+  if (scope === 'common' && f.usedScn && !usedScns.some(s => s.id === String(f.usedScn))) f.usedScn = '';
+  const usedScnSelectHtml = scope === 'common'
+    ? `<select class="gal-scn-sel" data-gal-scn="common" aria-label="使用シナリオ絞り込み"><option value="">📚 使用シナリオ：すべて</option>${usedScns.map(s => `<option value="${escapeHTML(s.id)}"${String(f.usedScn) === s.id ? ' selected' : ''}>${escapeHTML(s.title)}（${s.count}件）</option>`).join('')}</select>`
+    : '';
   const selTagsInline = `<div class="gal-seltags-inline" data-gal-seltags="${scope}"${selTags.length ? '' : ' hidden'}>${galSelectedTagsInlineHtml(scope, selTags)}</div>`;
   return `<div class="gal-bar">
       <b>${scope === 'common' ? '🖼️ 共通ギャラリー（マイライブラリ統合）' : `📌 登録素材（全 ${allItems.length}件）`}</b>
       ${viewToggle}
       ${scope === 'common' ? `<button type="button" class="btn-sort" data-gal="pick-root">📂 監視フォルダ選択</button>${watchRoot ? `<button type="button" class="btn-sort btn-danger" data-gal="unwatch-root" title="監視フォルダの設定を解除">✕ 監視解除</button>` : ''}<button type="button" class="btn-sort" data-gal="sync-lib">🔄 同期</button>${watchRoot ? `<span class="gal-hint" title="${escapeHTML(watchRoot)}">監視中: ${escapeHTML(watchBase)}</span>` : ''}` : ''}
       ${scope === 'scenario' ? `<button type="button" class="btn-sort" data-gal="open-am">🗗 登録素材を拡大管理</button>` : ''}
-      <span class="gal-hint">${scope === 'common' ? 'マイライブラリ監視フォルダとリアルタイム連動' : '詳細モーダル・ココフォリアタブと100%同期'}</span>
+      <span class="gal-hint">${scope === 'common' ? 'マイライブラリ監視フォルダとリアルタイム連動' : '詳細モーダル・「セッション準備」タブと100%同期'}</span>
       <button type="button" class="btn-sort" data-gal="merge-dup" data-gscope="${scope}" title="名前が違っても中身が完全に同じ画像（SHA-256一致）を1件に統合します">🧹 同一画像を統合</button>
       <button type="button" class="btn-sort" data-gal="add-folder" data-gscope="${scope}">＋ フォルダ追加</button>
     </div>
     <div class="gal-filters">
       ${typePills}
+      ${usedScnSelectHtml}
       ${listFolderControl}
       ${incSubChk}
       <input type="search" data-gal-q="${scope}" placeholder="🔍 検索（スペース / -除外語）" value="${escapeHTML(f.q)}">
@@ -644,7 +664,7 @@ function galleryHtml(scope) {
         <option value="added"${f.sort === 'added' ? ' selected' : ''}>🕒 登録順</option>
       </select>
       <button type="button" class="btn-sort" data-gal="save-order" data-gscope="${scope}" title="現在の並び順をカスタム順として保存">📌 今の並びをカスタム順に保存</button>
-      ${(f.q || selTags.length || f.type) ? `<button type="button" class="btn-sort" data-gal="clear-filt" data-gscope="${scope}">✕ 条件クリア</button>` : ''}
+      ${(f.q || selTags.length || f.type || f.usedScn) ? `<button type="button" class="btn-sort" data-gal="clear-filt" data-gscope="${scope}">✕ 条件クリア</button>` : ''}
     </div>
     <div class="gal-body" data-gal-body="${scope}">${galleryBodyHtml(scope, ctx, d)}</div>`;
 }
@@ -713,6 +733,7 @@ const docFileExt = d => {
 function getScenarioDocsUnified(sc) {
   if (!sc) return [];
   const normP = p => String(p || '').replace(/\\/g, '/').trim().toLowerCase();
+  const isTempLockName = n => /^~\$/.test(String(n || '').trim());
   const docNameKey = (obj, fallbackExt) => {
     const raw = String((obj && (obj.origName || obj.name)) || '').normalize('NFKC').trim().toLowerCase();
     if (!raw) return '';
@@ -730,9 +751,11 @@ function getScenarioDocsUnified(sc) {
 
   (sc.docs || []).forEach((d, idx) => {
     if (!d) return;
+    const fp = docFilePath(d);
+    const rawBase = (d.path || fp || '').split(/[\\/]/).pop() || '';
+    if (isTempLockName(d.origName) || isTempLockName(d.name) || isTempLockName(rawBase)) return;
     const id = String(d.id || ('doc_' + idx));
     const uid = 'doc:' + id;
-    const fp = docFilePath(d);
     const nk = docNameKey(d, d.ext === 'pdf' ? 'pdf' : '');
     const entry = {
       id,
@@ -754,8 +777,10 @@ function getScenarioDocsUnified(sc) {
     const unified = CCF.assets.getUnifiedItems(String(sc.id)) || [];
     unified.forEach(it => {
       if (!it || (it.type !== 'pdf' && it.type !== 'doc')) return;
-      const allUids = [...new Set([it.uid, ...(Array.isArray(it.mergedUids) ? it.mergedUids : [])].filter(Boolean))];
       const fp = it.path || '';
+      const rawBase = fp.split(/[\\/]/).pop() || '';
+      if (isTempLockName(it.origName) || isTempLockName(it.name) || isTempLockName(rawBase)) return;
+      const allUids = [...new Set([it.uid, ...(Array.isArray(it.mergedUids) ? it.mergedUids : [])].filter(Boolean))];
       const pk = fp ? normP(fp) : '';
       const nk = docNameKey(it, it.type === 'pdf' ? 'pdf' : '');
       let ex = null;
@@ -855,7 +880,7 @@ function renderGalleryGridOnly(scope) {
     }
     const filtersEl = el.querySelector('.gal-filters');
     if (filtersEl) {
-      const hasFilt = !!(d.f.q || d.selTags.length || d.f.type);
+      const hasFilt = !!(d.f.q || d.selTags.length || d.f.type || d.f.usedScn);
       const clrBtn = filtersEl.querySelector(`[data-gal="clear-filt"][data-gscope="${scope}"]`);
       if (hasFilt && !clrBtn) {
         filtersEl.insertAdjacentHTML('beforeend', `<button type="button" class="btn-sort" data-gal="clear-filt" data-gscope="${scope}">✕ 条件クリア</button>`);
@@ -1714,6 +1739,7 @@ function galAskText(title, def) {
 
   document.addEventListener('change', e => {
     const t = e.target; if (!t) return;
+    if (t.dataset.galScn) { galFilter[t.dataset.galScn].usedScn = t.value; renderGalleryAll(); return; }
     if (t.dataset.galSort) { galFilter[t.dataset.galSort].sort = t.value; renderGalleryAll(); return; }
     if (t.dataset.galFolder) {
       const scope = t.dataset.galFolder;
@@ -1905,7 +1931,7 @@ function galAskText(title, def) {
       }
       if (k === 'toggletag' || k === 'picktag') { e.stopPropagation(); galToggleTag(scope, g.dataset.tagv || ''); renderGalleryAll(); return; }
       if (k === 'cleartags') { galFilter[scope].tags = []; renderGalleryAll(); return; }
-      if (k === 'clear-filt') { galFilter[scope] = { q: '', tags: [], sort: galFilter[scope].sort, type: '' }; renderGalleryAll(); return; }
+      if (k === 'clear-filt') { galFilter[scope] = { q: '', tags: [], sort: galFilter[scope].sort, type: '', usedScn: '' }; renderGalleryAll(); return; }
       if (k === 'save-order') { galSaveCurrentSort(scope); return; }
       if (k === 'mv-first' || k === 'mv-prev' || k === 'mv-next' || k === 'mv-last') {
         e.stopPropagation();
@@ -1976,9 +2002,12 @@ function galAskText(title, def) {
       if (k === 'bulk-img') {
         const sel = allItems.filter(a => galChk.img.has(a.uid)); if (!sel.length) return;
         if (!(await appConfirm(`選択中の素材 ${sel.length}件を削除・除外しますか？（PC上の元ファイルは消えません）`, { okText: '削除', danger: true }))) return;
-        const uids = sel.map(a => a.uid); uids.forEach(u => galChk.img.delete(u));
+        const uids = [...new Set(sel.flatMap(a => [a.uid, ...(Array.isArray(a.mergedUids) ? a.mergedUids : [])]).filter(Boolean))];
+        uids.forEach(u => galChk.img.delete(u));
         if (scope === 'common' && window.CommonAssets) window.CommonAssets.removeItems(uids);
-        else {
+        else if (ctx.sc && window.CCF && CCF.assets && typeof CCF.assets.removeScenarioItems === 'function') {
+          CCF.assets.removeScenarioItems(String(ctx.sc.id), uids);
+        } else {
           galChkPt('登録素材を削除');
           const idSet = new Set(uids);
           ctx.items.splice(0, ctx.items.length, ...ctx.items.filter(a => !idSet.has('img:' + a.id)));
@@ -2040,15 +2069,21 @@ function galAskText(title, def) {
       }
       if (k === 'del-img') {
         e.stopPropagation();
-        const uid = g.dataset.gid; galChk.img.delete(uid);
-        if (scope === 'common' && window.CommonAssets) window.CommonAssets.removeItems([uid]);
-        else {
+        const uid = g.dataset.gid;
+        const item = allItems.find(x => x.uid === uid);
+        const uids = item && Array.isArray(item.mergedUids) ? [...new Set([uid, ...item.mergedUids].filter(Boolean))] : [uid];
+        uids.forEach(u => galChk.img.delete(u));
+        if (scope === 'common' && window.CommonAssets) window.CommonAssets.removeItems(uids);
+        else if (ctx.sc && window.CCF && CCF.assets && typeof CCF.assets.removeScenarioItems === 'function') {
+          CCF.assets.removeScenarioItems(String(ctx.sc.id), uids);
+        } else {
           galChkPt('登録素材を削除');
-          ctx.items.splice(0, ctx.items.length, ...ctx.items.filter(a => ('img:' + a.id) !== uid));
+          const idSet = new Set(uids);
+          ctx.items.splice(0, ctx.items.length, ...ctx.items.filter(a => !idSet.has('img:' + a.id)));
           if (ctx.sc) {
-            ctx.sc.docs = (ctx.sc.docs || []).filter(d => ('doc:' + d.id) !== uid);
-            if (Array.isArray(ctx.sc.assetOrder)) ctx.sc.assetOrder = ctx.sc.assetOrder.filter(u => u !== uid);
-            if (window.CCF) CCF.withProject(String(ctx.sc.id), p => { p.refs = (p.refs || []).filter(r => ('ref:' + r.id) !== uid); p.assetOrder = (p.assetOrder || []).filter(u => u !== uid); });
+            ctx.sc.docs = (ctx.sc.docs || []).filter(d => !idSet.has('doc:' + d.id));
+            if (Array.isArray(ctx.sc.assetOrder)) ctx.sc.assetOrder = ctx.sc.assetOrder.filter(u => !idSet.has(u));
+            if (window.CCF) CCF.withProject(String(ctx.sc.id), p => { p.refs = (p.refs || []).filter(r => !idSet.has('ref:' + r.id)); p.assetOrder = (p.assetOrder || []).filter(u => !idSet.has(u)); });
           }
           ctx.save();
         }
@@ -2057,7 +2092,7 @@ function galAskText(title, def) {
     }
 
     const galCard = e.target.closest('.gal-item[data-gid][data-gscope]');
-    if (galCard && !e.target.closest('.gal-chk, button, input, [data-gal="picktag"]')) {
+    if (galCard && !e.target.closest('.gal-chk, button, input, [data-gal="picktag"], [data-usage]')) {
       // シングルクリック=選択（詳細モーダルは開かない）。ダブルクリック／✏️ボタンで詳細・編集を開く
       galCardClick(galCard.dataset.gscope, galCard.dataset.gid, e);
       return;
@@ -2072,7 +2107,7 @@ function galAskText(title, def) {
   document.addEventListener('dblclick', e => {
     const galCard = e.target && e.target.closest && e.target.closest('.gal-item[data-gid][data-gscope]');
     if (!galCard) return;
-    if (e.target.closest('.gal-chk, .gal-mvbtn, button, input, select, [data-gal="picktag"]')) return;
+    if (e.target.closest('.gal-chk, .gal-mvbtn, button, input, select, [data-gal="picktag"], [data-usage]')) return;
     e.preventDefault();
     galOpenDetailFor(galCard.dataset.gscope, galCard.dataset.gid);
   });
@@ -2527,22 +2562,28 @@ function openGalleryDetailModal(opts) {
       ? `素材「${it.name}」を共通ギャラリーから削除・除外しますか？（監視フォルダ内の元ファイル自体は消えません）`
       : `素材「${it.name}」を登録素材から削除・除外しますか？（PC上の元ファイル自体は消えません）`;
     if (!(await appConfirm(msg, { title: '素材の削除確認', okText: '削除する', danger: true }))) return;
-    galChk.img.delete(it.uid);
+    const uids = Array.isArray(it.mergedUids) ? [...new Set([it.uid, ...it.mergedUids].filter(Boolean))] : [it.uid];
+    uids.forEach(u => galChk.img.delete(u));
     if (scope === 'common' && window.CommonAssets) {
-      window.CommonAssets.removeItems([it.uid]);
+      window.CommonAssets.removeItems(uids);
     } else if (scope === 'scenario' && scenarioId) {
-      const sc = appState.scenarios.find(s => String(s.id) === scenarioId);
-      galChkPt('登録素材を削除');
-      if (sc) {
-        sc.images = (sc.images || []).filter(a => ('img:' + a.id) !== it.uid);
-        sc.docs = (sc.docs || []).filter(d => ('doc:' + d.id) !== it.uid);
-        if (Array.isArray(sc.assetOrder)) sc.assetOrder = sc.assetOrder.filter(u => u !== it.uid);
-      }
-      if (window.CCF && CCF.withProject) {
-        CCF.withProject(scenarioId, p => {
-          p.refs = (p.refs || []).filter(r => ('ref:' + r.id) !== it.uid);
-          p.assetOrder = (p.assetOrder || []).filter(u => u !== it.uid);
-        });
+      if (window.CCF && CCF.assets && typeof CCF.assets.removeScenarioItems === 'function') {
+        CCF.assets.removeScenarioItems(scenarioId, uids);
+      } else {
+        const sc = appState.scenarios.find(s => String(s.id) === scenarioId);
+        galChkPt('登録素材を削除');
+        const idSet = new Set(uids);
+        if (sc) {
+          sc.images = (sc.images || []).filter(a => !idSet.has('img:' + a.id));
+          sc.docs = (sc.docs || []).filter(d => !idSet.has('doc:' + d.id));
+          if (Array.isArray(sc.assetOrder)) sc.assetOrder = sc.assetOrder.filter(u => !idSet.has(u));
+        }
+        if (window.CCF && CCF.withProject) {
+          CCF.withProject(scenarioId, p => {
+            p.refs = (p.refs || []).filter(r => !idSet.has('ref:' + r.id));
+            p.assetOrder = (p.assetOrder || []).filter(u => !idSet.has(u));
+          });
+        }
       }
       if (typeof cleanupUnusedImages === 'function') cleanupUnusedImages();
       notifyAfterEdit();
@@ -2665,6 +2706,30 @@ function openGalleryDetailModal(opts) {
       }).join('')}</div>
     </div>`).join('');
 
+    const isCommonItem = scope === 'common' || (it.uid && (String(it.uid).startsWith('cimg:') || String(it.uid).startsWith('lib:')));
+    let usedScenariosSectionHtml = '';
+    if (isCommonItem && window.CCF && CCF.assets && typeof CCF.assets.usageByCommonItem === 'function') {
+      const rawUses = CCF.assets.usageByCommonItem(it) || [];
+      const byScn = new Map();
+      rawUses.forEach(u => {
+        if (!u || !u.id) return;
+        let grp = byScn.get(u.id);
+        if (!grp) { grp = { id: u.id, title: u.title || '無題', details: [] }; byScn.set(u.id, grp); }
+        const lbl = u.detail || u.room || u.place || '使用中';
+        if (lbl && !grp.details.includes(lbl)) grp.details.push(lbl);
+      });
+      const scnGroups = [...byScn.values()];
+      usedScenariosSectionHtml = `<section class="gal-detail-sec gal-detail-usagebox">
+        <label class="gal-detail-sec-lbl">📚 この素材を使用しているシナリオ（${scnGroups.length}件）</label>
+        ${scnGroups.length
+          ? `<div class="gal-detail-usagelist">${scnGroups.map(g => `<div class="gal-detail-usagerow">
+              <div class="gal-detail-usagetitle">📖 ${escapeHTML(g.title)}</div>
+              <div class="gal-detail-usagebadges">${g.details.map(d => `<span class="gal-usage-pill">${escapeHTML(d)}</span>`).join('')}</div>
+            </div>`).join('')}</div>`
+          : '<div class="gal-hint">現在どのシナリオ・部屋でも使用されていません</div>'}
+      </section>`;
+    }
+
     modal.innerHTML = `
       <div class="gal-detail-left">
         <div class="gal-detail-pv">${previewHtml}</div>
@@ -2712,6 +2777,8 @@ function openGalleryDetailModal(opts) {
             </div>
             <div class="gal-detail-presets">${presetHtml}</div>
           </section>
+
+          ${usedScenariosSectionHtml}
 
           <section class="gal-detail-sec gal-detail-linkbox">
             <label class="gal-detail-sec-lbl">📌 シナリオへの結び付け（登録素材へコピー）</label>

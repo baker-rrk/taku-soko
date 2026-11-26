@@ -47,7 +47,7 @@
   const fileUrl = p => {
     if (!p) return '';
     if (window.WebBridge && WebBridge.isAssetRef(p)) return WebBridge.peekAssetUrl(p) || '';
-    if (/^(?:data:|blob:|https?:|file:)/i.test(p)) return p;
+    if (/^(?:data:|blob:|https?:|file:|cloud-asset:)/i.test(p)) return p;
     if (!IS_ELECTRON) return '';
     try { return require('url').pathToFileURL(p).href; } catch (e) { if (typeof logSoft === 'function') logSoft('assetsFileUrl', e); return ''; }
   };
@@ -195,8 +195,10 @@
     return id3 + customBadges(extra);
   };
 
-  // ================= 使用シナリオ逆引き =================
+  // ================= 使用シナリオ逆引き（画像・BGM・動画 共通素材対応） =================
   let uCache = null, uAt = 0;
+  const USAGE_CACHE_TTL_MS = 120000;
+  const GENERIC_ASSET_NAMES = new Set(['素材', 'パネル', '要素', '名称未設定', '画像', '音声', '動画', '無題', 'image', 'audio', 'video', 'file', 'asset', 'bgm', 'se', 'スクリーン', 'スクリーンパネル', 'マーカー', 'マーカーパネル', '背景', '前景']);
   function walkAudio(o, name, cb, depth) {
     if (!o || depth > 5) return;
     if (Array.isArray(o)) return o.forEach(x => walkAudio(x, name, cb, depth + 1));
@@ -208,10 +210,26 @@
       else if (v && typeof v === 'object') { if (typeof v.path === 'string' && AUDIO.test(v.path)) cb(v.path, nm); walkAudio(v, nm, cb, depth + 1); }
     });
   }
+  const normCommonKey = s => {
+    const k = stripAssetExt(String(s || '')).normalize('NFKC').trim().toLowerCase();
+    if (!k || k.length < 2 || GENERIC_ASSET_NAMES.has(k)) return '';
+    return k;
+  };
+  const dataUrlSig = s => {
+    const v = String(s || '').trim();
+    if (!v) return '';
+    if (/^@img:/i.test(v)) return v.toLowerCase();
+    if (v.length <= 160) return v;
+    return v.length + ':' + v.slice(0, 64) + ':' + v.slice(-64);
+  };
   // 軽量版：ディスク読込（CCF.readProject / fs）は一切行わず、メモリ上の sc.ccfRooms / 現在開いている CCF.S.proj / sc.rooms だけを走査する。
-  // 変更通知 ccf-refs-changed が来るまでキャッシュを再利用する（シナリオ件数が変わった時のみ自動で作り直し）。
+  // 変更通知 ccf-refs-changed が来るか、TTL超過／件数変化時に自動で作り直す。
   const unifiedCache = new Map();
   const existsCache = new Map();
+  const localFileMapCache = new Map();
+  const watchEntriesCache = new Map(); // normRoot -> { at, byDedupKey, entries }
+  const inferredWatchRootsCache = { at: 0, scenCount: -1, roots: [] };
+  const WATCH_CACHE_TTL_MS = 10 * 60 * 1000;
   function pathExistsCached(p) {
     if (!p || !IS_ELECTRON) return true;
     const k = norm(p);
@@ -222,43 +240,827 @@
     return ok;
   }
   function invalidateUnified(key, clearExists) {
-    if (clearExists) existsCache.clear();
-    if (key != null) unifiedCache.delete(String(key));
-    else unifiedCache.clear();
+    if (clearExists) {
+      existsCache.clear();
+      watchEntriesCache.clear();
+      inferredWatchRootsCache.at = 0;
+      inferredWatchRootsCache.scenCount = -1;
+      inferredWatchRootsCache.roots = [];
+    }
+    if (key != null) {
+      unifiedCache.delete(String(key));
+      localFileMapCache.delete(String(key));
+    } else {
+      unifiedCache.clear();
+      localFileMapCache.clear();
+    }
   }
-  window.addEventListener('ccf-refs-changed', () => { uCache = null; invalidateUnified(null, false); });
-  function usage() {
+  const isCloudOrVirtualPath = p => /^(?:cloud-asset|idb-asset|doc-text|missing-doc|zipview|https?|data|blob):/i.test(String(p || ''));
+  const INFER_CAT_FALLBACK_RE = /^(?:[☆★●◆◎○■□▲△▼▽・\-_\s]*)?(?:[0-9]+(?:[\s~〜\-ー・,、]+[0-9]+)?\s*(?:PL|人|名)(?:用|向け|シナリオ|固定|以上|以下|程度)?|人数可変|人数固定|可変人数|大人数|多人数|複数人|少人数|ソロ|タイマン|ペア|デュオ|KPレス(?:シナリオ)?|GMレス(?:シナリオ)?|CoC(?:\s*[67]版?)?|クトゥルフ(?:神話)?(?:TRPG)?|エモクロア(?:TRPG)?|インセイン|シノビガミ|マダミス|ストリテラ|(?:TRPG)?シナリオ(?:一覧|まとめ|集|置き場|フォルダ)?|TRPG)$/i;
+  function isCategoryDirForRootInfer(dirName) {
+    const raw = String(dirName || '').normalize('NFKC').trim();
+    if (!raw) return false;
+    if (CCF.dnd && typeof CCF.dnd.isCategoryFolderName === 'function' && CCF.dnd.isCategoryFolderName(raw)) return true;
+    return INFER_CAT_FALLBACK_RE.test(raw);
+  }
+  function getEffectiveScenarioWatchRoot() {
+    try {
+      const fromLib = (CCF.library && typeof CCF.library.getScenarioWatchRoot === 'function')
+        ? String(CCF.library.getScenarioWatchRoot() || '').trim()
+        : '';
+      if (fromLib) return fromLib;
+    } catch (_) { }
+    try {
+      const fromState = (typeof appState !== 'undefined' && appState && appState.watchFolders && appState.watchFolders.scenarioRoot)
+        ? String(appState.watchFolders.scenarioRoot || '').trim()
+        : '';
+      if (fromState) return fromState;
+    } catch (_) { }
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage) {
+        const fromLs = String(localStorage.getItem('ccf_scenario_watch_root') || localStorage.getItem('ccf_scn_watch_root') || '').trim();
+        if (fromLs) return fromLs;
+      }
+    } catch (_) { }
+    return '';
+  }
+  function getEffectiveScenarioWatchRoots() {
+    const out = [];
+    const seen = new Set();
+    const pushRoot = r => {
+      const s = String(r || '').trim();
+      if (!s) return;
+      const k = norm(s);
+      if (!k || seen.has(k)) return;
+      seen.add(k);
+      out.push(s);
+    };
+    const configured = getEffectiveScenarioWatchRoot();
+    if (configured) pushRoot(configured);
+    if (typeof IS_ELECTRON === 'undefined' || !IS_ELECTRON || typeof fs === 'undefined' || !fs || typeof path === 'undefined' || !path) {
+      return out;
+    }
+    const scenarios = (typeof appState !== 'undefined' && Array.isArray(appState.scenarios)) ? appState.scenarios : [];
+    const now = Date.now();
+    if (inferredWatchRootsCache.scenCount === scenarios.length && (now - inferredWatchRootsCache.at) < WATCH_CACHE_TTL_MS) {
+      inferredWatchRootsCache.roots.forEach(pushRoot);
+      return out;
+    }
+    const dataRootNorm = (typeof DATA_ROOT !== 'undefined' && DATA_ROOT) ? norm(DATA_ROOT) : '';
+    const isInsideDataRoot = p => !!(dataRootNorm && norm(p).startsWith(dataRootNorm));
+    const inferred = [];
+    const inferredSeen = new Set();
+    const addInferred = r => {
+      const s = String(r || '').trim();
+      if (!s || isInsideDataRoot(s)) return;
+      const k = norm(s);
+      if (!k || inferredSeen.has(k) || !pathExistsCached(s)) return;
+      inferredSeen.add(k);
+      inferred.push(s);
+    };
+    const collectTopCategoryFromStart = startPath => {
+      if (!startPath || isCloudOrVirtualPath(startPath) || isInsideDataRoot(startPath) || !pathExistsCached(startPath)) return;
+      let cur = startPath;
+      let topCat = '';
+      for (let step = 0; step < 3; step++) {
+        const parent = path.dirname(cur);
+        if (!parent || parent === cur) break;
+        const bn = path.basename(parent);
+        if (!bn) break;
+        if (isCategoryDirForRootInfer(bn)) topCat = parent;
+        cur = parent;
+      }
+      if (topCat) addInferred(topCat);
+    };
+    for (const sc of scenarios) {
+      if (!sc || inferred.length >= 8) break;
+      if (sc.sourcePath && !isCloudOrVirtualPath(sc.sourcePath) && !isInsideDataRoot(sc.sourcePath) && pathExistsCached(sc.sourcePath)) {
+        collectTopCategoryFromStart(sc.sourcePath);
+        continue;
+      }
+      if (Array.isArray(sc.docs)) {
+        for (const d of sc.docs) {
+          if (!d) continue;
+          const dp = d.path || d.ref || '';
+          if (!dp || isCloudOrVirtualPath(dp) || isInsideDataRoot(dp) || !pathExistsCached(dp)) continue;
+          let baseDir = path.dirname(dp);
+          if (baseDir && CCF.dnd && typeof CCF.dnd.isAssetSubdirName === 'function' && CCF.dnd.isAssetSubdirName(path.basename(baseDir))) {
+            const up = path.dirname(baseDir);
+            if (up && up !== baseDir) baseDir = up;
+          }
+          collectTopCategoryFromStart(baseDir);
+          break;
+        }
+      }
+    }
+    inferredWatchRootsCache.at = now;
+    inferredWatchRootsCache.scenCount = scenarios.length;
+    inferredWatchRootsCache.roots = inferred;
+    inferred.forEach(pushRoot);
+    return out;
+  }
+  function getWatchRootDedupMap(watchRoot) {
+    if (!watchRoot || !pathExistsCached(watchRoot)) return null;
+    if (!CCF.dnd || typeof CCF.dnd.discoverScenarioEntries !== 'function') return null;
+    if (typeof window === 'undefined' || typeof window.getScenarioDedupKey !== 'function') return null;
+    const normRoot = norm(watchRoot);
+    const now = Date.now();
+    const cached = watchEntriesCache.get(normRoot);
+    if (cached && (now - cached.at) < WATCH_CACHE_TTL_MS) {
+      return cached.byDedupKey;
+    }
+    const byDedupKey = new Map();
+    let entries = [];
+    try {
+      entries = CCF.dnd.discoverScenarioEntries(watchRoot, { maxDepth: 7, isWatchRoot: true }) || [];
+    } catch (_) { entries = []; }
+    const rankEntry = ent => ent && ent.dir ? 3 : (ent && ent.type === 'zip' ? 1 : 2);
+    const registerKey = (rawTitle, ent) => {
+      const dk = window.getScenarioDedupKey(rawTitle);
+      if (!dk) return;
+      const prev = byDedupKey.get(dk);
+      if (!prev || rankEntry(ent) > rankEntry(prev)) {
+        byDedupKey.set(dk, ent);
+      }
+    };
+    for (const ent of entries) {
+      if (!ent || !ent.p) continue;
+      const bn = path.basename(ent.p);
+      const baseTitle = ent.dir ? bn : bn.replace(/\.(?:pdf|zip|txt|md|markdown|html?|docx?)$/i, '');
+      registerKey(baseTitle, ent);
+      if (M && typeof M.extractTitleAndSystem === 'function') {
+        try {
+          const ex = M.extractTitleAndSystem(baseTitle);
+          if (ex && ex.title && ex.title !== baseTitle) registerKey(ex.title, ent);
+        } catch (_) { }
+      }
+    }
+    watchEntriesCache.set(normRoot, { at: now, entries, byDedupKey });
+    return byDedupKey;
+  }
+  function findScenarioSourceFromWatchRoot(sc) {
+    if (!sc) return '';
+    if (typeof IS_ELECTRON === 'undefined' || !IS_ELECTRON || typeof fs === 'undefined' || !fs || typeof path === 'undefined' || !path) return '';
+    if (typeof window === 'undefined' || typeof window.getScenarioDedupKey !== 'function') return '';
+    const watchRoots = getEffectiveScenarioWatchRoots();
+    if (!watchRoots.length) return '';
+    const candKeys = [];
+    const pushCandTitle = raw => {
+      const s = String(raw || '').trim().replace(/\.(?:pdf|zip|txt|md|markdown|html?|docx?)$/i, '').trim();
+      if (!s) return;
+      const dk = window.getScenarioDedupKey(s);
+      if (dk && !candKeys.includes(dk)) candKeys.push(dk);
+      if (M && typeof M.extractTitleAndSystem === 'function') {
+        try {
+          const ex = M.extractTitleAndSystem(s);
+          const dk1 = (ex && ex.title) ? window.getScenarioDedupKey(ex.title) : '';
+          if (dk1 && !candKeys.includes(dk1)) candKeys.push(dk1);
+        } catch (_) { }
+      }
+    };
+    const pathSegments = rawP => String(rawP || '').replace(/[\\/]+$/, '').split(/[\\/]/).map(x => x.trim()).filter(Boolean);
+    if (sc.title) pushCandTitle(sc.title);
+    if (sc.sourcePath && !isCloudOrVirtualPath(sc.sourcePath)) {
+      const segs = pathSegments(sc.sourcePath);
+      const tail = segs.length ? segs[segs.length - 1] : '';
+      if (tail && !isCategoryDirForRootInfer(tail)) pushCandTitle(tail);
+    }
+    if (Array.isArray(sc.docs)) {
+      for (const d of sc.docs) {
+        if (!d) continue;
+        const dp = d.path || d.ref || '';
+        if (!dp || isCloudOrVirtualPath(dp)) continue;
+        const segs = pathSegments(dp);
+        if (segs.length >= 2) {
+          let parentIdx = segs.length - 2;
+          let parentNm = segs[parentIdx];
+          if (parentNm && CCF.dnd && typeof CCF.dnd.isAssetSubdirName === 'function' && CCF.dnd.isAssetSubdirName(parentNm) && parentIdx >= 1) {
+            parentIdx--;
+            parentNm = segs[parentIdx];
+          }
+          if (parentNm && !/^[a-z]:$/i.test(parentNm) && !isCategoryDirForRootInfer(parentNm) && !(CCF.dnd && typeof CCF.dnd.isAssetSubdirName === 'function' && CCF.dnd.isAssetSubdirName(parentNm))) {
+            pushCandTitle(parentNm);
+          }
+        }
+      }
+    }
+    if (!candKeys.length) return '';
+    const maps = [];
+    for (const root of watchRoots) {
+      const map = getWatchRootDedupMap(root);
+      if (map && map.size) maps.push(map);
+    }
+    if (!maps.length) return '';
+    for (const map of maps) {
+      for (const dk of candKeys) {
+        const hit = map.get(dk);
+        if (hit && hit.p && pathExistsCached(hit.p)) return hit.p;
+      }
+    }
+    // 完全一致しない場合は、2文字以上のキーに対する最長包含一致でフォールバック
+    const rankEnt = ent => ent && ent.dir ? 3 : (ent && ent.type === 'zip' ? 1 : 2);
+    let bestEnt = null, bestLen = 0, bestRank = -1, bestDiff = Infinity;
+    for (const map of maps) {
+      for (const dk of candKeys) {
+        if (dk.length < 2) continue;
+        for (const [k, ent] of map.entries()) {
+          if (!k || k.length < 2 || !ent || !ent.p) continue;
+          if (dk.includes(k) || k.includes(dk)) {
+            const mLen = Math.min(k.length, dk.length);
+            const r = rankEnt(ent);
+            const diff = Math.abs(k.length - dk.length);
+            if (mLen > bestLen || (mLen === bestLen && (r > bestRank || (r === bestRank && diff < bestDiff)))) {
+              if (pathExistsCached(ent.p)) {
+                bestEnt = ent;
+                bestLen = mLen;
+                bestRank = r;
+                bestDiff = diff;
+              }
+            }
+          }
+        }
+      }
+    }
+    if (bestEnt && bestEnt.p) return bestEnt.p;
+    return '';
+  }
+  function getScenarioLocalFileMap(key, sc) {
+    if (typeof IS_ELECTRON === 'undefined' || !IS_ELECTRON || typeof fs === 'undefined' || !fs || typeof path === 'undefined' || !path || !sc) return null;
+    const watchRootsSig = getEffectiveScenarioWatchRoots().join('|');
+    const cacheKey = String(key || sc.id || '');
+    const cacheSig = `${String((sc && sc.sourcePath) || '')}|${watchRootsSig}`;
+    if (watchRootsSig || (sc && sc.sourcePath)) {
+      const cached = localFileMapCache.get(cacheKey);
+      if (cached && cached.sig === cacheSig) return cached.map;
+    }
+    const byName = new Map(), byStem = new Map();
+    const reg = (fp, fileName) => {
+      if (!fp || !fileName || /^~\$/.test(fileName)) return;
+      const k1 = String(fileName).normalize('NFKC').trim().toLowerCase();
+      const k2 = String(fileName).trim().toLowerCase();
+      if (k1 && !byName.has(k1)) byName.set(k1, fp);
+      if (k2 && !byName.has(k2)) byName.set(k2, fp);
+      const sk = stripAssetExt(fileName).normalize('NFKC').trim().toLowerCase();
+      if (sk) {
+        if (!byStem.has(sk)) byStem.set(sk, []);
+        byStem.get(sk).push(fp);
+      }
+    };
+    const siblingBaseKey = (name, isDir) => {
+      const raw = isDir ? String(name || '') : stripAssetExt(name);
+      const normKey = raw.normalize('NFKC').toLowerCase()
+        .replace(/(?:[（(\[【_\-\s]*(?:v|ver\.?|version|rev\.?|r|第|改訂?|修正|更新|確定|最終|final|new|latest|fix|fixed|copy|コピー|バックアップ|backup|bak|old|旧)[_\-\s]*\d*(?:\.\d+)*[）)\]】]?)/gi, '')
+        .replace(/(?:[_\-\s]*(?:20\d{2}[.\-_]?\d{2}[.\-_]?\d{2}|\d{6,8}|[（(]\d+[）)]|\d+))$/g, '')
+        .replace(/[\s_\-・.]+/g, '')
+        .trim();
+      return (isDir ? 'd:' : 'f:') + (normKey || raw.normalize('NFKC').toLowerCase().trim());
+    };
+    const walk = (dir, depth, maxDepth, skipOld) => {
+      if (!dir || depth > maxDepth) return;
+      let list = [];
+      try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+      let items = [];
+      for (const ent of list) {
+        const n = ent.name || '';
+        if (!n || n.startsWith('.') || /^~\$/.test(n) || n === 'node_modules' || n === '__MACOSX' || n === '_TRPG_Data') continue;
+        const isDir = ent.isDirectory();
+        const isFile = ent.isFile();
+        if (!isDir && !isFile) continue;
+        if (isDir && skipOld && M && M.isOldFolderName && M.isOldFolderName(n)) continue;
+        const fp = path.join(dir, n);
+        items.push({ name: n, isDir, isFile, fp, mtime: 0 });
+      }
+      if (skipOld && items.length > 1) {
+        const groups = new Map();
+        let hasOldOrDup = false;
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          if (isOldVersionAsset(it.name)) hasOldOrDup = true;
+          const bk = siblingBaseKey(it.name, it.isDir);
+          let arr = groups.get(bk);
+          if (!arr) { arr = []; groups.set(bk, arr); }
+          arr.push(it);
+          if (arr.length === 2) hasOldOrDup = true;
+        }
+        if (hasOldOrDup) {
+          for (const arr of groups.values()) {
+            if (arr.length < 2) continue;
+            for (let i = 0; i < arr.length; i++) {
+              try { arr[i].mtime = fs.statSync(arr[i].fp).mtimeMs || 0; } catch (_) { }
+            }
+          }
+          items = filterLatestAssets(items);
+        }
+      }
+      for (const it of items) {
+        if (it.isDir) {
+          walk(it.fp, depth + 1, maxDepth, skipOld);
+        } else if (it.isFile) {
+          reg(it.fp, it.name);
+        }
+      }
+    };
+    if (typeof DATA_ROOT !== 'undefined' && DATA_ROOT && sc.id) {
+      const scDir = path.join(DATA_ROOT, 'scenarios', String(sc.id).replace(/[^\w-]/g, '_'));
+      if (pathExistsCached(scDir)) walk(scDir, 0, 6, false);
+    }
+    let resolvedSourcePath = (sc.sourcePath && pathExistsCached(sc.sourcePath)) ? sc.sourcePath : '';
+    if (!resolvedSourcePath) {
+      const recovered = findScenarioSourceFromWatchRoot(sc);
+      if (recovered) {
+        resolvedSourcePath = recovered;
+        sc.sourcePath = recovered;
+      }
+    }
+    if (resolvedSourcePath && pathExistsCached(resolvedSourcePath)) {
+      try {
+        const st = fs.statSync(resolvedSourcePath);
+        if (st.isFile()) reg(resolvedSourcePath, path.basename(resolvedSourcePath));
+        else if (st.isDirectory()) walk(resolvedSourcePath, 0, 6, true);
+      } catch (_) { }
+    }
+    const map = { byName, byStem };
+    if (watchRootsSig || (sc && sc.sourcePath)) {
+      const finalSig = `${String((sc && sc.sourcePath) || '')}|${watchRootsSig}`;
+      localFileMapCache.set(cacheKey, { sig: finalSig, map });
+    }
+    return map;
+  }
+  function resolveScenarioLocalDocPath(scenarioId, fileNameOrPath) {
+    if (typeof IS_ELECTRON === 'undefined' || !IS_ELECTRON || typeof fs === 'undefined' || !fs || typeof path === 'undefined' || !path) return '';
+    const raw = String(fileNameOrPath || '').trim();
+    if (!raw) return '';
+    const isMissingRef = /^missing-doc:\/\//i.test(raw);
+    const isDocText = /^doc-text:\/\//i.test(raw);
+    if (!isMissingRef && !isDocText && !isCloudOrVirtualPath(raw) && pathExistsCached(raw)) {
+      try { if (fs.statSync(raw).isFile()) return raw; } catch (_) { }
+    }
+    const sid = String(keyOr(scenarioId) || '');
+    const sc = (sid && sid !== '_default') ? scenarioOf(sid) : null;
+    if (!sc) return '';
+    let candName = raw;
+    if (isMissingRef) {
+      try { candName = decodeURIComponent(raw.slice('missing-doc://'.length)); } catch (_) { candName = raw.slice('missing-doc://'.length); }
+    } else if (/^cloud-asset:\/\//i.test(raw) && window.CloudSync && CloudSync.parseCloudAssetRef) {
+      const parsed = CloudSync.parseCloudAssetRef(raw);
+      candName = (parsed && parsed.name) || '';
+    } else if (isDocText) {
+      const dtId = raw.slice('doc-text://'.length);
+      const dtList = Array.isArray(sc.docTexts) ? sc.docTexts : [];
+      const dtHit = dtList.find(d => d && (String(d.id || '') === dtId || String(d.name || '') === dtId));
+      candName = (dtHit && dtHit.name) ? String(dtHit.name) : '';
+      if (!candName && dtId) {
+        let decoded = dtId;
+        try { decoded = decodeURIComponent(dtId); } catch (_) { }
+        if (/\.(?:pdf|txt|md|markdown|html?)$/i.test(decoded)) candName = decoded;
+      }
+    }
+    const bn = baseName(candName);
+    if (!bn) return '';
+    if (Array.isArray(sc.docs)) {
+      const bnNorm = bn.normalize('NFKC').trim().toLowerCase();
+      const bnStem = stripAssetExt(bn).normalize('NFKC').trim().toLowerCase();
+      for (const d of sc.docs) {
+        if (!d) continue;
+        const dNames = [d.origName, d.name, baseName(d.path || ''), baseName(d.ref || ''), baseName(d.rel || '')].filter(Boolean);
+        const matched = dNames.some(dn => {
+          const n1 = String(dn).normalize('NFKC').trim().toLowerCase();
+          if (n1 === bnNorm) return true;
+          const s1 = stripAssetExt(dn).normalize('NFKC').trim().toLowerCase();
+          return !!(bnStem && s1 === bnStem);
+        });
+        if (!matched) continue;
+        if (typeof DATA_ROOT !== 'undefined' && DATA_ROOT && d.rel) {
+          try {
+            const abs = path.resolve(DATA_ROOT, d.rel);
+            if (pathExistsCached(abs)) return abs;
+          } catch (_) { }
+        }
+        if (d.path && !isCloudOrVirtualPath(d.path) && pathExistsCached(d.path)) return d.path;
+        if (d.ref && !isCloudOrVirtualPath(d.ref) && pathExistsCached(d.ref)) return d.ref;
+      }
+    }
+    const localMap = getScenarioLocalFileMap(String(sc.id), sc);
+    const expectedType = /\.pdf$/i.test(bn) ? 'pdf' : 'doc';
+    return findScenarioLocalPath(localMap, expectedType, bn, candName);
+  }
+  function findScenarioLocalPath(localMap, expectedType, ...names) {
+    if (!localMap || !localMap.byName.size) return '';
+    for (const cand of names) {
+      const b = baseName(cand);
+      if (!b) continue;
+      const hit = localMap.byName.get(String(b).normalize('NFKC').trim().toLowerCase())
+        || localMap.byName.get(String(b).trim().toLowerCase());
+      if (hit && pathExistsCached(hit)) return hit;
+    }
+    for (const cand of names) {
+      const b = baseName(cand);
+      if (!b) continue;
+      const sk = stripAssetExt(b).normalize('NFKC').trim().toLowerCase();
+      const cands = sk ? localMap.byStem.get(sk) : null;
+      if (!cands || !cands.length) continue;
+      for (const fp of cands) {
+        if (!pathExistsCached(fp)) continue;
+        const bn = baseName(fp);
+        const fpIsDoc = isDocEntry(bn, '', fp);
+        const fpType = fpIsDoc ? (/\.pdf$/i.test(bn) ? 'pdf' : 'doc') : inferType(fp);
+        if (!expectedType || fpType === expectedType || ((expectedType === 'pdf' || expectedType === 'doc') && fpIsDoc)) return fp;
+      }
+    }
+    return '';
+  }
+  function invalidateUsage() { uCache = null; uAt = 0; }
+  window.addEventListener('ccf-refs-changed', () => { invalidateUsage(); invalidateUnified(null, false); });
+
+  function usage(force) {
     const list = CCF.scenarioList();
-    if (uCache && uCache.n === list.length) return uCache;
-    const byPath = new Map(), byScn = new Map(), scns = [], seen = new Set();
-    const rooms = (typeof appState !== 'undefined' && Array.isArray(appState.rooms)) ? appState.rooms : [];
+    const commonItems = (window.CommonAssets && typeof window.CommonAssets.getAll === 'function') ? window.CommonAssets.getAll() : [];
+    const now = Date.now();
+    if (!force && uCache && uCache.n === list.length && uCache.cn === commonItems.length && (now - uAt) < USAGE_CACHE_TTL_MS) {
+      return uCache;
+    }
+
+    const byPath = new Map(), byScn = new Map(), scns = [], seenPath = new Set();
+    const byCommonUid = new Map();       // commonUid -> [{ id, scenarioId, title, room, place, detail }]
+    const byScenarioCommon = new Map();  // scenarioId -> Map<commonUid, { item, usages: [] }>
+    const commonByUid = new Map();
+    const commonByPath = new Map();
+    const commonByDataSig = new Map();
+    const commonByName = new Map();      // normName -> [commonItem, ...]
+    const seenCommonHit = new Set();
+    const scById = new Map();
+    const scByTitle = new Map();
+
     list.forEach(sc => {
-      const id = String(sc.id), title = sc.title || '無題'; scns.push({ id, title });
-      const add = (p, room) => {
-        const k = norm(p), sig = id + '|' + room + '|' + k; if (!k || seen.has(sig)) return; seen.add(sig);
+      if (!sc || sc.id == null) return;
+      const sid = String(sc.id), ttl = sc.title || '無題';
+      scns.push({ id: sid, title: ttl });
+      scById.set(sid, { id: sid, title: ttl });
+      const nt = String(ttl).normalize('NFKC').trim().toLowerCase();
+      if (nt && !scByTitle.has(nt)) scByTitle.set(nt, { id: sid, title: ttl });
+    });
+
+    if (commonItems.length === 0) {
+      uCache = { byPath, byScn, scns, byCommonUid, byScenarioCommon, n: list.length, cn: 0 };
+      uAt = now;
+      return uCache;
+    }
+
+    const pushNameIdx = (nk, ci) => {
+      if (!nk) return;
+      let arr = commonByName.get(nk);
+      if (!arr) { arr = []; commonByName.set(nk, arr); }
+      if (!arr.includes(ci)) arr.push(ci);
+    };
+
+    commonItems.forEach(ci => {
+      if (!ci || !ci.uid) return;
+      commonByUid.set(ci.uid, ci);
+      if (ci.rawId) {
+        const alt = String(ci.rawId);
+        if (!commonByUid.has(alt)) commonByUid.set(alt, ci);
+      }
+      if (ci.path) {
+        const pk = norm(ci.path);
+        if (pk) {
+          let arr = commonByPath.get(pk);
+          if (!arr) { arr = []; commonByPath.set(pk, arr); }
+          arr.push(ci);
+        }
+      }
+      const dSig = dataUrlSig(ci.dataUrl || (ci.raw && ci.raw.dataUrl));
+      if (dSig) {
+        let arr = commonByDataSig.get(dSig);
+        if (!arr) { arr = []; commonByDataSig.set(dSig, arr); }
+        arr.push(ci);
+      }
+      pushNameIdx(normCommonKey(ci.name), ci);
+      pushNameIdx(normCommonKey(ci.origName), ci);
+      if (ci.path) pushNameIdx(normCommonKey(baseName(ci.path)), ci);
+    });
+
+    const recordCommonHit = (ci, sid, sTitle, room, place) => {
+      if (!ci || !ci.uid || !sid) return;
+      const roomLbl = String(room || '').trim();
+      const placeLbl = String(place || '').trim();
+      const detail = (roomLbl && placeLbl && roomLbl !== placeLbl)
+        ? `${roomLbl}（${placeLbl}）`
+        : (placeLbl || roomLbl || '使用中');
+      const sig = `${ci.uid}|${sid}|${detail}`;
+      if (seenCommonHit.has(sig)) return;
+      seenCommonHit.add(sig);
+      const entry = { id: sid, scenarioId: sid, title: sTitle || '無題', room: roomLbl, place: placeLbl, detail };
+      let listU = byCommonUid.get(ci.uid);
+      if (!listU) { listU = []; byCommonUid.set(ci.uid, listU); }
+      listU.push(entry);
+
+      let scMap = byScenarioCommon.get(sid);
+      if (!scMap) { scMap = new Map(); byScenarioCommon.set(sid, scMap); }
+      let rec = scMap.get(ci.uid);
+      if (!rec) { rec = { item: ci, usages: [] }; scMap.set(ci.uid, rec); }
+      rec.usages.push(entry);
+    };
+
+    // ① マイライブラリ各素材の usedIn（シナリオへコピーした履歴・登録元履歴）
+    commonItems.forEach(ci => {
+      if (!ci) return;
+      const usedArr = Array.isArray(ci.usedIn) ? ci.usedIn : (ci.raw && Array.isArray(ci.raw.usedIn) ? ci.raw.usedIn : []);
+      usedArr.forEach(u => {
+        if (!u) return;
+        let sid = '', ttl = '', place = '登録履歴';
+        if (typeof u === 'string' || typeof u === 'number') {
+          const s = String(u);
+          const hit = scById.get(s) || scByTitle.get(s.normalize('NFKC').trim().toLowerCase());
+          if (hit) { sid = hit.id; ttl = hit.title; }
+        } else if (typeof u === 'object') {
+          const rawId = u.scenarioId != null ? String(u.scenarioId) : (u.id != null ? String(u.id) : '');
+          const rawTitle = String(u.title || u.scenarioTitle || u.name || '').trim();
+          const hit = (rawId && scById.get(rawId)) || (rawTitle && scByTitle.get(rawTitle.normalize('NFKC').trim().toLowerCase()));
+          if (hit) { sid = hit.id; ttl = hit.title; }
+          else if (rawId && rawTitle) { sid = rawId; ttl = rawTitle; }
+          if (u.place || u.room) place = String(u.place || u.room);
+        }
+        if (sid) recordCommonHit(ci, sid, ttl, 'マイライブラリ連携', place);
+      });
+    });
+
+    const matchCommonTargets = (cand, expectedType) => {
+      if (!cand || !commonItems.length) return [];
+      const hits = new Set();
+      const typeOk = ci => !expectedType || expectedType === 'any' || !ci.type || ci.type === expectedType;
+      const uids = [cand.assetUid, cand.assetId, cand.uid, cand.visualUid, cand.seUid].map(x => String(x || '').trim()).filter(Boolean);
+      for (const u of uids) {
+        const hit = commonByUid.get(u);
+        if (hit && typeOk(hit)) hits.add(hit);
+      }
+      if (hits.size) return [...hits];
+      const paths = [cand.path, cand.filePath, cand.visualPath, cand.sePath].map(x => norm(x)).filter(Boolean);
+      for (const pk of paths) {
+        const arr = commonByPath.get(pk);
+        if (arr) arr.forEach(ci => { if (typeOk(ci)) hits.add(ci); });
+      }
+      if (hits.size) return [...hits];
+      const dSigs = [cand.dataUrl, cand.thumbRef, cand.iconDataUrl, cand.visualDataUrl, cand.seDataUrl].map(dataUrlSig).filter(Boolean);
+      for (const ds of dSigs) {
+        const arr = commonByDataSig.get(ds);
+        if (arr) arr.forEach(ci => { if (typeOk(ci)) hits.add(ci); });
+      }
+      if (hits.size) return [...hits];
+      const nameCands = [
+        cand.name, cand.origName, cand.label, cand.fileName,
+        cand.path ? baseName(cand.path) : '',
+        cand.filePath ? baseName(cand.filePath) : ''
+      ].map(normCommonKey).filter(Boolean);
+      for (const nk of nameCands) {
+        const arr = commonByName.get(nk);
+        if (arr) arr.forEach(ci => { if (typeOk(ci)) hits.add(ci); });
+      }
+      return [...hits];
+    };
+
+    const roomsGlobal = (typeof appState !== 'undefined' && Array.isArray(appState.rooms)) ? appState.rooms : [];
+    const curKey = String(CCF.S && CCF.S.key || '');
+    const curRoomId = String(CCF.S && CCF.S.roomId || '');
+
+    list.forEach(sc => {
+      if (!sc || sc.id == null) return;
+      const id = String(sc.id), title = sc.title || '無題';
+      const addPath = (p, room) => {
+        const k = norm(p), sig = id + '|' + room + '|' + k; if (!k || seenPath.has(sig)) return; seenPath.add(sig);
         if (!byPath.has(k)) byPath.set(k, []); byPath.get(k).push({ id, title, room });
         if (!byScn.has(id)) byScn.set(id, new Map()); byScn.get(id).set(k, p);
       };
-      const addRefs = (proj, rn) => { try { ((proj && proj.refs) || []).forEach(r => { if (r && r.type === 'audio') add(r.path, rn || '登録素材'); }); } catch (e) { } };
-      if (id === String(CCF.S.key) && CCF.S.proj) addRefs(CCF.S.proj, '登録素材');
-      else if (Array.isArray(sc.ccfRooms)) sc.ccfRooms.forEach(rm => addRefs(rm && rm.project, '登録素材'));
-      walkAudio(sc.rooms, '部屋', (p, nm) => add(p, nm || '部屋'), 0);
-      rooms.filter(r => r && String(r.scenarioId) === id).forEach(r => walkAudio(r, r.name || '部屋', (p, nm) => add(p, nm || '部屋'), 0));
+      const matchAndRecord = (cand, expectedType, roomName, place) => {
+        if (!cand) return;
+        const matched = matchCommonTargets(cand, expectedType);
+        for (let i = 0; i < matched.length; i++) {
+          recordCommonHit(matched[i], id, title, roomName, place);
+        }
+      };
+
+      // ② シナリオの登録素材（sc.images / sc.assetCatalog）
+      if (Array.isArray(sc.images)) {
+        sc.images.forEach(im => { if (im) matchAndRecord(im, 'image', '登録素材', '登録素材'); });
+      }
+      if (Array.isArray(sc.assetCatalog)) {
+        sc.assetCatalog.forEach(cat => { if (cat) matchAndRecord(cat, cat.type || 'any', '登録素材', '登録素材'); });
+      }
+
+      // 走査対象の部屋リストを構築（sc.ccfRooms ＋ 現在編集中の CCF.S.proj）
+      const roomEntries = [];
+      const seenRoomIds = new Set();
+      if (id === curKey && CCF.S && CCF.S.proj) {
+        const curRm = Array.isArray(CCF.S.rooms) ? CCF.S.rooms.find(r => String(r.id) === curRoomId) : null;
+        const rName = (curRm && curRm.name) || 'メイン部屋';
+        roomEntries.push({ id: curRoomId || 'active', name: rName, project: CCF.S.proj });
+        if (curRoomId) seenRoomIds.add(curRoomId);
+      }
+      if (Array.isArray(sc.ccfRooms)) {
+        sc.ccfRooms.forEach((rm, ri) => {
+          if (!rm || !rm.project) return;
+          const rid = rm.id ? String(rm.id) : ('rm_' + ri);
+          if (seenRoomIds.has(rid)) return;
+          seenRoomIds.add(rid);
+          roomEntries.push({ id: rid, name: rm.name || 'メイン部屋', project: rm.project });
+        });
+      }
+
+      // ③ 各部屋プロジェクト内の refs・共通設定・シーン・NPC・盤面駒・カットインを横断走査
+      roomEntries.forEach(rm => {
+        const p = rm.project;
+        if (!p || typeof p !== 'object') return;
+        const rn = rm.name || 'メイン部屋';
+
+        // proj.refs
+        if (Array.isArray(p.refs)) {
+          p.refs.forEach(r => {
+            if (!r) return;
+            if (r.type === 'audio' && r.path) addPath(r.path, '登録素材');
+            matchAndRecord(r, r.type || 'any', '登録素材', '登録素材');
+          });
+        }
+
+        // globalDecor（共通背景・共通前景・共通BGM・スクリーンパネル・共通マーカー）
+        const gd = p.globalDecor || {};
+        if (gd.bg) matchAndRecord(gd.bg, 'image', rn, '共通背景');
+        if (gd.fg) matchAndRecord(gd.fg, 'image', rn, '共通前景');
+        if (gd.bgm) {
+          if (gd.bgm.path) addPath(gd.bgm.path, rn + '（共通BGM）');
+          matchAndRecord(gd.bgm, 'audio', rn, '共通BGM');
+        }
+        (gd.screens || []).forEach(sr => { if (sr) matchAndRecord(sr, 'image', rn, 'スクリーンパネル'); });
+        (gd.markers || []).forEach(mk => { if (mk) matchAndRecord(mk, 'image', rn, 'マーカーパネル'); });
+
+        // scenes（シーン別前景・背景・BGM・マーカー・スクリーン）
+        (p.scenes || []).forEach((s, si) => {
+          if (!s) return;
+          const no = '#' + (si + 1);
+          if (s.fg) matchAndRecord(s.fg, 'image', rn, `${no} 前景`);
+          if (s.bg) matchAndRecord(s.bg, 'image', rn, `${no} 背景`);
+          if (s.bgm) {
+            if (s.bgm.path) addPath(s.bgm.path, `${rn}（${no} BGM）`);
+            matchAndRecord(s.bgm, 'audio', rn, `${no} BGM`);
+          }
+          (s.markers || []).forEach(mk => { if (mk) matchAndRecord(mk, 'image', rn, `${no} マーカー`); });
+          (s.screens || []).forEach(sr => { if (sr) matchAndRecord(sr, 'image', rn, `${no} スクリーン`); });
+        });
+
+        // npcs（NPC立ち絵・表情差分）
+        (p.npcs || []).forEach(n => {
+          if (!n) return;
+          const npcPlace = `NPC立ち絵（${n.name || 'NPC'}）`;
+          if (Array.isArray(n.images) && n.images.length) {
+            n.images.forEach(im => { if (im) matchAndRecord(im, 'image', rn, npcPlace); });
+          }
+          if (n.iconDataUrl || n.imagePath || n.iconPath) {
+            matchAndRecord({ dataUrl: n.iconDataUrl, path: n.imagePath || n.iconPath, name: n.iconName || n.name }, 'image', rn, npcPlace);
+          }
+        });
+
+        // board.pieces（盤面駒）
+        if (p.board && Array.isArray(p.board.pieces)) {
+          p.board.pieces.forEach(bp => {
+            if (!bp) return;
+            matchAndRecord(bp, 'image', rn, `盤面駒（${bp.name || '駒'}）`);
+          });
+        }
+
+        // cutins（カットイン映像・SE）
+        if (Array.isArray(p.cutins)) {
+          p.cutins.forEach(c => {
+            if (!c) return;
+            const cNm = c.name || 'カットイン';
+            if (c.visualPath || c.visualDataUrl || c.visualUrl || c.visualUid) {
+              matchAndRecord(
+                { path: c.visualPath, dataUrl: c.visualDataUrl, assetUid: c.visualUid, name: c.visualName },
+                c.visualType === 'video' ? 'video' : 'any',
+                rn,
+                `カットイン（${cNm}）`
+              );
+            }
+            if (c.sePath || c.seDataUrl || c.seUrl || c.seUid) {
+              if (c.sePath) addPath(c.sePath, `${rn}（カットインSE）`);
+              matchAndRecord(
+                { path: c.sePath, dataUrl: c.seDataUrl, assetUid: c.seUid, name: c.seName },
+                'audio',
+                rn,
+                `カットインSE（${cNm}）`
+              );
+            }
+          });
+        }
+      });
+
+      walkAudio(sc.rooms, '部屋', (p, nm) => {
+        addPath(p, nm || '部屋');
+        matchAndRecord({ path: p }, 'audio', nm || '部屋', 'BGM');
+      }, 0);
+      roomsGlobal.filter(r => r && String(r.scenarioId) === id).forEach(r => walkAudio(r, r.name || '部屋', (p, nm) => {
+        addPath(p, nm || '部屋');
+        matchAndRecord({ path: p }, 'audio', nm || '部屋', 'BGM');
+      }, 0));
     });
-    uCache = { byPath, byScn, scns, n: list.length }; uAt = Date.now(); return uCache;
+
+    uCache = { byPath, byScn, scns, byCommonUid, byScenarioCommon, n: list.length, cn: commonItems.length };
+    uAt = now;
+    return uCache;
   }
-  const usageList = p => usage().byPath.get(norm(p)) || [];
-  function usageBadge(p) {
-    if (!p || !AUDIO.test(p)) return '';
-    const l = usageList(p), n = new Set(l.map(x => x.id)).size;
-    return `<span class="ccf-usage${n ? '' : ' none'}" data-usage="${esc(p)}" title="${esc(n ? l.map(x => x.title + ' / ' + x.room).join('\n') : 'どのシナリオ・部屋でも未使用')}">📚 ${n}</span>`;
+
+  function usageByCommonItem(itemOrUid) {
+    if (!itemOrUid) return [];
+    const u = usage();
+    if (typeof itemOrUid === 'string') {
+      return u.byCommonUid.get(itemOrUid) || [];
+    }
+    if (itemOrUid.uid && u.byCommonUid.has(itemOrUid.uid)) {
+      return u.byCommonUid.get(itemOrUid.uid) || [];
+    }
+    if (itemOrUid.path) {
+      return (u.byPath.get(norm(itemOrUid.path)) || []).map(x => ({
+        id: x.id, scenarioId: x.id, title: x.title, room: x.room, place: '', detail: x.room
+      }));
+    }
+    return [];
+  }
+
+  function scenariosUsingCommonAssets() {
+    const u = usage();
+    const out = [];
+    u.scns.forEach(s => {
+      const m = u.byScenarioCommon.get(s.id);
+      if (m && m.size > 0) {
+        out.push({
+          id: s.id,
+          title: s.title,
+          count: m.size,
+          itemUids: new Set(m.keys()),
+          items: [...m.values()]
+        });
+      }
+    });
+    out.sort((a, b) => b.count - a.count || a.title.localeCompare(b.title, 'ja', { numeric: true }));
+    return out;
+  }
+
+  function commonAssetsUsedByScenario(scenarioId) {
+    const sid = String(scenarioId || '');
+    if (!sid) return [];
+    const m = usage().byScenarioCommon.get(sid);
+    return m ? [...m.values()] : [];
+  }
+
+  const usageList = pOrItem => {
+    if (!pOrItem) return [];
+    if (typeof pOrItem === 'object') {
+      if (pOrItem.uid && (pOrItem.uid.startsWith('cimg:') || pOrItem.uid.startsWith('lib:'))) {
+        return usageByCommonItem(pOrItem);
+      }
+      return pOrItem.path ? (usage().byPath.get(norm(pOrItem.path)) || []) : [];
+    }
+    const s = String(pOrItem);
+    if (s.startsWith('cimg:') || s.startsWith('lib:')) return usageByCommonItem(s);
+    return usage().byPath.get(norm(s)) || [];
+  };
+
+  function usageBadge(itemOrPath) {
+    if (!itemOrPath) return '';
+    let key = '', list = [];
+    if (typeof itemOrPath === 'object') {
+      const uid = String(itemOrPath.uid || '');
+      const isCommon = uid.startsWith('cimg:') || uid.startsWith('lib:');
+      if (isCommon) {
+        key = uid;
+        list = usageByCommonItem(itemOrPath);
+      } else if (itemOrPath.path && AUDIO.test(itemOrPath.path)) {
+        key = itemOrPath.path;
+        list = usageList(itemOrPath.path);
+      } else {
+        return '';
+      }
+    } else {
+      const s = String(itemOrPath);
+      if (s.startsWith('cimg:') || s.startsWith('lib:')) {
+        key = s;
+        list = usageByCommonItem(s);
+      } else if (AUDIO.test(s)) {
+        key = s;
+        list = usageList(s);
+      } else {
+        return '';
+      }
+    }
+    const n = new Set(list.map(x => x.id)).size;
+    const tip = n
+      ? list.map(x => `${x.title} / ${x.detail || x.room}`).join('\n')
+      : 'どのシナリオ・部屋でも未使用';
+    return `<span class="ccf-usage${n ? '' : ' none'}" data-usage="${esc(key)}" title="${esc(tip)}">📚 ${n}</span>`;
   }
   let pop = null;
   function closePop() { if (pop) { pop.remove(); pop = null; } }
   function showUsage(el, p) {
     closePop(); const l = usageList(p);
     pop = document.createElement('div'); pop.className = 'ccf-usage-pop';
-    pop.innerHTML = `<b>📚 使用シナリオ／部屋</b>` + (l.length ? l.map(x => `<div>${esc(x.title)} / ${esc(x.room)}</div>`).join('') : '<div class="ccf-muted">未使用です</div>');
+    pop.innerHTML = `<b>📚 使用シナリオ／部屋</b>` + (l.length ? l.map(x => `<div>${esc(x.title)} / ${esc(x.detail || x.room)}</div>`).join('') : '<div class="ccf-muted">未使用です</div>');
     document.body.appendChild(pop);
     const r = el.getBoundingClientRect(); pop.style.left = Math.max(8, Math.min(window.innerWidth - pop.offsetWidth - 8, r.left)) + 'px'; pop.style.top = Math.max(8, Math.min(window.innerHeight - pop.offsetHeight - 8, r.bottom + 4)) + 'px';
   }
@@ -311,7 +1113,7 @@
       if (sc) {
         sc.detailEdited = true;
         if (typeof window.syncScenarioAssetCatalog === 'function') {
-          window.syncScenarioAssetCatalog(sc, { authoritative: true });
+          window.syncScenarioAssetCatalog(sc, { authoritative: false });
         }
         if (window.CloudSync && typeof window.CloudSync.scheduleAutoWebSync === 'function') {
           window.CloudSync.scheduleAutoWebSync(k);
@@ -347,9 +1149,12 @@
     const scOrd = (sc && Array.isArray(sc.assetOrder)) ? sc.assetOrder : [];
     const pOrd = Array.isArray(p.assetOrder) ? p.assetOrder : [];
     const ordSig = (a) => a.length ? `${a.length}:${a[0]}:${a[a.length - 1]}` : '0';
-    const sig = (sc ? `${(sc.images && sc.images.length) || 0}:${(sc.docs && sc.docs.length) || 0}:${(sc.assetCatalog && sc.assetCatalog.length) || 0}:${ordSig(scOrd)}` : 'n') + '|' + `${(p.refs && p.refs.length) || 0}:${ordSig(pOrd)}`;
+    const watchRoot = getEffectiveScenarioWatchRoot();
+    const sig = (sc ? `${(sc.images && sc.images.length) || 0}:${(sc.docs && sc.docs.length) || 0}:${(sc.assetCatalog && sc.assetCatalog.length) || 0}:${sc.sourcePath || ''}:${ordSig(scOrd)}` : 'n') + '|' + `${(p.refs && p.refs.length) || 0}:${ordSig(pOrd)}|${watchRoot}`;
     const cached = unifiedCache.get(key);
-    if (cached && cached.sig === sig) return cached.items;
+    if (cached && cached.sig === sig && (!IS_ELECTRON || watchRoot || (sc && sc.sourcePath))) return cached.items;
+    const localMap = getScenarioLocalFileMap(key, sc);
+    const isLocalOk = fp => !!fp && (isCloudOrVirtualPath(fp) || !IS_ELECTRON || pathExistsCached(fp));
     const out = [];
     const byPath = new Map(), byName = new Map();
     const docByPath = new Map(), docByName = new Map();
@@ -364,7 +1169,12 @@
       if (ex) {
         ex.category = isDoc ? '資料' : pickBetterCat(ex.category, it.category);
         ex.customTags = M.cleanTagList([...(ex.customTags || []), ...(it.customTags || [])]);
-        if (!ex.path && it.path && !it.missing) { ex.path = it.path; ex.missing = false; }
+        const exLocalOk = ex.path && !ex.missing && isLocalOk(ex.path);
+        const itLocalOk = it.path && !it.missing && isLocalOk(it.path);
+        if (itLocalOk && (!exLocalOk || (!isCloudOrVirtualPath(it.path) && isCloudOrVirtualPath(ex.path)))) {
+          ex.path = it.path;
+          ex.missing = false;
+        }
         if (!ex.dataUrl && it.dataUrl) ex.dataUrl = it.dataUrl;
         if (!ex.cloudSha && it.cloudSha) ex.cloudSha = it.cloudSha;
         if (ex.missing && (!it.missing || ex.dataUrl || ex.cloudSha)) ex.missing = false;
@@ -387,7 +1197,12 @@
         if (isDocEntry(onm, '', '') || isDocEntry(nm, '', '')) return;
         const cat = normFolder(a.category), tags = M.cleanTagList(a.tags);
         const du = a.dataUrl || a.thumbRef || '';
-        const it = { uid: 'img:' + a.id, rawId: a.id, srcType: 'img', type: 'image', name: nm, origName: onm, path: a.path || '', dataUrl: du, cloudSha: a.cloudSha || '', category: cat, customTags: tags, mtime: Number(a.mtime || a.addedAt || 0), addedOrder: idx++, missing: false, raw: a, mergedUids: ['img:' + a.id] };
+        let imgPath = a.path || '';
+        if (imgPath && IS_ELECTRON && !isCloudOrVirtualPath(imgPath) && !pathExistsCached(imgPath)) {
+          const hit = findScenarioLocalPath(localMap, 'image', onm, a.name, baseName(imgPath));
+          if (hit) imgPath = hit;
+        }
+        const it = { uid: 'img:' + a.id, rawId: a.id, srcType: 'img', type: 'image', name: nm, origName: onm, path: imgPath, dataUrl: du, cloudSha: a.cloudSha || '', category: cat, customTags: tags, mtime: Number(a.mtime || a.addedAt || 0), addedOrder: idx++, missing: false, raw: a, mergedUids: ['img:' + a.id] };
         it.tags = itemTags(it); it.blob = itemBlob(it);
         registerItem(it, false);
       });
@@ -398,10 +1213,14 @@
       const rawRefNm = (isDocEntry(r.origName || r.name || r.path, type, r.path) ? docNameWithExt(r, type) : '') || r.origName || r.name || baseName(r.path) || 'file';
       const dispRefNm = stripAssetExt(r.name || rawRefNm) || 'file';
       const cloudPath = r.cloudSha ? ('cloud-asset://' + r.cloudSha + '/' + encodeURIComponent(rawRefNm)) : '';
-      const fp = r.path || cloudPath || '';
+      let fp = r.path || cloudPath || '';
       if (isDocEntry(rawRefNm, type, fp)) {
-        const missing = (r.path && IS_ELECTRON && !r.cloudSha) ? !pathExistsCached(r.path) : false;
         const dType = /\.pdf$/i.test(rawRefNm || fp || '') ? 'pdf' : 'doc';
+        let missing = (r.path && IS_ELECTRON && !r.cloudSha) ? !pathExistsCached(r.path) : false;
+        if (missing || (IS_ELECTRON && (!fp || (!isCloudOrVirtualPath(fp) && !pathExistsCached(fp))))) {
+          const hit = findScenarioLocalPath(localMap, dType, rawRefNm, r.origName, r.name, baseName(r.path));
+          if (hit) { fp = hit; missing = false; }
+        }
         const it = { uid: 'ref:' + r.id, rawId: r.id, srcType: 'ref', type: dType, name: dispRefNm, origName: rawRefNm, path: fp, dataUrl: '', cloudSha: r.cloudSha || '', category: '資料', customTags: M.cleanTagList(r.tags), mtime: Number(r.mtime || 0), addedOrder: idx++, missing, raw: r, mergedUids: ['ref:' + r.id] };
         it.tags = itemTags(it); it.blob = itemBlob(it);
         registerItem(it, true);
@@ -409,7 +1228,11 @@
       }
       const cat = normFolder(r.category), tags = M.cleanTagList(r.tags);
       const du = r.dataUrl || r.thumbRef || '';
-      const missing = (r.path && IS_ELECTRON && !du && !r.cloudSha) ? !pathExistsCached(r.path) : false;
+      let missing = (r.path && IS_ELECTRON && !du && !r.cloudSha) ? !pathExistsCached(r.path) : false;
+      if (missing || (IS_ELECTRON && fp && !isCloudOrVirtualPath(fp) && !pathExistsCached(fp))) {
+        const hit = findScenarioLocalPath(localMap, type, rawRefNm, r.origName, r.name, baseName(r.path));
+        if (hit) { fp = hit; missing = false; }
+      }
       const it = { uid: 'ref:' + r.id, rawId: r.id, srcType: 'ref', type, name: dispRefNm, origName: rawRefNm, path: fp, dataUrl: du, cloudSha: r.cloudSha || '', category: cat, customTags: tags, mtime: Number(r.mtime || 0), addedOrder: idx++, missing, raw: r, mergedUids: ['ref:' + r.id] };
       it.tags = itemTags(it); it.blob = itemBlob(it);
       registerItem(it, false);
@@ -425,6 +1248,10 @@
         if (typeof IS_ELECTRON !== 'undefined' && IS_ELECTRON && typeof path !== 'undefined' && path && typeof DATA_ROOT !== 'undefined' && DATA_ROOT && d.rel) {
           try { const abs = path.resolve(DATA_ROOT, d.rel); if (pathExistsCached(abs)) fp = abs; } catch (e) { /* noop */ }
         }
+        if (IS_ELECTRON && (!fp || (!isCloudOrVirtualPath(fp) && !pathExistsCached(fp)))) {
+          const hit = findScenarioLocalPath(localMap, type, rawDocNm, d.origName, d.name, baseName(fp));
+          if (hit) fp = hit;
+        }
         if (!fp && d.cloudSha) fp = 'cloud-asset://' + d.cloudSha + '/' + encodeURIComponent(rawDocNm);
         const it = { uid: 'doc:' + d.id, rawId: d.id, srcType: 'doc', type, name: dispDocNm, origName: rawDocNm, path: fp, dataUrl: d.dataUrl || '', cloudSha: d.cloudSha || '', category: '資料', customTags: tags, mtime: Number(d.mtime || d.addedAt || 0), addedOrder: idx++, missing: false, raw: d, mergedUids: ['doc:' + d.id] };
         it.tags = itemTags(it); it.blob = itemBlob(it);
@@ -436,17 +1263,19 @@
         if (!c || !c.name) return;
         const tp = c.type || inferType(c.name) || 'image';
         const isDoc = isDocEntry(c.origName || c.name, tp, '');
-        const dType = isDoc ? (/\.pdf$/i.test(c.name || '') ? 'pdf' : 'doc') : tp;
+        const dType = isDoc ? ((tp === 'pdf' || /\.pdf$/i.test(c.origName || c.name || '')) ? 'pdf' : 'doc') : tp;
         const cid = c.id || ('cat:' + ci + '_' + c.name);
-        const cloudPath = c.cloudSha ? ('cloud-asset://' + c.cloudSha + '/' + encodeURIComponent(isDoc ? docNameWithExt(c, dType) : (c.origName || c.name || 'asset'))) : '';
+        const docNm = isDoc ? docNameWithExt(c, dType) : '';
+        const localPath = findScenarioLocalPath(localMap, dType, c.origName, docNm, c.name);
+        const cloudPath = c.cloudSha ? ('cloud-asset://' + c.cloudSha + '/' + encodeURIComponent(isDoc ? docNm : (c.origName || c.name || 'asset'))) : '';
         const it = {
           uid: cid,
           rawId: cid,
           srcType: 'catalog',
           type: dType,
           name: c.name,
-          origName: c.origName || c.name,
-          path: cloudPath,
+          origName: isDoc ? docNm : (c.origName || c.name),
+          path: localPath || cloudPath,
           dataUrl: c.thumbRef || '',
           cloudSha: c.cloudSha || '',
           category: isDoc ? '資料' : normFolder(c.category),
@@ -488,9 +1317,7 @@
 
   function addDocsToScenario(sc, docs) {
     if (!sc || !Array.isArray(docs) || !docs.length) return 0;
-    if (CCF.dnd && typeof CCF.dnd.upsertScenarioDocs === 'function') {
-      return CCF.dnd.upsertScenarioDocs(sc, docs);
-    }
+    unignoreDocNames(sc, docs);
     sc.docs = Array.isArray(sc.docs) ? sc.docs : [];
     const byPath = new Map(), byName = new Map();
     sc.docs.forEach(d => {
@@ -500,6 +1327,36 @@
       if (dp) byPath.set(dp, d);
       if (dn && !byName.has(dn)) byName.set(dn, d);
     });
+    const hasFs = typeof IS_ELECTRON !== 'undefined' && IS_ELECTRON && typeof fs !== 'undefined' && fs;
+    const isMissingOnThisPc = (exPath, newFp) => {
+      if (!exPath) return true;
+      if (hasFs && !fs.existsSync(exPath)) return true;
+      if ((typeof IS_ELECTRON === 'undefined' || !IS_ELECTRON) && /^(?:idb-asset|cloud-asset|https?):/i.test(String(newFp || '')) && !/^(?:https?:|idb-asset|cloud-asset|blob):/i.test(String(exPath))) return true;
+      return false;
+    };
+    let updated = 0;
+    if (CCF.dnd && typeof CCF.dnd.upsertScenarioDocs === 'function') {
+      docs.forEach(it => {
+        if (!it || !it.name) return;
+        const fp = it.path || it.ref || '';
+        if (!fp) return;
+        const pk = norm(fp);
+        const nk = docFileKey(it, /\.pdf$/i.test(String(it.origName || it.name || fp)) ? 'pdf' : 'doc');
+        const ex = (pk && byPath.get(pk)) || (nk && byName.get(nk));
+        if (ex && isMissingOnThisPc(ex.path, fp)) {
+          const nextRel = it.rel || '';
+          const nextMtime = Number(it.mtime || 0);
+          if (ex.path !== fp || ex.ref !== fp || (ex.rel || '') !== nextRel || Number(ex.mtime || 0) !== nextMtime) {
+            ex.path = fp;
+            ex.ref = fp;
+            ex.rel = nextRel;
+            ex.mtime = nextMtime;
+            updated++;
+          }
+        }
+      });
+      return (CCF.dnd.upsertScenarioDocs(sc, docs) || 0) + updated;
+    }
     let added = 0;
     docs.forEach(it => {
       if (!it || !it.name) return;
@@ -508,8 +1365,17 @@
       const nk = docFileKey(it, /\.pdf$/i.test(String(it.origName || it.name || fp)) ? 'pdf' : 'doc');
       const ex = (pk && byPath.get(pk)) || (nk && byName.get(nk));
       if (ex) {
-        if (fp && !ex.path) ex.path = fp;
-        if (fp && !ex.ref) ex.ref = fp;
+        if (fp && isMissingOnThisPc(ex.path, fp)) {
+          const nextRel = it.rel || '';
+          const nextMtime = Number(it.mtime || 0);
+          if (ex.path !== fp || ex.ref !== fp || (ex.rel || '') !== nextRel || Number(ex.mtime || 0) !== nextMtime) {
+            ex.path = fp;
+            ex.ref = fp;
+            ex.rel = nextRel;
+            ex.mtime = nextMtime;
+            added++;
+          }
+        }
         return;
       }
       const extM = String(it.name).match(/\.([^.]+)$/);
@@ -887,7 +1753,7 @@
   const savePickerView = v => { try { localStorage.setItem(PICKER_VIEW_KEY, v); } catch (_) { } };
   const AM_INCSUB_KEY = 'ccf_am_incsub_v1';
   const loadIncSub = () => { try { return localStorage.getItem(AM_INCSUB_KEY) !== '0'; } catch (_) { return true; } };
-  const AM = { mode: 'scenario', key: '', folder: ALL, sel: new Set(), prev: '', q: '', tag: '', sort: 'manual', viewMode: loadPickerView(), openGroups: new Set(), el: null, dragIds: [], dragFolder: '', keptFolders: new Set(), anchor: '', incSub: loadIncSub(), collapsed: new Set() };
+  const AM = { mode: 'scenario', key: '', folder: ALL, sel: new Set(), prev: '', q: '', tag: '', usedScn: '', sort: 'manual', viewMode: loadPickerView(), openGroups: new Set(), el: null, dragIds: [], dragFolder: '', keptFolders: new Set(), anchor: '', incSub: loadIncSub(), collapsed: new Set() };
 
   function groupByFolder(list) {
     const groups = new Map();
@@ -1081,7 +1947,13 @@
   }
   function visible() {
     const parsed = M.parseSearchQuery(AM.q);
+    let usedUidSet = null;
+    if (AM.mode === 'common' && AM.usedScn) {
+      const m = usage().byScenarioCommon.get(String(AM.usedScn));
+      usedUidSet = m ? new Set(m.keys()) : new Set();
+    }
     const items = modeItems().filter(r => {
+      if (usedUidSet && !usedUidSet.has(r.uid)) return false;
       const cat = normFolder(r.category);
       if (AM.folder === NONE ? cat : (AM.folder !== ALL && !inFolder(cat, AM.folder, AM.incSub))) return false;
       if (AM.tag && !(r.tags || []).some(t => t.toLowerCase() === AM.tag.toLowerCase())) return false;
@@ -1147,7 +2019,7 @@
         <div class="ccf-am-fd">📁 ${esc(folderLabel(r.category))}</div>
         <div class="ccf-am-acts">${playBtn}${mvBtns}</div>
       </div>
-      <div class="ccf-am-tags">${tagBadges(r.path, r.customTags, true)}${usageBadge(r.path)}</div>
+      <div class="ccf-am-tags">${tagBadges(r.path, r.customTags, true)}${usageBadge(r)}</div>
     </div>`;
   }
   function previewHtml() {
@@ -1155,9 +2027,9 @@
     if (!r) return '<span class="ccf-muted">素材をクリックするとプレビュー／カード端ドラッグで並べ替え・フォルダへ移動</span>';
     if (r.missing) return '<span class="ccf-muted">⚠️ ファイルが見つかりません：' + esc(r.path) + '</span>';
     const src = r.dataUrl || (r.path ? fileUrl(r.path) : '');
-    if (r.type === 'image' && src) return `${assetImgTag(src, '', 'alt=""')}<span class="ccf-muted">${esc(r.name)}</span>`;
-    if (r.type === 'audio' && src) return `<audio controls src="${esc(src)}"></audio><span>${esc(r.name)} ${tagBadges(r.path, r.customTags)}${usageBadge(r.path)}</span>`;
-    return `<span>${icon(r)} ${esc(r.name)}</span><span class="ccf-muted">${esc(r.path || 'シナリオ内蔵データ（クラウドメタ情報）')}</span>`;
+    if (r.type === 'image' && src) return `${assetImgTag(src, '', 'alt=""')}<span class="ccf-muted">${esc(r.name)}</span>${usageBadge(r)}`;
+    if (r.type === 'audio' && src) return `<audio controls src="${esc(src)}"></audio><span>${esc(r.name)} ${tagBadges(r.path, r.customTags)}${usageBadge(r)}</span>`;
+    return `<span>${icon(r)} ${esc(r.name)}</span><span class="ccf-muted">${esc(r.path || 'シナリオ内蔵データ（クラウドメタ情報）')}</span>${usageBadge(r)}`;
   }
   function drawGrid() {
     if (!AM.el) return;
@@ -1166,7 +2038,7 @@
     mountGridView(g, list, cardHtml, {
       isGrouped,
       openSet: AM.openGroups,
-      isFiltering: !!(AM.q.trim() || AM.tag),
+      isFiltering: !!(AM.q.trim() || AM.tag || (AM.mode === 'common' && AM.usedScn)),
       emptyHtml: '<div class="ccf-empty">表示できる素材がありません。ファイルをここへドラッグ＆ドロップするか、条件を変更してください。</div>'
     });
     syncAmBar(list);
@@ -1230,6 +2102,11 @@
     const keep = AM.el.querySelector('.ccf-am-grid'), top = keep ? keep.scrollTop : 0, qv = AM.el.querySelector('.ccf-am-q'), hadFocus = qv && document.activeElement === qv;
     const tags = allTagsInMode();
     const isScn = AM.mode === 'scenario';
+    const usedScns = !isScn ? scenariosUsingCommonAssets() : [];
+    if (!isScn && AM.usedScn && !usedScns.some(s => s.id === String(AM.usedScn))) AM.usedScn = '';
+    const usedScnSelectHtml = !isScn
+      ? `<select class="ccf-am-scn" aria-label="使用シナリオ絞り込み"><option value="">📚 使用シナリオ：すべて</option>${usedScns.map(s => `<option value="${esc(s.id)}"${String(AM.usedScn) === s.id ? ' selected' : ''}>${esc(s.title)}（${s.count}件）</option>`).join('')}</select>`
+      : '';
     AM.el.querySelector('.ccf-am-modal').innerHTML = `
       <div class="ccf-am-head">
         <div class="ccf-am-mtabs">
@@ -1256,6 +2133,7 @@
             <label class="ccf-chk-label ccf-am-all"><input type="checkbox" data-am="selall"> <span>全選択</span></label>
             ${(AM.folder !== ALL && AM.folder !== NONE) ? `<label class="ccf-chk-label ccf-am-incsub" title="OFFにするとこのフォルダ直下の素材だけを表示します"><input type="checkbox" data-am="incsub"${AM.incSub ? ' checked' : ''}> <span>☑ サブフォルダも含めて表示</span></label>` : ''}
             <input type="search" class="ccf-am-q" placeholder="🔍 検索（スペース区切り / -除外語）" value="${esc(AM.q)}">
+            ${usedScnSelectHtml}
             <select class="ccf-am-tag" aria-label="タグ絞り込み"><option value="">🏷 すべてのタグ（${tags.length}）</option>${tags.map(t => `<option value="${esc(t)}"${t === AM.tag ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>
             <select class="ccf-am-sort" aria-label="並び順">
               <option value="manual"${AM.sort === 'manual' ? ' selected' : ''}>↕ カスタム順（D&amp;D）</option>
@@ -1954,7 +2832,7 @@
     const a = t.closest('[data-am]'), proj = () => projOf(AM.key);
     if (a && a.dataset.am !== 'selall') {
       const k = a.dataset.am;
-      if (k === 'mode:scenario' || k === 'mode:common') { AM.mode = k.split(':')[1]; AM.folder = ALL; AM.sel.clear(); AM.prev = ''; AM.anchor = ''; AM.tag = ''; AM.openGroups.clear(); return draw(); }
+      if (k === 'mode:scenario' || k === 'mode:common') { AM.mode = k.split(':')[1]; AM.folder = ALL; AM.sel.clear(); AM.prev = ''; AM.anchor = ''; AM.tag = ''; AM.usedScn = ''; AM.openGroups.clear(); return draw(); }
       if (k === 'view:folder' || k === 'view:list') { AM.viewMode = k.split(':')[1]; savePickerView(AM.viewMode); return draw(); }
       if (k === 'sync') { if (window.CommonAssets) await window.CommonAssets.sync(true); return draw(); }
       if (k === 'websync') {
@@ -2009,6 +2887,7 @@
       list.forEach(r => t.checked ? AM.sel.add(r.uid) : AM.sel.delete(r.uid));
       return drawGrid();
     }
+    if (t.classList.contains('ccf-am-scn')) { AM.usedScn = t.value; return drawGrid(); }
     if (t.classList.contains('ccf-am-tag')) { AM.tag = t.value; return drawGrid(); }
     if (t.classList.contains('ccf-am-sort')) { AM.sort = t.value; return drawGrid(); }
   }
@@ -2030,7 +2909,7 @@
       ((p && p.folders) || []).forEach(f => { const nf = normFolder(f); if (nf) initFolders.add(nf); });
       ((sc && sc.imageCategories) || []).forEach(f => { const nf = normFolder(f); if (nf) initFolders.add(nf); });
     }
-    Object.assign(AM, { mode: mode || 'scenario', key: key || '', folder: ALL, sel: new Set(), prev: '', q: '', tag: '', sort: 'manual', viewMode: loadPickerView(), openGroups: new Set(), dragFolder: '', keptFolders: initFolders, anchor: '', collapsed: new Set(), incSub: loadIncSub() });
+    Object.assign(AM, { mode: mode || 'scenario', key: key || '', folder: ALL, sel: new Set(), prev: '', q: '', tag: '', usedScn: '', sort: 'manual', viewMode: loadPickerView(), openGroups: new Set(), dragFolder: '', keptFolders: initFolders, anchor: '', collapsed: new Set(), incSub: loadIncSub() });
     const el = AM.el = document.createElement('div'); el.className = 'ccf-am-ov'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true');
     el.innerHTML = '<div class="ccf-am-modal" tabindex="-1"></div>'; document.body.appendChild(el); draw();
     el.addEventListener('mousedown', e => { if (e.target.classList && e.target.classList.contains('ccf-am-chk')) e.stopPropagation(); });
@@ -2258,16 +3137,20 @@
     return true;
   }
 
-  /** 汎用素材ピッカー（登録素材 ⇔ マイライブラリ切替・タイプ絞り込み・検索・音声試聴・PCから追加） */
+  /** 汎用素材ピッカー（登録素材 ⇔ マイライブラリ切替・タイプ絞り込み・検索・音声試聴・PCから追加・multi複数選択対応） */
   function pickAsset(opts) {
-    const o = Object.assign({ key: CCF.S.key, types: ['image'], title: '素材を選択' }, opts || {});
+    const o = Object.assign({ key: CCF.S.key, types: ['image'], title: '素材を選択', multi: false }, opts || {});
+    const isMulti = !!o.multi;
     const allowed = new Set(o.types || ['image']);
     return new Promise(resolve => {
       let mode = (o.key && o.key !== '_default') ? 'scenario' : 'common';
       let folder = ALL, q = '', pvAudio = null, pvKey = '', viewMode = loadPickerView();
+      let anchorUid = '';
       const openGroups = new Set();
+      const selectedOrder = [];      // multi: true 時の選択順 uid 配列
+      const selectedItemMap = new Map(); // uid -> item（登録素材・マイライブラリ横断保持用）
       const ov = document.createElement('div');
-      ov.className = 'ccf-am-ov ccf-am-pick';
+      ov.className = 'ccf-am-ov ccf-am-pick' + (isMulti ? ' is-multi' : '');
       ov.setAttribute('role', 'dialog');
       ov.setAttribute('aria-modal', 'true');
       const stopAudio = () => { if (pvAudio) { try { pvAudio.pause(); } catch (_) { } pvAudio = null; pvKey = ''; } };
@@ -2279,18 +3162,73 @@
           : (window.CommonAssets ? window.CommonAssets.getAll() : []);
         return list.filter(r => !r.missing && allowed.has(r.type));
       };
+      const getVisibleList = () => {
+        const all = getItems();
+        const parsed = M.parseSearchQuery(q);
+        return all.filter(r => (folder === ALL || (folder === NONE ? !normFolder(r.category) : inFolder(normFolder(r.category), folder, true))) && (!q.trim() || M.matchSearchQuery(r.blob || (r.name + ' ' + r.category).toLowerCase(), parsed)));
+      };
+      const getDisplayOrder = list => {
+        if (folder === ALL && viewMode === 'folder' && list.length) {
+          const { groups, keys } = groupByFolder(list);
+          return keys.reduce((acc, k) => acc.concat(groups.get(k) || []), []);
+        }
+        return list;
+      };
+      const toggleSelectItem = (r, forceState) => {
+        if (!r || !r.uid) return;
+        const idx = selectedOrder.indexOf(r.uid);
+        const want = forceState !== undefined ? !!forceState : (idx < 0);
+        if (want && idx < 0) {
+          selectedOrder.push(r.uid);
+          selectedItemMap.set(r.uid, r);
+        } else if (!want && idx >= 0) {
+          selectedOrder.splice(idx, 1);
+          selectedItemMap.delete(r.uid);
+        }
+      };
+      const syncMultiDom = () => {
+        if (!isMulti) return;
+        const orderIndex = new Map();
+        selectedOrder.forEach((u, i) => orderIndex.set(u, i + 1));
+        ov.querySelectorAll('.ccf-am-card[data-pick]').forEach(el => {
+          const uid = el.dataset.pick;
+          const ord = orderIndex.get(uid) || 0;
+          el.classList.toggle('sel', ord > 0);
+          let badge = el.querySelector('.ccf-pick-ord');
+          if (ord > 0) {
+            if (!badge) {
+              badge = document.createElement('span');
+              badge.className = 'ccf-pick-ord';
+              el.prepend(badge);
+            }
+            badge.textContent = String(ord);
+          } else if (badge) {
+            badge.remove();
+          }
+        });
+        const cnt = selectedOrder.length;
+        const sumEl = ov.querySelector('[data-pmsum]');
+        if (sumEl) sumEl.textContent = cnt ? `${cnt}枚を選択中（選択順に追加されます）` : '追加する画像を複数クリックして選択してください（Shift+クリックで範囲選択）';
+        const clrBtn = ov.querySelector('[data-psel="clear"]');
+        if (clrBtn) clrBtn.disabled = !cnt;
+        const okBtn = ov.querySelector('[data-pconfirm]');
+        if (okBtn) {
+          okBtn.disabled = !cnt;
+          okBtn.textContent = `選択した ${cnt}枚 を決定`;
+        }
+      };
       const cardPick = r => {
         const src = r.dataUrl || (r.path ? fileUrl(r.path) : '');
         const pv = r.type === 'image' && src ? assetImgTag(src, '', 'alt="" loading="lazy" decoding="async"') : `<div class="ccf-am-ico">${icon(r)}</div>`;
         const play = r.type === 'audio' && src ? `<button type="button" class="ccf-mini" data-pplay="${esc(r.path || src)}" title="試聴">${pvKey === (r.path || src) ? '■ 停止' : '▶ 試聴'}</button>` : '';
-        return `<div class="ccf-am-card" data-pick="${esc(r.uid)}" title="${esc(r.path || r.name)}">${pv}<div class="ccf-am-nm">${esc(r.name)}</div><div class="ccf-am-fdrow"><span class="ccf-am-fd">📁 ${esc(folderLabel(r.category))}</span>${play}</div></div>`;
+        const ordIdx = isMulti ? selectedOrder.indexOf(r.uid) : -1;
+        const ordBadge = ordIdx >= 0 ? `<span class="ccf-pick-ord">${ordIdx + 1}</span>` : '';
+        return `<div class="ccf-am-card${ordIdx >= 0 ? ' sel' : ''}" data-pick="${esc(r.uid)}" title="${esc(r.path || r.name)}">${ordBadge}${pv}<div class="ccf-am-nm">${esc(r.name)}</div><div class="ccf-am-fdrow"><span class="ccf-am-fd">📁 ${esc(folderLabel(r.category))}</span>${play}</div></div>`;
       };
       const drawGrid2 = () => {
         const g = ov.querySelector('.ccf-am-grid');
         if (!g) return;
-        const all = getItems();
-        const parsed = M.parseSearchQuery(q);
-        const list = all.filter(r => (folder === ALL || (folder === NONE ? !normFolder(r.category) : inFolder(normFolder(r.category), folder, true))) && (!q.trim() || M.matchSearchQuery(r.blob || (r.name + ' ' + r.category).toLowerCase(), parsed)));
+        const list = getVisibleList();
         const isGrouped = folder === ALL && viewMode === 'folder';
         mountGridView(g, list, cardPick, {
           isGrouped,
@@ -2298,12 +3236,19 @@
           isFiltering: !!q.trim(),
           emptyHtml: '<div class="ccf-empty">該当する素材がありません。</div>'
         });
+        syncMultiDom();
         void fillCloudAssetsIn(ov);
       };
       const draw2 = () => {
         const all = getItems();
         const hasScn = !!(o.key && o.key !== '_default');
         const qv = ov.querySelector('[data-pq]'), hadFocus = qv && document.activeElement === qv;
+        const multiBarBtns = isMulti
+          ? `<button type="button" class="ccf-mini" data-psel="all">☑ 表示中を全選択</button><button type="button" class="ccf-mini" data-psel="clear"${selectedOrder.length ? '' : ' disabled'}>☐ 選択解除</button>`
+          : '';
+        const multiFooter = isMulti
+          ? `<div class="ccf-am-pickfoot"><span class="ccf-muted" data-pmsum></span><span class="ccf-spacer"></span><button type="button" class="ccf-btn" data-x="1">キャンセル</button><button type="button" class="ccf-btn primary" data-pconfirm="1"${selectedOrder.length ? '' : ' disabled'}>選択した ${selectedOrder.length}枚 を決定</button></div>`
+          : '';
         ov.innerHTML = `<div class="ccf-am-modal ccf-am-small ccf-am-pickmodal">
           <div class="ccf-am-head">
             <b>${esc(o.title)}</b>
@@ -2322,6 +3267,7 @@
             </div>
             <div class="ccf-am-right">
               <div class="ccf-am-bar">
+                ${multiBarBtns}
                 <input type="search" class="ccf-am-q" data-pq="1" placeholder="🔍 検索..." value="${esc(q)}">
                 ${folder === ALL ? `<div class="ccf-view-toggle" role="group" aria-label="表示切替">
                   <button type="button" class="ccf-mini${viewMode === 'folder' ? ' active' : ''}" data-pview="folder">📁 フォルダ別表示</button>
@@ -2329,21 +3275,51 @@
                 </div>` : ''}
               </div>
               <div class="ccf-am-grid"></div>
+              ${multiFooter}
             </div>
           </div></div>`;
         drawGrid2();
         if (hadFocus) { const nq = ov.querySelector('[data-pq]'); if (nq) { nq.focus(); nq.setSelectionRange(nq.value.length, nq.value.length); } }
       };
+      const hydratePicked = async r => {
+        let du = r.dataUrl || '';
+        if (du.startsWith('@img:') && typeof window.ensureLocalImageByHash === 'function') {
+          const h = du.slice(5);
+          await window.ensureLocalImageByHash(h);
+          du = (window.getLocalImageBlobUrl && window.getLocalImageBlobUrl(h)) || du;
+        }
+        return Object.assign({}, r, { dataUrl: du, isManual: true });
+      };
       ov.addEventListener('click', async e => {
         if (e.target === ov || e.target.closest('[data-x]')) return done(null);
         const pm = e.target.closest('[data-pmode]');
-        if (pm) { mode = pm.dataset.pmode; folder = ALL; openGroups.clear(); return draw2(); }
+        if (pm) { mode = pm.dataset.pmode; folder = ALL; anchorUid = ''; openGroups.clear(); return draw2(); }
         const pf = e.target.closest('[data-pf]');
-        if (pf) { folder = pf.dataset.pf; return draw2(); }
+        if (pf) { folder = pf.dataset.pf; anchorUid = ''; return draw2(); }
         const pvBtn = e.target.closest('[data-pview]');
         if (pvBtn) { viewMode = pvBtn.dataset.pview; savePickerView(viewMode); return draw2(); }
         const gt = e.target.closest('[data-gtoggle]');
         if (gt) { const fk = gt.dataset.gtoggle; if (openGroups.has(fk)) openGroups.delete(fk); else openGroups.add(fk); return drawGrid2(); }
+        const psel = e.target.closest('[data-psel]');
+        if (psel && isMulti) {
+          if (psel.dataset.psel === 'all') {
+            getDisplayOrder(getVisibleList()).forEach(r => toggleSelectItem(r, true));
+          } else if (psel.dataset.psel === 'clear') {
+            selectedOrder.length = 0;
+            selectedItemMap.clear();
+            anchorUid = '';
+          }
+          return syncMultiDom();
+        }
+        if (e.target.closest('[data-pconfirm]') && isMulti) {
+          if (!selectedOrder.length) return;
+          const results = [];
+          for (const u of selectedOrder) {
+            const it = selectedItemMap.get(u);
+            if (it) results.push(await hydratePicked(it));
+          }
+          return done(results);
+        }
         const pp = e.target.closest('[data-pplay]');
         if (pp) {
           e.stopPropagation();
@@ -2362,41 +3338,65 @@
           try {
             const ipc = IS_ELECTRON && CCF.electron && CCF.electron.ipcRenderer;
             if (ipc) {
-              const r = await ipc.invoke('ccf:pick', { title: o.title, properties: ['openFile'] });
-              if (Array.isArray(r) && r.length > 0 && r[0]) {
-                const fp = r[0];
-                const tp = inferType(fp) || (allowed.has('video') && VIDEO.test(fp) ? 'video' : allowed.has('audio') ? 'audio' : 'image');
-                return done({ uid: 'file:' + fp, name: stripAssetExt(baseName(fp)), origName: baseName(fp), path: fp, dataUrl: '', type: tp, isManual: true });
+              const r = await ipc.invoke('ccf:pick', { title: o.title, properties: isMulti ? ['openFile', 'multiSelections'] : ['openFile'] });
+              if (Array.isArray(r) && r.length > 0) {
+                const picked = r.filter(Boolean).map(fp => {
+                  const tp = inferType(fp) || (allowed.has('video') && VIDEO.test(fp) ? 'video' : allowed.has('audio') ? 'audio' : 'image');
+                  return { uid: 'file:' + fp, name: stripAssetExt(baseName(fp)), origName: baseName(fp), path: fp, dataUrl: '', type: tp, isManual: true };
+                });
+                if (isMulti) return done(picked);
+                if (picked[0]) return done(picked[0]);
               }
             } else if (window.WebBridge) {
               const acc = [];
               if (allowed.has('image')) acc.push('image/*');
               if (allowed.has('audio')) acc.push('audio/*');
               if (allowed.has('video')) acc.push('video/*');
-              const files = await WebBridge.pickFiles({ accept: acc.join(','), multiple: false });
-              const f = files && files[0];
-              if (f) {
-                const tp = inferType(f.name) || (allowed.has('audio') ? 'audio' : allowed.has('video') ? 'video' : 'image');
-                if (tp === 'image') {
-                  const du = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result || '')); fr.onerror = () => res(''); fr.readAsDataURL(f); });
-                  return done({ uid: 'file:' + f.name, name: stripAssetExt(f.name), origName: f.name, path: '', dataUrl: du, type: 'image', isManual: true });
+              const files = await WebBridge.pickFiles({ accept: acc.join(','), multiple: isMulti });
+              const list = Array.isArray(files) ? files : (files ? [files] : []);
+              if (list.length) {
+                const picked = [];
+                for (const f of list) {
+                  if (!f) continue;
+                  const tp = inferType(f.name) || (allowed.has('audio') ? 'audio' : allowed.has('video') ? 'video' : 'image');
+                  if (tp === 'image') {
+                    const du = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(String(fr.result || '')); fr.onerror = () => res(''); fr.readAsDataURL(f); });
+                    picked.push({ uid: 'file:' + f.name + '_' + picked.length, name: stripAssetExt(f.name), origName: f.name, path: '', dataUrl: du, type: 'image', isManual: true });
+                  } else {
+                    const ref = await WebBridge.saveAssetFile(f);
+                    picked.push({ uid: 'file:' + ref, name: stripAssetExt(f.name), origName: f.name, path: ref, dataUrl: '', type: tp, isManual: true });
+                  }
                 }
-                const ref = await WebBridge.saveAssetFile(f);
-                return done({ uid: 'file:' + ref, name: stripAssetExt(f.name), origName: f.name, path: ref, dataUrl: '', type: tp, isManual: true });
+                if (isMulti && picked.length) return done(picked);
+                if (picked[0]) return done(picked[0]);
               }
             }
           } catch (_) { }
           return;
         }
         const c = e.target.closest('[data-pick]'); if (!c) return;
-        const r = getItems().find(x => x.uid === c.dataset.pick); if (!r) return done(null);
-        let du = r.dataUrl || '';
-        if (du.startsWith('@img:') && typeof window.ensureLocalImageByHash === 'function') {
-          const h = du.slice(5);
-          await window.ensureLocalImageByHash(h);
-          du = (window.getLocalImageBlobUrl && window.getLocalImageBlobUrl(h)) || du;
+        const uid = c.dataset.pick;
+        const visOrdered = getDisplayOrder(getVisibleList());
+        const r = visOrdered.find(x => x.uid === uid) || getItems().find(x => x.uid === uid);
+        if (!r) return isMulti ? undefined : done(null);
+        if (isMulti) {
+          if (e.shiftKey && anchorUid) {
+            const a = visOrdered.findIndex(x => x.uid === anchorUid);
+            const b = visOrdered.findIndex(x => x.uid === uid);
+            if (a >= 0 && b >= 0) {
+              const step = a <= b ? 1 : -1;
+              for (let i = a; step > 0 ? i <= b : i >= b; i += step) {
+                toggleSelectItem(visOrdered[i], true);
+              }
+              anchorUid = uid;
+              return syncMultiDom();
+            }
+          }
+          toggleSelectItem(r);
+          anchorUid = uid;
+          return syncMultiDom();
         }
-        done(Object.assign({}, r, { dataUrl: du, isManual: true }));
+        done(await hydratePicked(r));
       });
       ov.addEventListener('change', e => { if (e.target.dataset.pf) { folder = e.target.value; drawGrid2(); } });
       let pqComposing = false;
@@ -2418,6 +3418,9 @@
       document.body.appendChild(ov); document.addEventListener('keydown', onK, true); draw2();
     });
   }
+  function pickAssets(opts) {
+    return pickAsset(Object.assign({}, opts || {}, { multi: true }));
+  }
 
-  CCF.assets = { openModal, closeModal, refreshModal, pickImage, pickAsset, pickAddFiles, addBrowserFiles, appendTagsToAsset, bulkUpdateTags, removeScenarioItems, removeItems: removeScenarioItems, copyCommonItemsToScenario, sendToLibrary: sendToLibraryFlow, mergeDuplicates: mergeDuplicatesFlow, remapFolders: remapFoldersFor, tagsOf, peekTags, hasTags, tagBadges, usageBadge, usage, usageList, addPaths, foldersOf: (p, k) => foldersOf(p, k), getUnifiedItems, invalidateUnified, cleanupScenarioAssets, cleanupAllScenarioAssets, syncAssetCatalog: (k, o) => (typeof window.syncScenarioAssetCatalog === 'function' ? window.syncScenarioAssetCatalog(scenarioOf(keyOr(k)), o) : []), countFor, moveIds, moveItems: moveIds, reorderUid, renameItem, editTags, norm, normFolder, folderLabel };
+  CCF.assets = { openModal, closeModal, refreshModal, pickImage, pickAsset, pickAssets, pickAddFiles, addBrowserFiles, appendTagsToAsset, bulkUpdateTags, removeScenarioItems, removeItems: removeScenarioItems, copyCommonItemsToScenario, sendToLibrary: sendToLibraryFlow, mergeDuplicates: mergeDuplicatesFlow, remapFolders: remapFoldersFor, tagsOf, peekTags, hasTags, tagBadges, usageBadge, usage, usageList, usageByCommonItem, scenariosUsingCommonAssets, commonAssetsUsedByScenario, invalidateUsage, addPaths, foldersOf: (p, k) => foldersOf(p, k), getUnifiedItems, invalidateUnified, cleanupScenarioAssets, cleanupAllScenarioAssets, syncAssetCatalog: (k, o) => (typeof window.syncScenarioAssetCatalog === 'function' ? window.syncScenarioAssetCatalog(scenarioOf(keyOr(k)), o) : []), countFor, moveIds, moveItems: moveIds, reorderUid, renameItem, editTags, norm, normFolder, folderLabel, assetImgTag, fillCloudAssetsIn, resolveScenarioLocalDocPath };
 })();

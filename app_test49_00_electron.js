@@ -222,7 +222,7 @@ const filePathOf = f => (f && f.path) || (webUtils && webUtils.getPathForFile ? 
     return new Uint8Array(buf);
   }
 
-  async function buildZipBlob(entries) {
+  async function buildZipParts(entries, releaseSource) {
     const list = Array.isArray(entries) ? entries : [];
     const te = new TextEncoder();
     const d = new Date();
@@ -237,20 +237,22 @@ const filePathOf = f => (f && f.path) || (webUtils && webUtils.getPathForFile ? 
       if (seen.has(lk)) throw new Error('ZIP内のファイル名が重複しています: ' + name);
       seen.add(lk);
       const raw = e.data instanceof Uint8Array ? e.data : (typeof e.data === 'string' ? te.encode(e.data) : new Uint8Array(e.data || []));
+      const rawLen = raw.length;
       const crc = crc32(raw);
       let body = raw, method = 0;
-      if (!e.store && raw.length >= 64) {
+      if (!e.store && rawLen >= 64) {
         const z = await deflateRaw(raw);
-        if (z && z.length < raw.length) { body = z; method = 8; }
+        if (z && z.length < rawLen) { body = z; method = 8; }
       }
       const nameBuf = te.encode(name);
       const h = new Uint8Array(30), dv = new DataView(h.buffer);
       dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true); dv.setUint16(6, 0x0800, true); dv.setUint16(8, method, true);
       dv.setUint16(10, dosTime, true); dv.setUint16(12, dosDate, true); dv.setUint32(14, crc, true);
-      dv.setUint32(18, body.length, true); dv.setUint32(22, raw.length, true); dv.setUint16(26, nameBuf.length, true); dv.setUint16(28, 0, true);
+      dv.setUint32(18, body.length, true); dv.setUint32(22, rawLen, true); dv.setUint16(26, nameBuf.length, true); dv.setUint16(28, 0, true);
       parts.push(h, nameBuf);
       if (body.length) parts.push(body);
-      central.push({ nameBuf, method, crc, csize: body.length, usize: raw.length, offset });
+      if (releaseSource) e.data = null;
+      central.push({ nameBuf, method, crc, csize: body.length, usize: rawLen, offset });
       offset += 30 + nameBuf.length + body.length;
     }
     const cdStart = offset; let cdSize = 0;
@@ -266,7 +268,30 @@ const filePathOf = f => (f && f.path) || (webUtils && webUtils.getPathForFile ? 
     edv.setUint32(0, 0x06054b50, true); edv.setUint16(8, central.length, true); edv.setUint16(10, central.length, true);
     edv.setUint32(12, cdSize, true); edv.setUint32(16, cdStart, true);
     parts.push(end);
+    return { parts, totalSize: offset + cdSize + 22 };
+  }
+
+  async function buildZipBlob(entries) {
+    const { parts } = await buildZipParts(entries, false);
     return new Blob(parts, { type: 'application/zip' });
+  }
+
+  async function buildZipBytes(entries) {
+    const { parts, totalSize } = await buildZipParts(entries, true);
+    if (IS_ELECTRON && typeof Buffer !== 'undefined' && typeof Buffer.concat === 'function') {
+      const buf = Buffer.concat(parts, totalSize);
+      parts.length = 0;
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    }
+    const out = new Uint8Array(totalSize);
+    let pos = 0;
+    for (let i = 0; i < parts.length; i++) {
+      out.set(parts[i], pos);
+      pos += parts[i].byteLength;
+      parts[i] = null;
+    }
+    parts.length = 0;
+    return out;
   }
 
   async function readZip(source) {
@@ -807,7 +832,7 @@ const filePathOf = f => (f && f.path) || (webUtils && webUtils.getPathForFile ? 
     ASSET_PREFIX, mimeFromName, isLocalAbsPath, isAssetRef, assetKeyOf, assetBasename, makeRef,
     openDb, kvGet, kvSet, saveAssetFile, saveAssetBytes, getAssetRecord, readAssetBytes, readAssetBlob,
     hasAsset, hasAssetSync, getAssetUrl, peekAssetUrl, warmAssetUrls, listAssets,
-    crc32, buildZipBlob, readZip, downloadBlob, pickFiles, pickDirectory, walkDirHandle, readDroppedEntries,
+    crc32, buildZipBlob, buildZipBytes, readZip, downloadBlob, pickFiles, pickDirectory, walkDirHandle, readDroppedEntries,
     saveSyncDirHandle, loadSyncDirHandle, clearSyncDirHandle, ensureDirPermission, pickSyncDirectory,
     writeHandleFile, readHandleFile, listHandleFiles, readCloudFileAsync
   };

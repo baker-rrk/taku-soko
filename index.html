@@ -91,11 +91,11 @@
         <button role="tab" aria-selected="true" class="tab-btn active" data-tab="databaseTab" data-on-click="switchTab-databaseTab-event">🏠 ホーム<small>シナリオ一覧</small></button>
         <button role="tab" aria-selected="false" class="tab-btn" data-tab="postTab" data-on-click="switchTab-postTab-event">📝 Discord投稿・編集<small>選択中のシナリオ</small></button>
         <button role="tab" aria-selected="false" class="tab-btn" data-tab="galleryTab" data-on-click="switchTab-galleryTab-event">🖼️ 共通ギャラリー<small>画像素材</small></button>
-        <button role="tab" aria-selected="false" class="tab-btn" data-tab="ccfTab">🎲 ココフォリア<small>PDF抽出・NPC自動生成</small></button>
+        <button role="tab" aria-selected="false" class="tab-btn" data-tab="ccfTab">🎲 セッション準備<small>PDF抽出・駒・盤面構築</small></button>
       </nav>
       <div class="sb-filter">
         <label class="sb-label" for="sbSearch">🔎 シナリオを検索</label>
-        <input type="search" id="sbSearch" placeholder="タイトル・システム・タグ…" autocomplete="off">
+        <input type="search" id="sbSearch" placeholder="タイトル・作者・システム・タグ…" autocomplete="off">
         <div class="sb-label">🏷️ 絞り込みタグ</div>
         <div id="sbSelBar" class="sb-selbar" style="display:none;"></div>
         <div id="sbTags" class="sb-tags"></div>
@@ -387,7 +387,7 @@
     <div class="card-title">
       📊 ダッシュボード集計 & フィルター・ソート
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <input type="text" id="dbSearchInput" placeholder="名前・システム・技能・備考・タグ等（スペースでAND）" title="全角/半角・ひらがな/カタカナの違いは無視して検索します" style="width:260px; padding:6px 10px;" data-on-input="debouncedDB">
+        <input type="text" id="dbSearchInput" placeholder="名前・作者・システム・技能・備考・タグ等（スペースでAND）" title="全角/半角・ひらがな/カタカナの違いは無視して検索します" style="width:260px; padding:6px 10px;" data-on-input="debouncedDB">
         <select id="dbFilterStatus" style="width:130px; padding:6px;" data-on-change="renderDBView">
           <option value="all">すべての状態</option>
           <option value="unposted">未投稿のみ</option>
@@ -476,6 +476,7 @@
     <div class="card-title">📝 新規シナリオ手動追加<button type="button" class="btn-sort" data-on-click="closeAddScenarioModal">✕</button></div>
     <form data-on-submit="handleManualAddScenario-event">
       <div class="form-group"><label>シナリオタイトル<span class="req">*</span></label><input type="text" id="mTitle" required placeholder="例: サンプルシナリオA"></div>
+      <div class="form-group"><label>作者名（DB管理用・投稿には非反映）</label><input type="text" id="mAuthor" placeholder="例: 作者名"></div>
       <div class="grid-2">
         <div class="form-group"><label>システム</label><input type="text" id="mSystem" placeholder="例: システム名"></div>
         <div class="form-group"><label>ショップURL</label><input type="url" id="mShopUrl" placeholder="https://..."></div>
@@ -810,12 +811,15 @@
   window.cloudGetUid = () => currentUser ? currentUser.uid : '';
   const IMG_RE = /data:[a-zA-Z0-9.+\/-]+;base64,[A-Za-z0-9+\/=]+/g;
   const REF_RE = /@img:([a-z0-9]+)/g;
+  const BLOB_REF_RE = /"__cloudBlob"\s*:\s*"([A-Za-z0-9_]+)"/g;
   const CHUNK = 800000;
-  const DOC_LIMIT = 1000000;
+  const DOC_LIMIT = 900000;
+  const sharedEnc = new TextEncoder();
 
   let fb = null, fbApp = null, fbAuth = null, fbDb = null, currentUser = null;
   let authMode = 'login', syncTimer = null, syncing = false, pending = false, syncBlocked = false, deleteGuardDeclined = false, fbSyncError = false;
   let cloudIndex = null, cloudImages = new Map();
+  let loginSyncInFlight = null, loginSyncUid = null, lastSyncErrorMsg = '';
 
   window.getFirebaseSyncStatus = () => ({
     loggedIn: !!currentUser,
@@ -823,6 +827,7 @@
     syncing: !!syncing,
     syncBlocked: !!syncBlocked,
     syncError: !!fbSyncError,
+    lastError: lastSyncErrorMsg,
     dirty: (() => { try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch (_) { return false; } })()
   });
 
@@ -958,34 +963,55 @@
     fbApp = fbAuth = fbDb = null;
   }
 
+  let ensureFirebaseInFlight = null;
+
   async function ensureFirebase() {
     const cfg = loadStoredConfig();
     if (!cfg) return null;
     if (fbApp && fbAuth && fbDb) return fb;
-    const [appMod, authMod, fsMod] = await Promise.all([
-      import(FB_BASE + 'firebase-app.js'),
-      import(FB_BASE + 'firebase-auth.js'),
-      import(FB_BASE + 'firebase-firestore.js')
-    ]);
-    fb = { ...appMod, ...authMod, ...fsMod };
-    fbApp = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(cfg);
-    fbAuth = authMod.getAuth(fbApp);
-    fbDb = fsMod.getFirestore(fbApp);
-    authMod.onAuthStateChanged(fbAuth, async user => {
-      if (user && user.isAnonymous) {
-        try { await authMod.signOut(fbAuth); } catch (_) {}
-        return;
+    if (ensureFirebaseInFlight) return ensureFirebaseInFlight;
+    ensureFirebaseInFlight = (async () => {
+      try {
+        const [appMod, authMod, fsMod] = await Promise.all([
+          import(FB_BASE + 'firebase-app.js'),
+          import(FB_BASE + 'firebase-auth.js'),
+          import(FB_BASE + 'firebase-firestore.js')
+        ]);
+        fb = { ...appMod, ...authMod, ...fsMod };
+        fbApp = appMod.getApps().length ? appMod.getApp() : appMod.initializeApp(cfg);
+        try {
+          fbAuth = authMod.initializeAuth(fbApp, {
+            persistence: [authMod.browserLocalPersistence, authMod.indexedDBLocalPersistence],
+            popupRedirectResolver: authMod.browserPopupRedirectResolver
+          });
+        } catch (_) {
+          fbAuth = authMod.getAuth(fbApp);
+        }
+        fbDb = fsMod.getFirestore(fbApp);
+        authMod.onAuthStateChanged(fbAuth, async user => {
+          if (user && user.isAnonymous) {
+            try { await authMod.signOut(fbAuth); } catch (_) {}
+            return;
+          }
+          currentUser = user || null;
+          refreshAuthUi();
+          if (currentUser) {
+            closeAuthModal();
+            await cloudOnLogin(currentUser);
+          } else {
+            cloudOnLogout();
+          }
+        });
+        return fb;
+      } catch (e) {
+        fbApp = fbAuth = fbDb = null;
+        console.error('[cloud] ensureFirebase failed', e);
+        throw e;
+      } finally {
+        ensureFirebaseInFlight = null;
       }
-      currentUser = user || null;
-      refreshAuthUi();
-      if (currentUser) {
-        closeAuthModal();
-        await cloudOnLogin(currentUser);
-      } else {
-        cloudOnLogout();
-      }
-    });
-    return fb;
+    })();
+    return ensureFirebaseInFlight;
   }
 
   const settingsRef = uid => fb.doc(fbDb, 'users', uid, 'sync', 'settings');
@@ -998,6 +1024,20 @@
     let h = 5381;
     for (const c of String(title)) h = ((h * 33) ^ c.codePointAt(0)) >>> 0;
     return `s_${h.toString(36)}_${String(title).length}`;
+  }
+
+  function _hashKeyPart(s) {
+    if (typeof hashStr === 'function') return String(hashStr(s)).replace(/[^A-Za-z0-9]/g, '');
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  }
+
+  function makeBlobKey(prefix, str) {
+    const s = String(str || '');
+    const h1 = _hashKeyPart(s);
+    const h2 = _hashKeyPart(s.slice(0, 200) + '|' + s.slice(-200));
+    return `${prefix}_${h1}_${h2}_${s.length}`.replace(/[^A-Za-z0-9_]/g, '');
   }
 
   function externalize(obj, images) {
@@ -1029,25 +1069,134 @@
   window.cloudFetchImage = h => currentUser ? fetchCloudImage(currentUser.uid, h, cloudImages.get(h)) : Promise.resolve(null);
 
   async function uploadImage(uid, h, data) {
-    const total = Math.ceil(data.length / CHUNK);
+    const str = String(data || '');
+    const chunks = [];
+    const MAX_BLOB_CHARS = 750000;
+    const MAX_BLOB_BYTES = 750000;
+    let pos = 0;
+    while (pos < str.length) {
+      let len = Math.min(MAX_BLOB_CHARS, str.length - pos);
+      let part = str.slice(pos, pos + len);
+      while (part.length > 1000 && sharedEnc.encode(part).length > MAX_BLOB_BYTES) {
+        len = Math.floor(len * 0.75);
+        part = str.slice(pos, pos + len);
+      }
+      if (pos + part.length < str.length) {
+        const lastCode = part.charCodeAt(part.length - 1);
+        if (lastCode >= 0xD800 && lastCode <= 0xDBFF) part = part.slice(0, -1);
+      }
+      chunks.push(part);
+      pos += part.length;
+    }
+    if (!chunks.length) chunks.push('');
+    const total = chunks.length;
     for (let i = 0; i < total; i++) {
-      await fb.setDoc(fb.doc(imgCol(uid), `${h}_${i}`), {
-        h,
-        i,
-        total,
-        data: data.slice(i * CHUNK, (i + 1) * CHUNK)
-      });
+      const docRef = fb.doc(imgCol(uid), `${h}_${i}`);
+      const payload = { h, i, total, data: chunks[i] };
+      try {
+        await fb.setDoc(docRef, payload);
+      } catch (_) {
+        await new Promise(r => setTimeout(r, 500));
+        await fb.setDoc(docRef, payload);
+      }
     }
     return total;
   }
+
+  const _cloudBlobCache = new Map();
+  const _cloudBlobInFlight = new Map();
+
+  async function fetchCloudBlobParsed(uid, bKey, manifestObj) {
+    if (!bKey) return null;
+    if (_cloudBlobCache.has(bKey)) return _cloudBlobCache.get(bKey);
+    if (_cloudBlobInFlight.has(bKey)) return _cloudBlobInFlight.get(bKey);
+    const run = (async () => {
+      let total = (manifestObj && manifestObj[bKey]) || cloudImages.get(bKey);
+      if (!total && fb && fbDb) {
+        const d0 = await fb.getDoc(fb.doc(imgCol(uid), `${bKey}_0`));
+        if (!d0.exists()) return null;
+        const data0 = d0.data() || {};
+        total = Number(data0.total) || 1;
+        cloudImages.set(bKey, total);
+        if (total === 1) {
+          const parsed = data0.data ? JSON.parse(data0.data) : null;
+          _cloudBlobCache.set(bKey, parsed);
+          return parsed;
+        }
+        const parts = [data0.data || ''];
+        for (let i = 1; i < total; i++) {
+          const di = await fb.getDoc(fb.doc(imgCol(uid), `${bKey}_${i}`));
+          if (!di.exists()) return null;
+          parts.push(di.data().data);
+        }
+        const raw = parts.join('');
+        const parsed = raw ? JSON.parse(raw) : null;
+        _cloudBlobCache.set(bKey, parsed);
+        return parsed;
+      }
+      const raw = await fetchCloudImage(uid, bKey, total || 1);
+      const parsed = raw ? JSON.parse(raw) : null;
+      _cloudBlobCache.set(bKey, parsed);
+      return parsed;
+    })();
+    _cloudBlobInFlight.set(bKey, run);
+    try { return await run; } finally { _cloudBlobInFlight.delete(bKey); }
+  }
+
+  window.ensureScenarioCloudBlobs = async (sc, opts) => {
+    if (!sc || typeof sc !== 'object') return false;
+    const fields = [];
+    if (sc.docTexts && typeof sc.docTexts === 'object' && !Array.isArray(sc.docTexts) && sc.docTexts.__cloudBlob) {
+      fields.push({ field: 'docTexts', bKey: String(sc.docTexts.__cloudBlob) });
+    }
+    if (sc.ccfRooms && typeof sc.ccfRooms === 'object' && !Array.isArray(sc.ccfRooms) && sc.ccfRooms.__cloudBlob) {
+      fields.push({ field: 'ccfRooms', bKey: String(sc.ccfRooms.__cloudBlob) });
+    }
+    if (!fields.length) return false;
+    if (!currentUser || !fb || !fbDb) return false;
+    const uid = currentUser.uid;
+    const manifestObj = (opts && opts.manifest) || null;
+    let updated = false;
+    for (const { field, bKey } of fields) {
+      try {
+        const parsed = await fetchCloudBlobParsed(uid, bKey, manifestObj);
+        if (Array.isArray(parsed)) {
+          sc[field] = JSON.parse(JSON.stringify(parsed));
+          if (field === 'ccfRooms' && !sc.ccfActiveRoomId && sc.ccfRooms[0] && sc.ccfRooms[0].id) {
+            sc.ccfActiveRoomId = sc.ccfRooms[0].id;
+          }
+          updated = true;
+        }
+      } catch (e) {
+        console.warn('[cloud] ensureScenarioCloudBlobs failed:', field, bKey, e);
+      }
+    }
+    if (updated && typeof window.hydrateRefs === 'function') {
+      try { await window.hydrateRefs(sc); } catch (_) {}
+    }
+    return updated;
+  };
 
   async function mergeRemote(uid, rs) {
     setStatus('🔄 他の端末の変更を統合中…', 'syncing');
     await loadIndex(uid);
     const rsData = rs.data() || {};
-    cloudImages = new Map(Object.entries(rsData.images || {}));
+    const manifestObj = rsData.images || {};
+    cloudImages = new Map(Object.entries(manifestObj));
     const local = window.getAppStateForSync({ forCloud: true });
     const remoteRest = rsData.json ? JSON.parse(rsData.json) : {};
+    if (remoteRest && remoteRest.imageAssets && typeof remoteRest.imageAssets === 'object' && !Array.isArray(remoteRest.imageAssets) && remoteRest.imageAssets.__cloudBlob) {
+      try {
+        const parsed = await fetchCloudBlobParsed(uid, String(remoteRest.imageAssets.__cloudBlob), manifestObj);
+        if (Array.isArray(parsed)) remoteRest.imageAssets = parsed;
+      } catch (e) { console.warn('[cloud] mergeRemote.imageAssets', e); }
+    }
+    if (remoteRest && remoteRest.unlinkedCcfRooms && typeof remoteRest.unlinkedCcfRooms === 'object' && !Array.isArray(remoteRest.unlinkedCcfRooms) && remoteRest.unlinkedCcfRooms.__cloudBlob) {
+      try {
+        const parsed = await fetchCloudBlobParsed(uid, String(remoteRest.unlinkedCcfRooms.__cloudBlob), manifestObj);
+        if (Array.isArray(parsed)) remoteRest.unlinkedCcfRooms = parsed;
+      } catch (e) { console.warn('[cloud] mergeRemote.unlinkedCcfRooms', e); }
+    }
     const remoteScenarios = [];
     [...cloudIndex.values()]
       .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
@@ -1057,6 +1206,7 @@
           if (c && c.id) remoteScenarios.push(c);
         } catch (e) { console.warn('[cloud] mergeRemote.parse', e); }
       });
+    // bdt_* / brm_* はオンデマンド遅延復元（__cloudBlob ポインタのまま保持）
     const remote = { ...remoteRest, scenarios: remoteScenarios };
     window._lastCloudConflictCount = 0;
     const merged = window.mergeCloudStates(local, remote);
@@ -1067,98 +1217,246 @@
     markLastSyncAt(uid, Date.now());
   }
 
+  let lastPushedSettingsSig = '';
+  let lastPushWasNoOp = false;
+  let lastPushMergedRemote = false;
+
+  function computeSettingsSig(rJson, mObj) {
+    const keys = Object.keys(mObj || {}).sort();
+    let mStr = '';
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      mStr += (i ? ',' : '') + k + ':' + mObj[k];
+    }
+    return makeBlobKey('set', String(rJson || '') + '|' + mStr);
+  }
+
   async function pushToCloud() {
     const uid = currentUser.uid;
+    lastSyncErrorMsg = '';
+    lastPushWasNoOp = false;
+    lastPushMergedRemote = false;
     if (syncBlocked) return -1;
     const rs = await fb.getDoc(settingsRef(uid));
+    if (rs.exists() && !lastPushedSettingsSig) {
+      const rsd = rs.data() || {};
+      lastPushedSettingsSig = computeSettingsSig(rsd.json || '', rsd.images || {});
+    }
     if (rs.exists() && rs.data().updatedAt !== Number(localStorage.getItem(lastKey(uid)) || 0)) {
       await mergeRemote(uid, rs);
+      lastPushMergedRemote = true;
     }
     if (typeof window.imgFlush === 'function') await window.imgFlush();
     const { scenarios = [], ...rest } = window.getAppStateForSync({ forCloud: true });
     const images = new Map();
+    const blobs = new Map();
+    const manifest = {};
+    let failed = 0;
+    let uploadedBlobs = 0;
+    const recordSyncErr = (label, e) => {
+      const msg = (e && (e.code ? `${e.code}: ${e.message}` : e.message)) || String(e || '');
+      if (!lastSyncErrorMsg) lastSyncErrorMsg = msg ? `${label}: ${msg}` : label;
+    };
+    const BYTES = t => sharedEnc.encode(t).length;
+
+    const ensureBlobUploaded = async (bKey, strData) => {
+      blobs.set(bKey, null);
+      if (cloudImages.has(bKey)) {
+        manifest[bKey] = cloudImages.get(bKey);
+        return;
+      }
+      if (strData == null) return;
+      try {
+        const total = await uploadImage(uid, bKey, strData);
+        manifest[bKey] = total;
+        cloudImages.set(bKey, total);
+        uploadedBlobs++;
+      } catch (e) {
+        failed++;
+        recordSyncErr(`チャンク保存(${bKey})`, e);
+        console.error('[cloud] チャンクの保存に失敗:', bKey, e);
+      }
+    };
+
+    // 未展開のままの rest.__cloudBlob ポインタを未使用削除から保護
+    if (rest && rest.imageAssets && typeof rest.imageAssets === 'object' && !Array.isArray(rest.imageAssets) && rest.imageAssets.__cloudBlob) {
+      const iaKey = String(rest.imageAssets.__cloudBlob);
+      blobs.set(iaKey, null);
+      if (cloudImages.has(iaKey)) manifest[iaKey] = cloudImages.get(iaKey);
+    }
+    if (rest && rest.unlinkedCcfRooms && typeof rest.unlinkedCcfRooms === 'object' && !Array.isArray(rest.unlinkedCcfRooms) && rest.unlinkedCcfRooms.__cloudBlob) {
+      const ruKey = String(rest.unlinkedCcfRooms.__cloudBlob);
+      blobs.set(ruKey, null);
+      if (cloudImages.has(ruKey)) manifest[ruKey] = cloudImages.get(ruKey);
+    }
+
     let restJson = externalize(rest, images);
-    const BYTES = t => new TextEncoder().encode(t).length;
+    if (BYTES(restJson) > 300000 && Array.isArray(rest.imageAssets) && rest.imageAssets.length > 0) {
+      const iaJson = externalize(rest.imageAssets, images);
+      const iaKey = makeBlobKey('bia', iaJson);
+      await ensureBlobUploaded(iaKey, iaJson);
+      rest.imageAssets = { __cloudBlob: iaKey };
+      restJson = externalize(rest, images);
+    }
+    if (BYTES(restJson) > 300000 && Array.isArray(rest.unlinkedCcfRooms) && rest.unlinkedCcfRooms.length > 0) {
+      const ruJson = externalize(rest.unlinkedCcfRooms, images);
+      const ruKey = makeBlobKey('bru', ruJson);
+      await ensureBlobUploaded(ruKey, ruJson);
+      rest.unlinkedCcfRooms = { __cloudBlob: ruKey };
+      restJson = externalize(rest, images);
+    }
     if (BYTES(restJson) > DOC_LIMIT && Array.isArray(rest.history)) {
       rest.history = rest.history.slice(-50);
       restJson = externalize(rest, images);
     }
     if (BYTES(restJson) > DOC_LIMIT) throw new Error('設定データが1ドキュメントの上限（約1MB）を超えています');
-    const scJsons = scenarios.map(sc => externalize(sc, images));
-    for (const j of [restJson, ...scJsons]) {
-      for (const mm of j.matchAll(REF_RE)) {
+    for (const mm of restJson.matchAll(REF_RE)) {
+      if (!images.has(mm[1])) images.set(mm[1], null);
+    }
+
+    // 1) シナリオを1件ずつ externalize → 軽量サイズ判定＆チャンク外出し → 変更分のみ6並列Firestore送信
+    const keep = new Set();
+    const pendingScWrites = [];
+    const registerRefs = str => {
+      for (const mm of str.matchAll(REF_RE)) {
         if (!images.has(mm[1])) images.set(mm[1], null);
       }
-    }
-    let failed = 0;
+    };
+    for (let i = 0; i < scenarios.length; i++) {
+      const sc = scenarios[i], id = scenId(sc);
+      keep.add(id);
+      const prev = cloudIndex.get(id);
 
-    // 1) 画像（未保存のものだけ。4件ずつ並列）
-    const manifest = {};
+      // 未展開のままの __cloudBlob ポインタを未使用削除から保護
+      if (sc && sc.docTexts && typeof sc.docTexts === 'object' && !Array.isArray(sc.docTexts) && sc.docTexts.__cloudBlob) {
+        const bKey = String(sc.docTexts.__cloudBlob);
+        blobs.set(bKey, null);
+        if (cloudImages.has(bKey)) manifest[bKey] = cloudImages.get(bKey);
+      }
+      if (sc && sc.ccfRooms && typeof sc.ccfRooms === 'object' && !Array.isArray(sc.ccfRooms) && sc.ccfRooms.__cloudBlob) {
+        const rKey = String(sc.ccfRooms.__cloudBlob);
+        blobs.set(rKey, null);
+        if (cloudImages.has(rKey)) manifest[rKey] = cloudImages.get(rKey);
+      }
+
+      let scWork = sc;
+      let dtJsonPre = '';
+      const hasDocTextsArr = Array.isArray(sc && sc.docTexts) && sc.docTexts.length > 0;
+      if (hasDocTextsArr) {
+        dtJsonPre = externalize(sc.docTexts, images);
+        registerRefs(dtJsonPre);
+        if (dtJsonPre.length > 15000 && BYTES(dtJsonPre) > 60000) {
+          const bKey = makeBlobKey('bdt', dtJsonPre);
+          await ensureBlobUploaded(bKey, dtJsonPre);
+          scWork = { ...scWork, docTexts: { __cloudBlob: bKey } };
+          dtJsonPre = '';
+        }
+      }
+
+      let json = externalize(scWork, images);
+      registerRefs(json);
+
+      // 軽量サイズ判定：必要時のみ残りのチャンク外出し（未変更時の無駄な JSON.parse を完全回避）
+      const needMoreDocOffload = !!(dtJsonPre && json.length > 62500 && BYTES(json) > 250000);
+      const needRoomOffload = !!(Array.isArray(scWork && scWork.ccfRooms) && scWork.ccfRooms.length > 0 && json.length * 4 > DOC_LIMIT - 60000 && BYTES(json) > DOC_LIMIT - 60000);
+
+      if (needMoreDocOffload || needRoomOffload) {
+        let scCopy = null;
+        const ensureCopy = () => {
+          if (!scCopy) scCopy = JSON.parse(json);
+          return scCopy;
+        };
+        if (needMoreDocOffload) {
+          const bKey = makeBlobKey('bdt', dtJsonPre);
+          await ensureBlobUploaded(bKey, dtJsonPre);
+          const copy = ensureCopy();
+          copy.docTexts = { __cloudBlob: bKey };
+          json = JSON.stringify(copy);
+        }
+        if (Array.isArray(scWork && scWork.ccfRooms) && scWork.ccfRooms.length > 0 && json.length * 4 > DOC_LIMIT - 60000 && BYTES(json) > DOC_LIMIT - 60000) {
+          const copy = ensureCopy();
+          if (Array.isArray(copy.ccfRooms) && copy.ccfRooms.length > 0) {
+            const rmJson = JSON.stringify(copy.ccfRooms);
+            const rKey = makeBlobKey('brm', rmJson);
+            await ensureBlobUploaded(rKey, rmJson);
+            copy.ccfRooms = { __cloudBlob: rKey };
+            json = JSON.stringify(copy);
+          }
+        }
+        scCopy = null;
+      }
+
+      if (json.length * 4 > DOC_LIMIT && BYTES(json) > DOC_LIMIT) {
+        failed++;
+        if (!lastSyncErrorMsg) lastSyncErrorMsg = `シナリオ「${sc.title || '無題'}」が1MB上限を超えています`;
+        console.error('[cloud] シナリオが大きすぎて同期できません:', sc.title);
+        if (typeof toast === 'function') toast('⚠️ 「' + (sc.title || '無題') + '」はデータ量が多すぎてクラウド同期できません（約1MBが上限）。内容を分けるか、JSONバックアップで保管してください。');
+        continue;
+      }
+      if (prev && prev.json === json && prev.order === i) continue;
+      pendingScWrites.push({ id, title: String(sc.title || ''), order: i, json });
+    }
+
+    const SC_WRITE_CONCURRENCY = 6;
+    for (let i = 0; i < pendingScWrites.length; i += SC_WRITE_CONCURRENCY) {
+      const batch = pendingScWrites.slice(i, i + SC_WRITE_CONCURRENCY);
+      await Promise.all(batch.map(async item => {
+        try {
+          await fb.setDoc(fb.doc(scenCol(uid), item.id), { title: item.title, order: item.order, json: item.json });
+          cloudIndex.set(item.id, { title: item.title, order: item.order, json: item.json });
+        } catch (e) {
+          failed++;
+          recordSyncErr(`シナリオ同期(${item.title || item.id})`, e);
+          console.error('[cloud] シナリオ同期失敗:', item.title, e);
+        }
+      }));
+    }
+
+    // 2) 画像（未保存のものだけ。4件ずつ並列）
     const todo = [];
     for (const [h, data] of images) {
       if (cloudImages.has(h)) manifest[h] = cloudImages.get(h);
       else todo.push([h, data]);
     }
     for (let i = 0; i < todo.length; i += 4) {
-      setStatus(`🔄 画像を保存中… ${Math.min(i + 4, todo.length)}/${todo.length}`, 'syncing');
+      setStatus(`🔄 データを保存中… ${Math.min(i + 4, todo.length)}/${todo.length}`, 'syncing');
       await Promise.all(todo.slice(i, i + 4).map(async ([h, data]) => {
+        if (!data && typeof window.idbImageDataUrl === 'function') {
+          try {
+            data = await window.idbImageDataUrl(h);
+          } catch (readErr) {
+            data = null;
+            if (typeof window.idbThumbBlob === 'function') {
+              try {
+                const tb = await window.idbThumbBlob(h);
+                if (tb) {
+                  data = await new Promise((res, rej) => {
+                    const r = new FileReader();
+                    r.onload = () => res(r.result);
+                    r.onerror = () => rej(r.error);
+                    r.readAsDataURL(tb);
+                  });
+                }
+              } catch (_) { data = null; }
+            }
+            if (!data) {
+              console.warn('[cloud] ローカル画像が読み取れないためスキップ:', h);
+              return;
+            }
+          }
+        }
+        if (!data) return;
         try {
-          if (!data && typeof window.idbImageDataUrl === 'function') data = await window.idbImageDataUrl(h);
-          if (!data) return;
           const total = await uploadImage(uid, h, data);
           manifest[h] = total;
           cloudImages.set(h, total);
-        } catch (e) { failed++; console.error('[cloud] 画像の保存に失敗:', e); }
+        } catch (e) { failed++; recordSyncErr(`画像保存(${h})`, e); console.error('[cloud] 画像の保存に失敗:', h, e); }
       }));
     }
 
-    // 2) シナリオ（1件ずつ users/{uid}/scenarios/{id} へ差分書き込み）
-    const keep = new Set();
-    for (let i = 0; i < scenarios.length; i++) {
-      let sc = scenarios[i], id = scenId(sc), json = scJsons[i];
-      keep.add(id);
-      if (BYTES(json) > DOC_LIMIT - 20000 && Array.isArray(sc.docTexts) && sc.docTexts.length) {
-        const scTrim = Object.assign({}, sc, { docTexts: sc.docTexts.map(d => d ? Object.assign({}, d) : d) });
-        let budget = scTrim.docTexts.reduce((s, d) => s + (d && d.text ? d.text.length : 0), 0);
-        while (BYTES(json) > DOC_LIMIT - 20000 && scTrim.docTexts.length && budget > 0) {
-          const excess = BYTES(json) - (DOC_LIMIT - 20000);
-          budget = Math.max(0, budget - Math.max(4000, Math.ceil(excess * 0.7)));
-          if (typeof window.trimScenarioDocTextsToBudget === 'function') {
-            window.trimScenarioDocTextsToBudget(scTrim, budget);
-          } else {
-            let rem = budget;
-            scTrim.docTexts = scTrim.docTexts.filter(d => d && d.text && rem > 0).map(d => {
-              const t = d.text.length > rem ? d.text.slice(0, rem) : d.text;
-              rem -= t.length;
-              return Object.assign({}, d, { text: t });
-            });
-          }
-          if (budget <= 0) scTrim.docTexts = [];
-          json = externalize(scTrim, images);
-        }
-        if (BYTES(json) > DOC_LIMIT - 20000 && scTrim.docTexts.length) {
-          scTrim.docTexts = [];
-          json = externalize(scTrim, images);
-        }
-        sc = scTrim;
-      }
-      if (BYTES(json) > DOC_LIMIT) {
-        failed++;
-        console.error('[cloud] シナリオが大きすぎて同期できません:', sc.title);
-        if (typeof toast === 'function') toast('⚠️ 「' + (sc.title || '無題') + '」は文字量が多すぎてクラウド同期できません（約1MBが上限）。内容を分けるか、JSONバックアップで保管してください。');
-        continue;
-      }
-      const prev = cloudIndex.get(id);
-      if (prev && prev.json === json && prev.order === i) continue;
-      try {
-        const title = String(sc.title || '');
-        await fb.setDoc(fb.doc(scenCol(uid), id), { title, order: i, json });
-        cloudIndex.set(id, { title, order: i, json });
-      } catch (e) { failed++; console.error('[cloud] シナリオ同期失敗:', sc.title, e); }
-    }
     const stale = [...cloudIndex.keys()].filter(id => !keep.has(id));
     const delMap = (typeof appState !== 'undefined' && appState && appState.deletedScenarios) ? appState.deletedScenarios : {};
-    const unexplainedStale = stale.filter(id => !delMap[id]);
+    const unexplainedStale = stale.filter(id => !delMap[id] && !delMap[String(id).replace(/^s_/, '')]);
     let skipDelete = false;
     if (unexplainedStale.length >= 2 && scenarios.length < cloudIndex.size / 2) {
       if (!deleteGuardDeclined && typeof appConfirm === 'function') {
@@ -1177,27 +1475,49 @@
           if (!images.has(mm[1])) images.set(mm[1], null);
           if (cloudImages.has(mm[1])) manifest[mm[1]] = cloudImages.get(mm[1]);
         }
+        for (const bm of js.matchAll(BLOB_REF_RE)) {
+          if (!blobs.has(bm[1])) blobs.set(bm[1], null);
+          if (cloudImages.has(bm[1])) manifest[bm[1]] = cloudImages.get(bm[1]);
+        }
       });
       failed++;
+      if (!lastSyncErrorMsg) lastSyncErrorMsg = '削除確認がキャンセルされたため同期を保留しました';
     } else {
-      for (const id of stale) {
-        try { await fb.deleteDoc(fb.doc(scenCol(uid), id)); cloudIndex.delete(id); }
-        catch (e) { failed++; console.error('[cloud] シナリオ削除失敗:', id, e); }
+      const SC_DEL_CONCURRENCY = 6;
+      for (let i = 0; i < stale.length; i += SC_DEL_CONCURRENCY) {
+        const batch = stale.slice(i, i + SC_DEL_CONCURRENCY);
+        await Promise.all(batch.map(async id => {
+          try { await fb.deleteDoc(fb.doc(scenCol(uid), id)); cloudIndex.delete(id); }
+          catch (e) { failed++; recordSyncErr(`シナリオ削除(${id})`, e); console.error('[cloud] シナリオ削除失敗:', id, e); }
+        }));
       }
     }
 
-    // 3) 使われなくなった画像を削除
+    // 3) 使われなくなった画像・外出しチャンクを削除
+    let deletedUnusedImages = 0;
     for (const [h, total] of [...cloudImages]) {
-      if (images.has(h)) continue;
+      if (images.has(h) || blobs.has(h)) continue;
       try {
         for (let i = 0; i < total; i++) await fb.deleteDoc(fb.doc(imgCol(uid), `${h}_${i}`));
       } catch (e) { console.error('[cloud] 画像の削除に失敗:', e); }
       cloudImages.delete(h);
+      deletedUnusedImages++;
     }
 
     // 4) 設定＋画像一覧（updatedAt は必ず Number 型ミリ秒タイムスタンプ）
+    if (BYTES(JSON.stringify({ json: restJson, images: manifest })) > 920000 && Array.isArray(rest.history) && rest.history.length > 20) {
+      rest.history = rest.history.slice(-20);
+      restJson = externalize(rest, images);
+    }
+    const curSettingsSig = computeSettingsSig(restJson, manifest);
+    if (!failed && pendingScWrites.length === 0 && todo.length === 0 && stale.length === 0 && deletedUnusedImages === 0 && uploadedBlobs === 0 && lastPushedSettingsSig && curSettingsSig === lastPushedSettingsSig) {
+      lastPushWasNoOp = true;
+      try { localStorage.removeItem(DIRTY_KEY); } catch (_) {}
+      return 0;
+    }
     const at = Date.now();
     await fb.setDoc(settingsRef(uid), { json: restJson, images: manifest, updatedAt: at });
+    lastPushedSettingsSig = curSettingsSig;
     try { localStorage.setItem(lastKey(uid), String(at)); } catch (_) {}
     markLastSyncAt(uid, at);
     if (!failed) try { localStorage.removeItem(DIRTY_KEY); } catch (_) {}
@@ -1217,6 +1537,18 @@
       if (d) imgMap.set(h, d);
     }
     const rest = JSON.parse(rawJson.replace(REF_RE, (m, h) => imgMap.get(h) || ''));
+    if (rest && rest.imageAssets && typeof rest.imageAssets === 'object' && !Array.isArray(rest.imageAssets) && rest.imageAssets.__cloudBlob) {
+      try {
+        const parsed = await fetchCloudBlobParsed(uid, String(rest.imageAssets.__cloudBlob), manifest);
+        if (Array.isArray(parsed)) rest.imageAssets = parsed;
+      } catch (e) { console.warn('[cloud] applyCloudAndReload.imageAssets', e); }
+    }
+    if (rest && rest.unlinkedCcfRooms && typeof rest.unlinkedCcfRooms === 'object' && !Array.isArray(rest.unlinkedCcfRooms) && rest.unlinkedCcfRooms.__cloudBlob) {
+      try {
+        const parsed = await fetchCloudBlobParsed(uid, String(rest.unlinkedCcfRooms.__cloudBlob), manifest);
+        if (Array.isArray(parsed)) rest.unlinkedCcfRooms = parsed;
+      } catch (e) { console.warn('[cloud] applyCloudAndReload.unlinkedCcfRooms', e); }
+    }
     try {
       if (rest && rest.cloudSettings && typeof rest.cloudSettings === 'object') {
         const prevRaw = localStorage.getItem('taku_kobo_cloud_settings_v1');
@@ -1231,6 +1563,7 @@
     } catch (_) {}
     const list = [...cloudIndex.values()].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
     const scenarios = list.map(v => JSON.parse(v.json));
+    // bdt_* / brm_* はオンデマンド遅延復元（__cloudBlob ポインタのまま保持）
 
     if (typeof window.idbGetRaw === 'function' && typeof window.idbSetRaw === 'function') {
       const old = (await window.idbGetRaw('state')) || localStorage.getItem('discord_forum_tool_data_v1');
@@ -1256,24 +1589,27 @@
     if (syncing) { pending = true; return { ok: true, pending: true }; }
     syncing = true;
     fbSyncError = false;
+    lastSyncErrorMsg = '';
     setStatus('🔄 同期中…', 'syncing');
     let result = { ok: true };
     try {
       const failed = await pushToCloud();
       if (failed === -1) {
         setStatus('⚠️ 未同期（他端末で更新あり）', 'err');
-        result = { ok: false, blocked: true };
+        result = { ok: false, blocked: true, error: new Error('他端末で更新があるため同期が保留されました') };
       } else if (failed) {
         fbSyncError = true;
         setStatus('⚠️ 一部同期できず', 'err');
-        result = { ok: false, partial: true };
+        result = { ok: false, partial: true, error: new Error(lastSyncErrorMsg || '一部データの同期に失敗しました') };
       } else {
+        result = { ok: true, noChange: !!(lastPushWasNoOp && !lastPushMergedRemote) };
         if (typeof window.fetchMissingImages === 'function') window.fetchMissingImages();
         if (o.manual && !o.silentToast && typeof toast === 'function') toast('✅ クラウドと同期しました');
       }
     } catch (e) {
       console.error('[cloud] sync error', e);
       fbSyncError = true;
+      lastSyncErrorMsg = (e && (e.code ? `${e.code}: ${e.message}` : e.message)) || String(e);
       setStatus('⚠️ 同期エラー', 'err');
       result = { ok: false, error: e };
       if (o.manual && !o.silentToast && typeof toast === 'function') toast('❌ クラウド同期に失敗しました: ' + (e && e.message || e));
@@ -1286,7 +1622,12 @@
   }
 
   async function cloudOnLogin(user) {
-    syncBlocked = false; fbSyncError = false; deleteGuardDeclined = false; window.cloudImagesReady = false;
+    if (!user) return;
+    if (loginSyncInFlight && loginSyncUid === user.uid) return loginSyncInFlight;
+    loginSyncUid = user.uid;
+    loginSyncInFlight = (async () => {
+    syncBlocked = false; fbSyncError = false; lastSyncErrorMsg = ''; deleteGuardDeclined = false; window.cloudImagesReady = false;
+    lastPushedSettingsSig = ''; lastPushWasNoOp = false; lastPushMergedRemote = false;
     cloudIndex = null;
     cloudImages = new Map();
     if (window.CloudSync && typeof window.CloudSync.onAuthChanged === 'function') {
@@ -1383,18 +1724,30 @@
     } catch (e) {
       console.error('[cloud] login sync error', e);
       fbSyncError = true;
+      lastSyncErrorMsg = (e && (e.code ? `${e.code}: ${e.message}` : e.message)) || String(e);
       setStatus('⚠️ 同期エラー', 'err');
     } finally {
       refreshAuthUi();
     }
+    })().finally(() => {
+      loginSyncInFlight = null;
+      loginSyncUid = null;
+    });
+    return loginSyncInFlight;
   }
 
   function cloudOnLogout() {
     clearTimeout(syncTimer);
     syncTimer = null;
     fbSyncError = false;
+    lastSyncErrorMsg = '';
+    lastPushedSettingsSig = '';
+    lastPushWasNoOp = false;
+    lastPushMergedRemote = false;
     cloudIndex = null;
     cloudImages = new Map();
+    _cloudBlobCache.clear();
+    _cloudBlobInFlight.clear();
     window.cloudImagesReady = false;
     if (window.CloudSync && typeof window.CloudSync.onAuthChanged === 'function') {
       window.CloudSync.onAuthChanged(null);
@@ -1415,7 +1768,9 @@
     if (!currentUser || !fb || !fbDb) return { ok: true, skipped: true };
     if (!cloudIndex) {
       await cloudOnLogin(currentUser);
-      return { ok: !fbSyncError };
+      if (fbSyncError || !cloudIndex) {
+        return { ok: false, error: new Error(lastSyncErrorMsg || 'クラウド初期化に失敗しました') };
+      }
     }
     return await runSave(Object.assign({ manual: true }, opts || {}));
   };
@@ -1443,7 +1798,74 @@
     if (typeof toast === 'function') toast('ログアウトしました');
   };
 
-  document.addEventListener('DOMContentLoaded', () => {
+  async function runGoogleSignIn(opts) {
+    const o = opts || {};
+    const sdk = await ensureFirebase();
+    if (!sdk || !fbAuth) throw new Error('Firebaseの初期化に失敗しました');
+    const ipc = getIpcRenderer();
+    if (ipc) {
+      const res = await ipc.invoke('auth:google-login', {
+        firebaseConfig: loadStoredConfig(),
+        silent: !!o.silent,
+        loginHint: o.loginHint || '',
+        prompt: o.prompt || ''
+      });
+      if (!res || res.ok === false || !res.ok) {
+        const err = new Error((res && res.message) || 'Google認証に失敗しました。');
+        if (res && res.code) err.code = res.code;
+        throw err;
+      }
+      const mail = res.email || o.loginHint || (currentUser && currentUser.email) || '';
+      if (res.accessToken && window.CloudSync && typeof window.CloudSync.setGDriveAccessToken === 'function') {
+        window.CloudSync.setGDriveAccessToken(res.accessToken, res.obtainedAt || Date.now(), {
+          email: mail,
+          expiresIn: res.expiresIn || 3600
+        });
+      }
+      if (res.idToken || res.accessToken) {
+        const needFbSignIn = !currentUser || (mail && currentUser.email && mail.toLowerCase() !== currentUser.email.toLowerCase());
+        if (needFbSignIn) {
+          const cred = sdk.GoogleAuthProvider.credential(res.idToken || null, res.accessToken || null);
+          await sdk.signInWithCredential(fbAuth, cred);
+        }
+      }
+    } else {
+      if (o.silent) {
+        const err = new Error('ブラウザ環境ではサイレント認証は利用できません。');
+        err.code = 'auth/silent-unavailable';
+        throw err;
+      }
+      const provider = new sdk.GoogleAuthProvider();
+      provider.addScope('https://www.googleapis.com/auth/drive.file');
+      if (o.loginHint) provider.setCustomParameters({ login_hint: o.loginHint });
+      const result = await sdk.signInWithPopup(fbAuth, provider);
+      const cred = sdk.GoogleAuthProvider.credentialFromResult(result);
+      const mail = (result && result.user && result.user.email) || o.loginHint || '';
+      if (cred && cred.accessToken && window.CloudSync && typeof window.CloudSync.setGDriveAccessToken === 'function') {
+        window.CloudSync.setGDriveAccessToken(cred.accessToken, Date.now(), {
+          email: mail,
+          expiresIn: 3600
+        });
+      }
+    }
+  }
+
+  window.cloudReauthGDrive = async (opts) => {
+    const o = opts || {};
+    window._lastGDriveAuthError = '';
+    try {
+      await runGoogleSignIn(o);
+      if (!o.quiet && typeof toast === 'function') toast('✅ Googleドライブの認証を更新しました');
+      return true;
+    } catch (err) {
+      const msg = authErrorMessage(err);
+      window._lastGDriveAuthError = msg;
+      if (!o.quiet && typeof toast === 'function') toast('❌ Googleドライブ認証に失敗しました: ' + msg);
+      return false;
+    }
+  };
+
+  function initCloudAuthModule() {
     $('authOpenBtn')?.addEventListener('click', openAuthModal);
     $('authCloseBtn')?.addEventListener('click', closeAuthModal);
     $('authOpenCloudSettingsBtn')?.addEventListener('click', () => {
@@ -1479,6 +1901,7 @@
       setAuthMsg('接続中…', true);
       try {
         const sdk = await ensureFirebase();
+        if (!sdk || !fbAuth) throw new Error('Firebaseの初期化に失敗しました');
         if (authMode === 'register') await sdk.createUserWithEmailAndPassword(fbAuth, email, pass);
         else await sdk.signInWithEmailAndPassword(fbAuth, email, pass);
         if (typeof toast === 'function') toast('☁️ 同期を開始しました（保存範囲の変更は『⚙️ 設定 ＞ データ保存・同期』から行えます）');
@@ -1495,76 +1918,11 @@
       setAuthMsg('再設定メールを送信しています…', true);
       try {
         const sdk = await ensureFirebase();
+        if (!sdk || !fbAuth) throw new Error('Firebaseの初期化に失敗しました');
         await sdk.sendPasswordResetEmail(fbAuth, email);
         setAuthMsg('✅ パスワード再設定メールを送信しました（受信箱をご確認ください）', true);
       } catch (err) { setAuthMsg(authErrorMessage(err)); }
     });
-
-    async function runGoogleSignIn(opts) {
-      const o = opts || {};
-      const sdk = await ensureFirebase();
-      const ipc = getIpcRenderer();
-      if (ipc) {
-        const res = await ipc.invoke('auth:google-login', {
-          firebaseConfig: loadStoredConfig(),
-          silent: !!o.silent,
-          loginHint: o.loginHint || '',
-          prompt: o.prompt || ''
-        });
-        if (!res || !res.ok) {
-          const err = new Error((res && res.message) || 'Google認証に失敗しました。');
-          if (res && res.code) err.code = res.code;
-          throw err;
-        }
-        const mail = res.email || o.loginHint || (currentUser && currentUser.email) || '';
-        if (res.accessToken && window.CloudSync && typeof window.CloudSync.setGDriveAccessToken === 'function') {
-          window.CloudSync.setGDriveAccessToken(res.accessToken, res.obtainedAt || Date.now(), {
-            email: mail,
-            expiresIn: res.expiresIn || 3600
-          });
-        }
-        if (res.idToken || res.accessToken) {
-          const needFbSignIn = !currentUser || (mail && currentUser.email && mail.toLowerCase() !== currentUser.email.toLowerCase());
-          if (needFbSignIn) {
-            const cred = sdk.GoogleAuthProvider.credential(res.idToken || null, res.accessToken || null);
-            await sdk.signInWithCredential(fbAuth, cred);
-          }
-        }
-      } else {
-        if (o.silent) {
-          const err = new Error('ブラウザ環境ではサイレント認証は利用できません。');
-          err.code = 'auth/silent-unavailable';
-          throw err;
-        }
-        const provider = new sdk.GoogleAuthProvider();
-        provider.addScope('https://www.googleapis.com/auth/drive.file');
-        if (o.loginHint) provider.setCustomParameters({ login_hint: o.loginHint });
-        const result = await sdk.signInWithPopup(fbAuth, provider);
-        const cred = sdk.GoogleAuthProvider.credentialFromResult(result);
-        const mail = (result && result.user && result.user.email) || o.loginHint || '';
-        if (cred && cred.accessToken && window.CloudSync && typeof window.CloudSync.setGDriveAccessToken === 'function') {
-          window.CloudSync.setGDriveAccessToken(cred.accessToken, Date.now(), {
-            email: mail,
-            expiresIn: 3600
-          });
-        }
-      }
-    }
-
-    window.cloudReauthGDrive = async (opts) => {
-      const o = opts || {};
-      window._lastGDriveAuthError = '';
-      try {
-        await runGoogleSignIn(o);
-        if (!o.quiet && typeof toast === 'function') toast('✅ Googleドライブの認証を更新しました');
-        return true;
-      } catch (err) {
-        const msg = authErrorMessage(err);
-        window._lastGDriveAuthError = msg;
-        if (!o.quiet && typeof toast === 'function') toast('❌ Googleドライブ認証に失敗しました: ' + msg);
-        return false;
-      }
-    };
 
     $('authGoogleBtn')?.addEventListener('click', async () => {
       setAuthMsg('Google認証を開いています…', true);
@@ -1587,7 +1945,9 @@
           );
           if ($('authEmail') && !$('authEmail').value.trim()) $('authEmail').focus();
         } else {
-          setAuthMsg(authErrorMessage(err));
+          const msg = authErrorMessage(err);
+          setAuthMsg(msg);
+          if (typeof toast === 'function') toast('❌ Googleログインに失敗しました: ' + msg);
         }
       }
     });
@@ -1619,7 +1979,10 @@
 
     refreshAuthUi();
     void ensureFirebase().catch(e => console.warn('[cloud] init failed', e));
-  });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initCloudAuthModule, { once: true });
+  else initCloudAuthModule();
 
   window.addEventListener('online', () => {
     try {

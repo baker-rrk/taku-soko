@@ -6,12 +6,13 @@
  *    detectNpcBlocks(text, sysId, N) … ステータス・技能が密集しているブロックを検出 */
 (function () {
   'use strict';
-  const NF = s => String(s == null ? '' : s).normalize('NFKC').replace(/\r\n?/g, '\n');
+  const NF = s => String(s == null ? '' : s).normalize('NFKC').replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n');
 
   // ---------- 0. 文字コード自動判別 & 文字化け検査 & テキストクレンジング ----------
   function isMojibakeText(rawStr, opts) {
     const s = String(rawStr == null ? '' : rawStr);
     if (!s.trim()) return false;
+    if (/^PK[\x03\x04\uFFFD]/.test(s)) return true;
     if (/\uFFFD/.test(s)) return true;
     if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/.test(s)) return true;
     if (/[\uFFFD].*B$/m.test(s)) return true;
@@ -33,12 +34,13 @@
       .replace(/\uFFFD/g, '');
   }
   function decodeTextBytes(rawBytes) {
-    if (typeof rawBytes === 'string') return String(rawBytes).replace(/\r\n?/g, '\n');
+    if (typeof rawBytes === 'string') return String(rawBytes).replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n');
     const u8 = rawBytes instanceof Uint8Array
       ? rawBytes
       : (rawBytes instanceof ArrayBuffer ? new Uint8Array(rawBytes) : new Uint8Array(rawBytes || []));
     if (!u8.byteLength) return '';
-    const normLn = s => String(s || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    const normLn = s => String(s || '').replace(/^\uFEFF/, '').replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n');
+    // ① BOM
     if (u8.byteLength >= 3 && u8[0] === 0xEF && u8[1] === 0xBB && u8[2] === 0xBF) {
       try { return normLn(new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(3))); } catch (_) { }
       return normLn(new TextDecoder('utf-8').decode(u8.subarray(3)));
@@ -49,17 +51,26 @@
     if (u8.byteLength >= 2 && u8[0] === 0xFE && u8[1] === 0xFF) {
       try { return normLn(new TextDecoder('utf-16be').decode(u8.subarray(2))); } catch (_) { }
     }
-    const sampleLen = Math.min(u8.byteLength, 256);
+    // ② BOMなし UTF-16LE / UTF-16BE（先頭512バイト）
+    const sampleLen = Math.min(u8.byteLength, 512);
     let oddZeros = 0, evenZeros = 0;
     for (let i = 0; i < sampleLen; i++) {
       if (u8[i] === 0) { if (i % 2 === 1) oddZeros++; else evenZeros++; }
     }
-    if (sampleLen >= 8 && oddZeros >= sampleLen / 4) {
+    if (sampleLen >= 8 && oddZeros >= sampleLen * 0.25 && oddZeros > evenZeros * 3) {
       try { return normLn(new TextDecoder('utf-16le').decode(u8)); } catch (_) { }
     }
-    if (sampleLen >= 8 && evenZeros >= sampleLen / 4) {
+    if (sampleLen >= 8 && evenZeros >= sampleLen * 0.25 && evenZeros > oddZeros * 3) {
       try { return normLn(new TextDecoder('utf-16be').decode(u8)); } catch (_) { }
     }
+    // ③ ISO-2022-JP
+    for (let i = 0; i + 2 < u8.byteLength; i++) {
+      if (u8[i] === 0x1B && ((u8[i + 1] === 0x24 && (u8[i + 2] === 0x42 || u8[i + 2] === 0x40)) || (u8[i + 1] === 0x28 && u8[i + 2] === 0x42))) {
+        try { return normLn(new TextDecoder('iso-2022-jp').decode(u8)); } catch (_) { }
+        break;
+      }
+    }
+    // ④ 厳密 UTF-8
     let utf8Text = '';
     try {
       utf8Text = new TextDecoder('utf-8', { fatal: true }).decode(u8);
@@ -67,28 +78,37 @@
         return normLn(utf8Text);
       }
     } catch (_) { }
+    // ⑤ Shift_JIS / EUC-JP / UTF-8 スコアリング比較
     const tryDec = (enc, fatal) => {
       try { return new TextDecoder(enc, { fatal: !!fatal }).decode(u8); } catch (_) { return null; }
     };
     const scoreText = s => {
-      if (s == null) return -1e9;
+      if (s == null) return -1e12;
+      const hira = (s.match(/[\u3041-\u3096]/g) || []).length;
+      const kata = (s.match(/[\u30A1-\u30FA\u30FC]/g) || []).length;
+      const kanji = (s.match(/[\u3400-\u4DBF\u4E00-\u9FFF\u3005]/g) || []).length;
+      const jpPunct = (s.match(/[、。・「」『』（）【】《》〈〉！？：；]/g) || []).length;
       const bad = (s.match(/\uFFFD/g) || []).length;
       const ctrl = (s.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g) || []).length;
-      const hira = (s.match(/[\u3041-\u3096]/g) || []).length;
-      const jp = (s.match(/[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g) || []).length;
-      return hira * 3 + jp - (bad + ctrl) * 20;
+      const halfRuns = s.match(/[\uFF61-\uFF9F]{2,}/g) || [];
+      let halfKata = 0;
+      for (let i = 0; i < halfRuns.length; i++) halfKata += halfRuns[i].length;
+      const latinExt = (s.match(/[\u0080-\u024F]/g) || []).length;
+      return hira * 4 + kata * 2 + kanji * 2 + jpPunct * 2 - bad * 50 - ctrl * 50 - halfKata * 8 - latinExt * 12;
     };
-    const sjFatal = tryDec('shift-jis', true);
-    if (sjFatal != null && !sjFatal.includes('\uFFFD') && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/.test(sjFatal)) {
-      return normLn(sjFatal);
-    }
     const candidates = [
-      tryDec('shift-jis', false),
-      tryDec('euc-jp', true),
-      utf8Text || tryDec('utf-8', false)
-    ].filter(x => x != null);
-    candidates.sort((a, b) => scoreText(b) - scoreText(a));
-    return normLn(candidates[0] || '');
+      { text: tryDec('shift_jis', true), strict: true },
+      { text: tryDec('shift_jis', false), strict: false },
+      { text: tryDec('euc-jp', true), strict: true },
+      { text: tryDec('euc-jp', false), strict: false },
+      { text: utf8Text || tryDec('utf-8', false), strict: false }
+    ].filter(c => c.text != null);
+    let best = null, bestScore = -1e15;
+    for (const c of candidates) {
+      const sc = scoreText(c.text) + (c.strict ? 1 : 0);
+      if (sc > bestScore) { bestScore = sc; best = c; }
+    }
+    return normLn(best ? best.text : '');
   }
   function japaneseCharRatio(text) {
     const nw = String(text || '').replace(/\s+/g, '');
@@ -1303,7 +1323,7 @@
   /** 1ページ分のテキスト（ルビ除外・2段組整列済み）。items も返す */
   async function pageText(doc, n, opts) {
     const page = await doc.getPage(n), vp = page.getViewport({ scale: 1 }), tc = await page.getTextContent();
-    const text = T.extractRectText(tc.items, vp.transform, 1, { x: 0, y: 0, w: vp.width, h: vp.height }, Object.assign({ excludeRuby: true, twoColumn: true, pageH: vp.height }, opts || {}));
+    const text = T.extractRectText(tc.items, vp.transform, 1, { x: 0, y: 0, w: vp.width, h: vp.height }, Object.assign({ excludeRuby: true, twoColumn: true, pageW: vp.width, pageH: vp.height }, opts || {}));
     try { if (typeof page.cleanup === 'function') page.cleanup(); } catch (_) { }
     return { text, items: tc.items };
   }
@@ -1324,7 +1344,10 @@
       let truncated = total > maxPages;
       for (let p = 1; p <= limit; p++) {
         const r = await pageText(doc, p);
-        const body = NF(r.text || '').replace(/[\uE000-\uF8FF]/g, '').trim();
+        const cleaned = (T && typeof T.cleanText === 'function')
+          ? T.cleanText(r.text || '', { joinLines: 'smart', stripSpaces: true })
+          : (r.text || '');
+        const body = NF(cleaned).replace(/[\uE000-\uF8FF]/g, '').trim();
         const seg = (parts.length ? '\n\n' : '') + `=== P.${p} ===\n` + body;
         if (len + seg.length > maxChars) {
           const remain = maxChars - len;
@@ -1346,16 +1369,23 @@
       try { if (doc) await doc.destroy(); } catch (_) { }
     }
   }
-  /** PDF またはテキスト系資料（.txt/.md/.html）から全文テキストを抽出する */
+  /** PDF またはテキスト系資料（.txt/.md/.html/.docx）から全文テキストを抽出する */
   async function extractFullTextFromDoc(filePathOrBytes, opts) {
     const o = opts || {};
     const name = o.name || (typeof filePathOrBytes === 'string' ? scanBaseName(filePathOrBytes) : '');
     const maxChars = Math.max(1000, Number(o.maxChars) || 250000);
-    if (T.TEXT_DOC_RE && T.TEXT_DOC_RE.test(name)) {
+    if ((T.TEXT_DOC_RE && T.TEXT_DOC_RE.test(name)) || /\.docx(?:\.txt)?$/i.test(name)) {
       const bytes = await readTextDocBytes(filePathOrBytes);
-      let txt = '';
-      if (T.loadTextDoc) txt = T.loadTextDoc(name, bytes).text || '';
-      else txt = decodeTextBytes(bytes);
+      let loaded = null;
+      if (T.loadTextDocAsync) loaded = await T.loadTextDocAsync(name, bytes);
+      else if (T.loadTextDoc) loaded = T.loadTextDoc(name, bytes);
+      if (loaded && loaded.isBinaryError) {
+        return { text: '', pageCount: 1, extractedPages: 0, truncated: false, isBinaryError: true };
+      }
+      let txt = loaded ? (loaded.text || '') : decodeTextBytes(bytes);
+      if (T && typeof T.cleanText === 'function') {
+        txt = T.cleanText(txt, { joinLines: 'smart', stripSpaces: true });
+      }
       txt = NF(txt).replace(/[\uE000-\uF8FF]/g, '').trim();
       const truncated = txt.length > maxChars;
       if (truncated) txt = txt.slice(0, maxChars);
@@ -1396,12 +1426,18 @@
     const run = async (p, isMain) => {
       const bName = scanBaseName(p);
       const allowSyn = synAllowedPaths.has(p);
-      if (/\.(?:txt|md|markdown|html?)$/i.test(bName)) {
+      if (/\.(?:txt|md|markdown|html?|docx)$/i.test(bName)) {
         try {
           const bytes = await readTextDocBytes(p);
-          let txt = decodeTextBytes(bytes);
-          if (/\.html?$/i.test(bName)) txt = txt.replace(/<[^>]+>/g, '\n');
-          specs.push(extractSpec(txt.slice(0, 8000), { skipSynopsis: !allowSyn }));
+          let txt = '';
+          if (T && typeof T.loadTextDocAsync === 'function') {
+            const loaded = await T.loadTextDocAsync(bName, bytes);
+            txt = (loaded && !loaded.isBinaryError) ? (loaded.text || '') : '';
+          } else {
+            txt = decodeTextBytes(bytes);
+            if (/\.html?$/i.test(bName)) txt = txt.replace(/<[^>]+>/g, '\n');
+          }
+          if (txt) specs.push(extractSpec(txt.slice(0, 8000), { skipSynopsis: !allowSyn }));
         } catch (e) { console.warn('[ccf] テキスト解析に失敗', p, e); }
         return;
       }
@@ -1473,7 +1509,7 @@
     add(cur);
     (S.proj.refs || []).filter(r => r.type === 'pdf' || r.type === 'doc').forEach(r => add(r.path, r.name));
     if (fsx && pathx && typeof DATA_ROOT !== 'undefined' && DATA_ROOT) {
-      try { const sc = CCF.scenarioList().find(x => String(x.id) === S.key); ((sc && sc.docs) || []).filter(d => /\.(pdf|txt|html?|md)$/i.test(d.name || '')).forEach(d => add(pathx.resolve(DATA_ROOT, d.rel), d.name)); } catch (e) { /* noop */ }
+      try { const sc = CCF.scenarioList().find(x => String(x.id) === S.key); ((sc && sc.docs) || []).filter(d => /\.(pdf|txt|html?|md|markdown|docx)$/i.test(d.name || '')).forEach(d => add(pathx.resolve(DATA_ROOT, d.rel), d.name)); } catch (e) { /* noop */ }
     }
     scenarioDocTexts().forEach(dt => add('doc-text://' + dt.id, dt.name, dt));
     return list;
@@ -1542,7 +1578,7 @@
       W.results.push({ pdf: tg.name, path: tg.path, page: pg, name: po.name, text: '名前: ' + po.name + '\n（ステータスなし・立ち絵のみ）', score: 0, checked: true, portraits: po.files, noStats: true });
     });
     const splitDocTextPages = raw => {
-      const text = String(raw || '');
+      const text = String(raw || '').replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n');
       const re = /^=== P\.(\d+) ===\s*$/gm;
       const matches = [...text.matchAll(re)];
       if (!matches.length) {
@@ -1588,9 +1624,11 @@
           }
           continue;
         }
-        if (T.TEXT_DOC_RE.test(scanBaseName(targets[t].path))) {   // .txt/.html/.htm/.md：文字コード自動判別して、空行区切りで擬似ページ化
+        if (T.TEXT_DOC_RE.test(scanBaseName(targets[t].path))) {   // .txt/.html/.htm/.md/.docx：文字コード自動判別・Word本文抽出して、空行区切りで擬似ページ化
           const rawBytes = isAssetRef(targets[t].path) && window.WebBridge ? await WebBridge.readAssetBytes(targets[t].path) : fsx.readFileSync(targets[t].path);
-          const tx = T.loadTextDoc(scanBaseName(targets[t].path), rawBytes).text, chunk = tx.split('\n'), per = 120;
+          const loaded = T.loadTextDocAsync ? await T.loadTextDocAsync(scanBaseName(targets[t].path), rawBytes) : T.loadTextDoc(scanBaseName(targets[t].path), rawBytes);
+          if (loaded && loaded.isBinaryError) continue;
+          const tx = (loaded && loaded.text) || '', chunk = tx.split('\n'), per = 120;
           for (let k = 0, n = 1; k < chunk.length && !W.cancel; k += per - 10, n++) {
             const seg = chunk.slice(k, k + per).join('\n'); pages++;
             detectNpcBlocks(seg, sysId, N).forEach(b => { if (!W.results.some(r => r.path === targets[t].path && r.text === b.text)) W.results.push({ pdf: targets[t].name, path: targets[t].path, page: n, name: b.name, text: b.text, score: b.score, checked: true, fromHead: !!b.fromHead }); });

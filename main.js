@@ -17,6 +17,9 @@ ccf.ensureDataDirs(DATA_ROOT);
 // 独自プロトコル zipview:// の権限登録は、app の ready より前に行う必要がある
 ccf.registerSchemes();
 
+// レンダラープロセスのV8ヒープ上限を4GBに引き上げ（クラウド同期時のメモリ枯渇防止）
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=4096');
+
 let mainWindow = null, ccfMain = null;
 let allowWindowClose = false;
 let closeAckReceived = false;
@@ -42,6 +45,32 @@ function createWindow() {
   };
   win.once('ready-to-show', showWindowNow);
   win.webContents.once('dom-ready', showWindowNow);
+  win.webContents.on('render-process-gone', (_e, details) => {
+    const reason = (details && details.reason) || 'unknown';
+    const exitCode = (details && details.exitCode !== undefined) ? details.exitCode : 'unknown';
+    console.error(`[main] render-process-gone: reason=${reason}, exitCode=${exitCode}`, details);
+    if (reason === 'clean-exit') return;
+    if (win.isDestroyed()) return;
+    dialog.showMessageBox(win, {
+      type: 'error',
+      title: '卓工房 - 画面プロセス異常終了',
+      message: '表示プロセスが予期せず終了しました。',
+      detail: `原因: ${reason} (exitCode: ${exitCode})\n「再読み込み」を押すと復帰を試みます。`,
+      buttons: ['再読み込み', '閉じる'],
+      defaultId: 0,
+      cancelId: 1
+    }).then(({ response }) => {
+      if (win.isDestroyed()) return;
+      if (response === 0) {
+        win.loadFile(path.join(__dirname, 'index.html'));
+      } else {
+        allowWindowClose = true;
+        win.close();
+      }
+    }).catch((err) => {
+      console.error('[main] render-process-gone dialog error:', err);
+    });
+  });
   win.loadFile(path.join(__dirname, 'index.html'));
   win.on('close', (e) => {
     if (allowWindowClose) return;
@@ -117,6 +146,32 @@ function buildGoogleAuthHtml(firebaseConfig, authOptions) {
     <p id="msg">Googleの認証画面を開いています…</p>
     <button id="retryBtn" type="button">Googleログイン画面を開く</button>
   </div>
+  <script>
+    (function () {
+      let sent = false;
+      function sendAuthError(msg) {
+        if (sent) return;
+        sent = true;
+        try {
+          fetch('/callback', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ok: false, code: 'auth/internal-error', message: String(msg || '認証エラーが発生しました') })
+          }).catch(function () {});
+        } catch (_) {}
+      }
+      window.__sendAuthCallbackError = sendAuthError;
+      window.addEventListener('error', function (ev) {
+        const msg = (ev && (ev.message || (ev.error && ev.error.message))) || 'スクリプトの読み込みに失敗しました。';
+        sendAuthError(msg);
+      });
+      window.addEventListener('unhandledrejection', function (ev) {
+        const r = ev && ev.reason;
+        const msg = (r && r.message) ? r.message : String(r || '非同期認証エラーが発生しました。');
+        sendAuthError(msg);
+      });
+    })();
+  </script>
   <script type="module">
     import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js';
     import { getAuth, GoogleAuthProvider, signInWithPopup } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js';
@@ -128,7 +183,10 @@ function buildGoogleAuthHtml(firebaseConfig, authOptions) {
     const app = initializeApp(cfg);
     const auth = getAuth(app);
 
+    let callbackSent = false;
     async function sendResult(payload) {
+      if (callbackSent) return;
+      callbackSent = true;
       try {
         await fetch('/callback', {
           method: 'POST',
@@ -309,6 +367,17 @@ ipcMain.handle('auth:google-login', async (event, arg) => {
         });
       });
 
+      authWin.webContents.on('did-fail-load', (_e, code, desc) => finish({
+        ok: false,
+        code: 'auth/network-request-failed',
+        message: '認証ページの読み込みに失敗しました: ' + desc + ' (' + code + ')'
+      }));
+      authWin.webContents.on('render-process-gone', (_e, d) => finish({
+        ok: false,
+        code: 'auth/internal-error',
+        message: '認証ウィンドウが異常終了しました: ' + (d && d.reason || '')
+      }));
+
       authWin.on('closed', () => {
         authWin = null;
         finish({ ok: false, code: 'auth/popup-closed-by-user', message: 'ログイン画面が閉じられました。' });
@@ -318,6 +387,10 @@ ipcMain.handle('auth:google-login', async (event, arg) => {
         silentTimer = setTimeout(() => {
           finish({ ok: false, code: 'auth/silent-timeout', message: 'サイレント認証がタイムアウトしました。' });
         }, 12000);
+      } else {
+        silentTimer = setTimeout(() => {
+          finish({ ok: false, code: 'auth/timeout', message: 'Googleログインがタイムアウトしました。' });
+        }, 180000);
       }
 
       authWin.loadURL(`http://localhost:${port}/`).catch((err) => {

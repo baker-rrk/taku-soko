@@ -28,12 +28,15 @@
   const isAssetRef = p => !!(window.WebBridge && WebBridge.isAssetRef(p));
   const isCloudRef = p => !!(window.CloudSync && CloudSync.isCloudAssetRef && CloudSync.isCloudAssetRef(p));
   const isDocTextRef = p => /^doc-text:\/\//i.test(String(p || ''));
+  const isMissingDocRef = p => /^missing-doc:\/\//i.test(String(p || ''));
   const baseName = p => {
     if (isDocTextRef(p)) { const dt = findDocTextForPath(p); return (dt && dt.name) || '同期テキスト'; }
+    if (isMissingDocRef(p)) { try { return decodeURIComponent(String(p).slice('missing-doc://'.length)) || '資料'; } catch (_) { return String(p).slice('missing-doc://'.length) || '資料'; } }
     if (isCloudRef(p)) { const parsed = CloudSync.parseCloudAssetRef(p); return (parsed && parsed.name) || 'asset'; }
     return isAssetRef(p) ? WebBridge.assetBasename(p) : ((IS_ELECTRON && path) ? path.basename(p) : String(p || '').split(/[\\/]/).pop());
   };
   const normDocTextName = s => String(s || '').normalize('NFKC').trim().toLowerCase();
+  const normDocTextStem = s => normDocTextName(s).replace(/\.(?:pdf|txt|md|markdown|html?|docx?)$/i, '').trim();
   function findDocTextForPath(p, name) {
     try {
       const sc = scenarioObj(S && S.key);
@@ -45,17 +48,23 @@
         const byId = list.find(d => d && d.text && String(d.id || '') === id);
         if (byId) return byId;
       }
-      const rawName = name || (isCloudRef(sp) ? ((CloudSync.parseCloudAssetRef(sp) || {}).name || '') : (isAssetRef(sp) ? WebBridge.assetBasename(sp) : sp.split(/[\\/]/).pop()));
+      const rawName = name || (isMissingDocRef(sp) ? baseName(sp) : (isCloudRef(sp) ? ((CloudSync.parseCloudAssetRef(sp) || {}).name || '') : (isAssetRef(sp) ? WebBridge.assetBasename(sp) : sp.split(/[\\/]/).pop())));
       const nm = normDocTextName(rawName);
-      return nm ? (list.find(d => d && d.text && normDocTextName(d.name) === nm) || null) : null;
+      if (!nm) return null;
+      const exact = list.find(d => d && d.text && normDocTextName(d.name) === nm);
+      if (exact) return exact;
+      const stem = normDocTextStem(nm);
+      return stem ? (list.find(d => d && d.text && normDocTextStem(d.name) === stem) || null) : null;
     } catch (_) { return null; }
   }
   const canOpenLocalOrCloudDoc = p => {
     if (!p || isDocTextRef(p)) return false;
     const canCloud = !!(window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud());
-    if (isCloudRef(p)) return canCloud || !!(window.CloudSync && CloudSync.isAssetRefLocallyCachedSync && CloudSync.isAssetRefLocallyCachedSync(p));
+    const hasLocalResolved = () => !!(IS_ELECTRON && fs && CCF.assets && typeof CCF.assets.resolveScenarioLocalDocPath === 'function' && CCF.assets.resolveScenarioLocalDocPath(S && S.key, p));
+    if (isMissingDocRef(p)) return hasLocalResolved() || canCloud;
+    if (isCloudRef(p)) return canCloud || !!(window.CloudSync && CloudSync.isAssetRefLocallyCachedSync && CloudSync.isAssetRefLocallyCachedSync(p)) || hasLocalResolved();
     if (isAssetRef(p)) return !window.WebBridge || WebBridge.hasAssetSync(p) || canCloud;
-    return !!(IS_ELECTRON && fs && (fs.existsSync(p) || canCloud));
+    return !!(IS_ELECTRON && fs && (fs.existsSync(p) || hasLocalResolved() || canCloud));
   };
   const canOpenDocPath = p => !!(canOpenLocalOrCloudDoc(p) || findDocTextForPath(p));
   CCF.safeKey = safeKey; CCF.APP_DIR = APP_DIR;
@@ -451,13 +460,13 @@
       const sc = scenarioObj(S.key), curRoom = S.rooms.find(r => r.id === S.roomId);
       scBox.innerHTML = `<div class="ccf-scene-card-head">
         <div><b>🎬 部屋・シーン構築</b> <span class="ccf-muted">${esc(sc ? (sc.title || '無題') : '（シナリオ未選択）')} / ${esc(curRoom ? curRoom.name : 'メイン部屋')}</span></div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <div class="ccf-scene-card-acts">
           <button type="button" class="ccf-btn accent" data-scene-act="dummy"${S.proj.stocks.length ? '' : ' disabled'}>🧩 ダミー駒を生成</button>
           <button type="button" class="ccf-btn" data-scene-act="add-room">＋ 新規部屋</button>
           <button type="button" class="ccf-btn" data-scene-act="dup-room">📋 部屋を複製</button>
-          <button type="button" class="ccf-btn accent" data-scene-act="zip-export" title="ココフォリア v1.1.0 形式のルーム／駒ZIPを書き出し（欲しい要素だけ選べます）">📦 ココフォリアZIP出力</button>
-          <button type="button" class="ccf-btn" data-scene-act="zip-import" title="ココフォリアから出力したルームZIPを部屋として取り込む（ZIPのドラッグ＆ドロップでも可）">📥 ココフォリアZIPを取り込む</button>
-          <button type="button" class="ccf-btn" data-scene-act="doc-export" title="GM進行用HTML／しおり付きPDF／整形TXT">📤 シナリオ資料を再出力</button>
+          <button type="button" class="ccf-btn accent" data-scene-act="zip-export" title="ココフォリア v1.1.0 形式のルーム／駒ZIP、または素材＆セトリZIP・使用BGM別ZIPを書き出します">📦 ZIP出力</button>
+          <button type="button" class="ccf-btn" data-scene-act="zip-import" title="ココフォリアから出力したルームZIPを部屋として取り込む（ZIPのドラッグ＆ドロップでも可）">📥 ルームZIP取込</button>
+          <button type="button" class="ccf-btn" data-scene-act="doc-export" title="GM進行用HTML／しおり付きPDF／整形TXT">📤 資料再出力</button>
         </div>
       </div>
       <div class="ccf-muted">シーン ${(S.proj.scenes || []).length}件 / カットイン ${(S.proj.cutins || []).length}件 / テキスト ${S.proj.stocks.length}件 / NPC ${S.proj.npcs.length}体 / しおり ${(S.proj.bookmarks || []).length}件</div>`;
@@ -597,73 +606,226 @@
     const sc = scenarioList().find(x => String(x.id) === S.key);
     const scDocsCount = (sc && Array.isArray(sc.docs)) ? sc.docs.length : 0;
     const scDocTextsCount = (sc && Array.isArray(sc.docTexts)) ? sc.docTexts.length : 0;
+    const scCatalogCount = (sc && Array.isArray(sc.assetCatalog)) ? sc.assetCatalog.length : 0;
     const refsCount = (S.proj && Array.isArray(S.proj.refs)) ? S.proj.refs.length : 0;
     const curPdfPath = (S.proj && S.proj.pdf && S.proj.pdf.path) ? String(S.proj.pdf.path) : '';
-    const cacheKey = `${S.key}|${scDocsCount}|${scDocTextsCount}|${refsCount}|${curPdfPath}`;
-    const kindOf = n => { const m = /\.([a-z0-9]+)$/i.exec(n); const e = (m ? m[1] : '').toLowerCase(); return e === 'pdf' ? ['📕', 'PDF'] : e === 'txt' ? ['📃', 'TXT'] : e === 'md' ? ['📝', 'MD'] : ['🌐', 'HTML']; };
+    const scSourcePath = (sc && sc.sourcePath) ? String(sc.sourcePath) : '';
+    const watchRoot = (() => {
+      if (!IS_ELECTRON) return '';
+      const fromLib = (CCF.library && typeof CCF.library.getScenarioWatchRoot === 'function') ? String(CCF.library.getScenarioWatchRoot() || '').trim() : '';
+      if (fromLib) return fromLib;
+      const fromState = (typeof appState !== 'undefined' && appState && appState.watchFolders && appState.watchFolders.scenarioRoot) ? String(appState.watchFolders.scenarioRoot || '').trim() : '';
+      if (fromState) return fromState;
+      try { return String(localStorage.getItem('ccf_scenario_watch_root') || localStorage.getItem('ccf_scn_watch_root') || '').trim(); } catch (_) { return ''; }
+    })();
+    const canCloud = !!(window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud());
+    const cacheKey = `${S.key}|${scDocsCount}|${scDocTextsCount}|${scCatalogCount}|${refsCount}|${curPdfPath}|${scSourcePath}|${watchRoot}|${canCloud ? 1 : 0}`;
+    const kindOf = n => { const m = /\.([a-z0-9]+)$/i.exec(n); const e = (m ? m[1] : '').toLowerCase(); return e === 'pdf' ? ['📕', 'PDF'] : e === 'docx' ? ['📘', 'DOCX'] : e === 'txt' ? ['📃', 'TXT'] : (e === 'md' || e === 'markdown') ? ['📝', 'MD'] : ['🌐', 'HTML']; };
     const formatDocs = base => base.map(it => {
       const [ic, tg] = kindOf(it.name);
-      const syncTag = (it.isDocText || (!canOpenLocalOrCloudDoc(it.path) && findDocTextForPath(it.path, it.name))) ? '（同期テキスト）' : '';
+      const canOpenBody = canOpenLocalOrCloudDoc(it.path);
+      const syncTag = (it.isDocText || (!canOpenBody && findDocTextForPath(it.path, it.name)))
+        ? '（同期テキスト）'
+        : ((isMissingDocRef(it.path) && !canOpenBody) ? '（別PC保存）' : '');
       return { value: it.path, label: (it.isMain ? '⭐ ' : '') + ic + ' ' + it.name + ' [' + tg + ']' + syncTag + (S.proj.pdfPos && S.proj.pdfPos[it.path] && S.proj.pdfPos[it.path].page > 1 ? '（p.' + S.proj.pdfPos[it.path].page + '）' : '') };
     });
     if (docListCache.base && docListCache.key === cacheKey) {
       return formatDocs(docListCache.base);
     }
     const items = [], byName = new Map(), seenP = new Set();
-    const DOCRE = /\.(pdf|txt|md|html?)$/i;
-    const isLocalP = p => !!p && !isCloudRef(p) && !isAssetRef(p);
+    const DOCRE = /\.(pdf|txt|md|markdown|html?|docx)$/i;
+    const UNSUPPORTED_DOC_RE = /\.doc(?:\.txt)?$/i;
+    const HAS_ANY_EXT_RE = /\.[a-z0-9]{1,8}$/i;
+    const fixDocxSpoof = s => String(s || '').replace(/\.docx\.txt$/i, '.docx');
+    const isUnsupportedWordDoc = (...vals) => vals.some(v => {
+      const s = String(v || '').trim();
+      if (!s) return false;
+      return UNSUPPORTED_DOC_RE.test(s) || UNSUPPORTED_DOC_RE.test(baseName(s));
+    });
+    const exists = p => { try { return !!(fs && fs.existsSync(p)); } catch (e) { return false; } };
+    const isZipViewRef = p => /^zipview:\/\//i.test(String(p || ''));
+    const isLocalP = p => !!p && !isCloudRef(p) && !isAssetRef(p) && !isZipViewRef(p) && !isDocTextRef(p) && !isMissingDocRef(p);
+    const isRealLocalP = p => isLocalP(p) && IS_ELECTRON && exists(p);
+    const resolveLocalFallback = (candPath, candName) => {
+      if (!(IS_ELECTRON && fs && CCF.assets && typeof CCF.assets.resolveScenarioLocalDocPath === 'function')) return '';
+      const hit = (candName ? CCF.assets.resolveScenarioLocalDocPath(S.key, candName) : '')
+        || (candPath ? CCF.assets.resolveScenarioLocalDocPath(S.key, candPath) : '');
+      return (hit && exists(hit)) ? hit : '';
+    };
+    const pathRank = p => {
+      if (!p) return 0;
+      if (isRealLocalP(p) || isAssetRef(p) || isZipViewRef(p)) return 4;
+      if (isCloudRef(p)) return 3;
+      if (isMissingDocRef(p)) return canCloud ? 3 : 1;
+      if (isDocTextRef(p)) return 2;
+      return canCloud ? 3 : 1;
+    };
     const nameWithExt = (nm, p, ext) => {
-      let n = String(nm || '') || baseName(p || '');
+      const cleanExt = String(ext || '').replace(/^\./, '');
+      if (isUnsupportedWordDoc(nm, p) || /^doc$/i.test(cleanExt)) return '';
+      let n = fixDocxSpoof(String(nm || '').trim() || baseName(p || ''));
       if (DOCRE.test(n)) return n;
-      const bp = baseName(p || ''); if (DOCRE.test(bp)) return bp;
-      if (ext) return (n || bp || 'doc') + '.' + String(ext).replace(/^\./, '');
-      return n || bp;
+      const bp = fixDocxSpoof(baseName(p || ''));
+      if (DOCRE.test(bp)) return bp;
+      const base = n || bp;
+      if (!base) return '';
+      if (HAS_ANY_EXT_RE.test(base)) return base;
+      if (cleanExt) return base + '.' + cleanExt;
+      return base;
     };
     const add = (p, name, ext) => {
       if (!p) return;
-      const nm = nameWithExt(name, p, ext); if (!DOCRE.test(nm)) return;
-      const pk = String(p).toLowerCase(), nk = nm.toLowerCase();
+      if (isUnsupportedWordDoc(name, p) || /^doc$/i.test(String(ext || '').replace(/^\./, ''))) return;
+      const nm = nameWithExt(name, p, ext); if (!nm || !DOCRE.test(nm) || /\.doc\.[a-z0-9]{1,8}$/i.test(nm)) return;
+      const pk = String(p).toLowerCase(), nk = normDocTextName(nm);
       if (seenP.has(pk)) return;
       const ex = byName.get(nk);
-      if (ex) { if (!isLocalP(ex.path) && isLocalP(p)) { seenP.delete(String(ex.path).toLowerCase()); ex.path = p; seenP.add(pk); } return; }
-      seenP.add(pk); const it = { path: p, name: nm }; byName.set(nk, it); items.push(it);
+      if (ex) {
+        if (pathRank(p) > pathRank(ex.path)) {
+          seenP.delete(String(ex.path).toLowerCase());
+          ex.path = p;
+          ex.isDocText = isDocTextRef(p);
+          seenP.add(pk);
+        }
+        return;
+      }
+      seenP.add(pk);
+      const it = { path: p, name: nm, isDocText: isDocTextRef(p) };
+      byName.set(nk, it);
+      items.push(it);
     };
-    const exists = p => { try { return !!(fs && fs.existsSync(p)); } catch (e) { return false; } };
-    const scanDir = (dir, depth) => {
+    const isOldScanName = n => {
+      if (!n) return false;
+      if (M && typeof M.isOldFolderName === 'function' && M.isOldFolderName(n)) return true;
+      if (CCF.dnd && typeof CCF.dnd.isOldVersionName === 'function' && CCF.dnd.isOldVersionName(n)) return true;
+      return false;
+    };
+    const scanDir = (dir, depth, skipOld) => {
       if (!(IS_ELECTRON && fs && dir && exists(dir))) return;
       let ents = []; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
-      ents.forEach(e => { const fp = path.join(dir, e.name); if (e.isDirectory()) { if (depth > 1 && !/^(node_modules|\.)/.test(e.name)) scanDir(fp, depth - 1); } else if (DOCRE.test(e.name)) add(fp, e.name); });
+      let rows = [];
+      for (const e of ents) {
+        const n = e.name || '';
+        if (!n || n.startsWith('.') || /^~\$/.test(n) || n === 'node_modules' || n === '__MACOSX' || n === '_TRPG_Data') continue;
+        const isDir = e.isDirectory();
+        if (skipOld && isOldScanName(n)) continue;
+        if (!isDir && !DOCRE.test(n)) continue;
+        const fp = path.join(dir, n);
+        let mtime = 0;
+        if (skipOld) { try { mtime = fs.statSync(fp).mtimeMs || 0; } catch (_) { } }
+        rows.push({ name: n, isDir, fp, mtime });
+      }
+      if (skipOld && rows.length > 1 && CCF.dnd && typeof CCF.dnd.filterLatestVersionEntries === 'function') {
+        rows = CCF.dnd.filterLatestVersionEntries(rows);
+      }
+      rows.forEach(r => {
+        if (r.isDir) {
+          if (depth > 1) scanDir(r.fp, depth - 1, skipOld);
+        } else {
+          add(r.fp, r.name);
+        }
+      });
     };
     ((sc && sc.docs) || []).forEach(d => {
       if (!d) return;
+      if (isUnsupportedWordDoc(d.origName, d.name, d.path, d.ref, d.rel) || /^doc$/i.test(String(d.ext || '').replace(/^\./, ''))) return;
       const rawNm = d.origName || d.name || baseName(d.path || d.ref || d.rel || '') || (d.ext ? (d.name + '.' + d.ext) : '');
       const nm = nameWithExt(rawNm, d.path || d.ref || d.rel, d.ext);
-      if (!DOCRE.test(nm)) return;
+      if (!nm || !DOCRE.test(nm)) return;
       let addedLocal = false;
       if (IS_ELECTRON && path && DATA_ROOT && d.rel) {
         try { const abs = path.resolve(DATA_ROOT, d.rel); if (exists(abs)) { add(abs, nm); addedLocal = true; } } catch (e) { if (typeof logSoft === 'function') logSoft('docListDocs', e); }
       }
       if (!addedLocal && d.path && isLocalP(d.path) && exists(d.path)) { add(d.path, nm); addedLocal = true; }
+      if (!addedLocal) {
+        const localHit = resolveLocalFallback(d.path || d.ref || d.rel || '', nm);
+        if (localHit) { add(localHit, nm); addedLocal = true; }
+      }
       if (!addedLocal && d.ref) add(d.ref, nm);
       if (!addedLocal && d.cloudSha) add(`cloud-asset://${d.cloudSha}/${encodeURIComponent(nm)}`, nm);
       if (!addedLocal && d.path) add(d.path, nm);
     });
-    if (IS_ELECTRON && path && DATA_ROOT && sc && sc.id) scanDir(path.join(DATA_ROOT, 'scenarios', safeKey(sc.id)), 2);
-    const docLike = it => it && (it.type === 'pdf' || it.type === 'doc' || DOCRE.test(it.origName || it.name || it.path || ''));
-    const addRef = r => { if (r && (r.type === 'pdf' || r.type === 'doc' || DOCRE.test(r.origName || r.name || r.path || ''))) add(r.path || (r.cloudSha ? `cloud-asset://${r.cloudSha}/${encodeURIComponent(nameWithExt(r.origName || r.name, r.path, r.type === 'pdf' ? 'pdf' : 'txt'))}` : ''), r.origName || r.name, r.type === 'pdf' ? 'pdf' : ''); };
+    if (IS_ELECTRON && path && DATA_ROOT && sc && sc.id) scanDir(path.join(DATA_ROOT, 'scenarios', safeKey(sc.id)), 6, false);
+    const docLike = it => it && !isUnsupportedWordDoc(it.origName, it.name, it.path, it.ref, it.value) && (it.type === 'pdf' || it.type === 'doc' || DOCRE.test(it.origName || it.name || it.path || ''));
+    const addRef = r => {
+      if (!r || isUnsupportedWordDoc(r.origName, r.name, r.path)) return;
+      if (r.type === 'pdf' || r.type === 'doc' || DOCRE.test(r.origName || r.name || r.path || '')) {
+        const extHint = r.type === 'pdf' ? 'pdf' : (r.type === 'doc' ? 'txt' : '');
+        const rawNm = r.origName || r.name;
+        const nmWithExt = nameWithExt(rawNm, r.path, extHint || 'txt');
+        if (!nmWithExt || !DOCRE.test(nmWithExt)) return;
+        let p = r.path || '';
+        if (!isRealLocalP(p)) {
+          const localHit = resolveLocalFallback(p, nmWithExt || rawNm);
+          if (localHit) p = localHit;
+        }
+        add(p || (r.cloudSha ? `cloud-asset://${r.cloudSha}/${encodeURIComponent(nmWithExt)}` : ''), rawNm, extHint);
+      }
+    };
     (S.proj.refs || []).forEach(addRef);
     (S.rooms || []).forEach(rm => ((rm && rm.project && rm.project.refs) || []).forEach(addRef));
     ((sc && sc.ccfRooms) || []).forEach(rm => ((rm && rm.project && rm.project.refs) || []).forEach(addRef));
     try {
-      (CCF.assets && CCF.assets.getUnifiedItems ? CCF.assets.getUnifiedItems(S.key) : []).filter(docLike).forEach(it => add(it.path || it.ref || it.value, it.origName || it.name, it.type === 'pdf' ? 'pdf' : ''));
+      (CCF.assets && CCF.assets.getUnifiedItems ? CCF.assets.getUnifiedItems(S.key) : []).filter(docLike).forEach(it => {
+        const extHint = it.type === 'pdf' ? 'pdf' : (it.type === 'doc' ? 'txt' : '');
+        const rawNm = it.origName || it.name || '';
+        let p = it.path || it.ref || it.value || '';
+        if (isUnsupportedWordDoc(rawNm, p)) return;
+        const nmWithExt = nameWithExt(rawNm, p, extHint);
+        if (!nmWithExt || !DOCRE.test(nmWithExt)) return;
+        if (!isRealLocalP(p)) {
+          const localHit = resolveLocalFallback(p, nmWithExt || rawNm);
+          if (localHit) p = localHit;
+        }
+        if (!p) {
+          const missNm = nmWithExt || rawNm;
+          if (canCloud && missNm) {
+            p = 'missing-doc://' + encodeURIComponent(missNm);
+          } else {
+            const dt = findDocTextForPath('', missNm);
+            if (dt) {
+              add('doc-text://' + String(dt.id || dt.name), nmWithExt || dt.name, extHint);
+              return;
+            }
+            if (missNm) p = 'missing-doc://' + encodeURIComponent(missNm);
+          }
+        }
+        add(p, rawNm, extHint);
+      });
     } catch (e) { if (typeof logSoft === 'function') logSoft('docListUnified', e); }
-    if (S.proj.pdf && S.proj.pdf.path) add(S.proj.pdf.path);
-    if (IS_ELECTRON && sc && scDocsCount === 0 && sc.sourcePath && exists(sc.sourcePath)) scanDir(sc.sourcePath, 2);
+    if (S.proj.pdf && S.proj.pdf.path && !isUnsupportedWordDoc(S.proj.pdf.path)) {
+      const curP = S.proj.pdf.path;
+      const curHit = !isRealLocalP(curP) ? resolveLocalFallback(curP, baseName(curP)) : '';
+      add(curHit || curP);
+    }
+    if (IS_ELECTRON && sc && sc.sourcePath && exists(sc.sourcePath)) {
+      try {
+        const st = fs.statSync(sc.sourcePath);
+        if (st.isFile() && DOCRE.test(sc.sourcePath)) add(sc.sourcePath, path.basename(sc.sourcePath));
+        else if (st.isDirectory()) scanDir(sc.sourcePath, 6, true);
+      } catch (e) { scanDir(sc.sourcePath, 6, true); }
+    }
     ((sc && Array.isArray(sc.docTexts)) ? sc.docTexts : []).forEach(dt => {
       if (!dt || !dt.text || !dt.name) return;
+      if (isUnsupportedWordDoc(dt.name)) return;
       const nk = normDocTextName(dt.name);
-      if (!nk || byName.has(nk)) return;
+      if (!nk) return;
+      const ex = byName.get(nk);
+      const localHit = (!ex || pathRank(ex.path) < 4) ? resolveLocalFallback('', dt.name) : '';
+      if (localHit) {
+        add(localHit, dt.name);
+        return;
+      }
       const dp = 'doc-text://' + String(dt.id || dt.name);
+      if (ex) {
+        if (pathRank(dp) > pathRank(ex.path)) {
+          seenP.delete(String(ex.path).toLowerCase());
+          ex.path = dp;
+          ex.isDocText = true;
+          seenP.add(dp.toLowerCase());
+        }
+        return;
+      }
       const it = { path: dp, name: dt.name, isDocText: true };
       seenP.add(dp.toLowerCase());
       byName.set(nk, it);
@@ -671,7 +833,8 @@
     });
     let main = null; try { if (CCF.scan && items.length > 1) { const r = CCF.scan.pickMainPdf(items, sc ? sc.title : ''); main = r.main; const rest = r.ranked; items.length = 0; rest.forEach(x => items.push(x)); } } catch (e) { if (typeof logSoft === 'function') logSoft('pickMainPdf', e); }
     const base = items.map(it => ({ path: it.path, name: it.name, isMain: it === main, isDocText: !!it.isDocText }));
-    docListCache.key = cacheKey;
+    const finalSourcePath = (sc && sc.sourcePath) ? String(sc.sourcePath) : '';
+    docListCache.key = `${S.key}|${scDocsCount}|${scDocTextsCount}|${scCatalogCount}|${refsCount}|${curPdfPath}|${finalSourcePath}|${watchRoot}|${canCloud ? 1 : 0}`;
     docListCache.base = base;
     return formatDocs(base);
   }
@@ -747,8 +910,8 @@
       } else if (isCloudRef(docPath) && window.CloudSync && CloudSync.readCloudAssetBytes) {
         const buf = await CloudSync.readCloudAssetBytes(docPath, { download: true });
         if (buf) {
-          if (/\.(?:txt|md)$/i.test(baseName(docPath))) {
-            const d = T.loadTextDoc(baseName(docPath), buf);
+          if (/\.(?:txt|md|markdown|docx)$/i.test(baseName(docPath))) {
+            const d = T.loadTextDocAsync ? await T.loadTextDocAsync(baseName(docPath), buf) : T.loadTextDoc(baseName(docPath), buf);
             lines = SM.extractTxtLines(d.text);
           } else if (/\.html?$/i.test(baseName(docPath))) {
             const dec = T.decodeBytes(buf);
@@ -756,9 +919,9 @@
           }
         }
       } else if (isAssetRef(docPath) && window.WebBridge) {
-        if (/\.(?:txt|md)$/i.test(baseName(docPath))) {
+        if (/\.(?:txt|md|markdown|docx)$/i.test(baseName(docPath))) {
           const buf = await WebBridge.readAssetBytes(docPath);
-          const d = T.loadTextDoc(baseName(docPath), buf);
+          const d = T.loadTextDocAsync ? await T.loadTextDocAsync(baseName(docPath), buf) : T.loadTextDoc(baseName(docPath), buf);
           lines = SM.extractTxtLines(d.text);
         } else if (/\.html?$/i.test(baseName(docPath))) {
           const buf = await WebBridge.readAssetBytes(docPath);
@@ -766,9 +929,9 @@
           lines = SM.extractHtmlLines(dec.text);
         }
       } else if (IS_ELECTRON && typeof fs !== 'undefined' && fs.existsSync(docPath)) {
-        if (/\.(?:txt|md)$/i.test(docPath)) {
+        if (/\.(?:txt|md|markdown|docx)$/i.test(docPath)) {
           const buf = fs.promises ? await fs.promises.readFile(docPath) : fs.readFileSync(docPath);
-          const d = T.loadTextDoc(docPath, buf);
+          const d = T.loadTextDocAsync ? await T.loadTextDocAsync(docPath, buf) : T.loadTextDoc(docPath, buf);
           lines = SM.extractTxtLines(d.text);
         } else if (/\.html?$/i.test(docPath)) {
           const buf = fs.promises ? await fs.promises.readFile(docPath) : fs.readFileSync(docPath);
@@ -836,6 +999,7 @@
   let cloudCacheTimer = null;
   function needsImmediateCloudPdf(p) {
     if (!p) return false;
+    if (isDocTextRef(p) || isMissingDocRef(p)) return true;
     if (isCloudRef(p)) {
       return !(window.CloudSync && typeof CloudSync.isAssetRefLocallyCachedSync === 'function' && CloudSync.isAssetRefLocallyCachedSync(p));
     }
@@ -850,9 +1014,25 @@
 
   async function switchProject(key, targetRoomId, opts) {
     flushPdfPosToRoom();
+    const switchSeq = ++openPdfSeq;
     if (cloudCacheTimer) { clearTimeout(cloudCacheTimer); cloudCacheTimer = null; }
     invalidateDocListCache();
     S.key = key || '_default';
+    const targetSc = scenarioObj(S.key);
+    if (targetSc && typeof window !== 'undefined' && typeof window.ensureScenarioCloudBlobs === 'function') {
+      const hasCloudBlob = (targetSc.docTexts && !Array.isArray(targetSc.docTexts) && targetSc.docTexts.__cloudBlob)
+        || (targetSc.ccfRooms && !Array.isArray(targetSc.ccfRooms) && targetSc.ccfRooms.__cloudBlob);
+      if (hasCloudBlob) {
+        try {
+          const hydrated = await window.ensureScenarioCloudBlobs(targetSc);
+          if (switchSeq !== openPdfSeq) return;
+          if (hydrated) {
+            roomContainerCache.delete(String(S.key));
+            invalidateDocListCache();
+          }
+        } catch (_) {}
+      }
+    }
     const container = getRoomContainer(S.key);
     S.rooms = container.rooms;
     if (targetRoomId && S.rooms.some(r => r.id === targetRoomId)) {
@@ -881,17 +1061,55 @@
     const pdfPage = S.proj.pdf && S.proj.pdf.page;
     const pdfZoom = S.proj.pdf && S.proj.pdf.zoom;
     let usedFallback = false;
+    const canCloudSwitch = !!(window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud());
+    const isRealLocalSwitch = p => !!(p && !isCloudRef(p) && !isAssetRef(p) && !/^zipview:\/\//i.test(String(p)) && !isDocTextRef(p) && !isMissingDocRef(p) && IS_ELECTRON && fs && fs.existsSync(p));
+    const rankSwitchPath = p => {
+      if (!p) return 0;
+      if (isRealLocalSwitch(p) || isAssetRef(p) || /^zipview:\/\//i.test(String(p))) return 4;
+      if (isCloudRef(p)) return 3.5;
+      if (isMissingDocRef(p)) return canCloudSwitch ? 3 : 1;
+      if (isDocTextRef(p)) return 2;
+      return 1;
+    };
     const canAutoOpenPdf = p => {
       if (!p) return false;
-      if (isCloudRef(p)) return true;
-      if (isAssetRef(p)) return true;
-      return !!(IS_ELECTRON && fs && (fs.existsSync(p) || (window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud())));
+      if (isDocTextRef(p)) return true;
+      return canOpenLocalOrCloudDoc(p);
     };
-    if (!pdfPath || !canAutoOpenPdf(pdfPath) || (IS_ELECTRON && fs && !isCloudRef(pdfPath) && !isAssetRef(pdfPath) && !fs.existsSync(pdfPath))) {
+    const needsPromotion = !pdfPath || isDocTextRef(pdfPath) || isMissingDocRef(pdfPath) || !canAutoOpenPdf(pdfPath) || (!isCloudRef(pdfPath) && !isAssetRef(pdfPath) && !/^zipview:\/\//i.test(String(pdfPath)) && !isRealLocalSwitch(pdfPath));
+    if (needsPromotion) {
       const dl = docList();
-      if (dl.length) { pdfPath = dl[0].value; usedFallback = true; }
+      if (dl.length) {
+        let promoted = '';
+        if (pdfPath) {
+          const curRank = rankSwitchPath(pdfPath);
+          const curNm = normDocTextName(baseName(pdfPath));
+          const curStem = normDocTextStem(baseName(pdfPath));
+          let bestRank = curRank;
+          for (const d of dl) {
+            if (!d || !d.value) continue;
+            const dNm = normDocTextName(baseName(d.value));
+            const dStem = normDocTextStem(baseName(d.value));
+            const sameName = (curNm && dNm === curNm) || (curStem && dStem === curStem);
+            if (!sameName) continue;
+            const r = rankSwitchPath(d.value);
+            if (r > bestRank) {
+              bestRank = r;
+              promoted = d.value;
+            }
+          }
+        }
+        if (promoted) {
+          pdfPath = promoted;
+          usedFallback = true;
+        } else {
+          pdfPath = dl[0].value;
+          usedFallback = true;
+        }
+      }
     }
     const expectKey = S.key, expectRoom = S.roomId;
+    const willAutoFetchCloud = !!(expectKey && expectKey !== '_default' && window.CloudSync && typeof CloudSync.ensureScenarioAssetsCached === 'function' && needsImmediateCloudPdf(pdfPath));
     const triggerCloudAssetsCache = () => {
       if (!(expectKey && expectKey !== '_default' && window.CloudSync && typeof CloudSync.ensureScenarioAssetsCached === 'function')) return;
       if (needsImmediateCloudPdf(pdfPath)) {
@@ -910,7 +1128,7 @@
       if (pdfPath) {
         setTimeout(() => {
           if (S.key !== expectKey || S.roomId !== expectRoom || !S.proj.pdf || S.proj.pdf.path !== pdfPath) return;
-          const check = (isCloudRef(pdfPath) || (window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud()))
+          const check = (isDocTextRef(pdfPath) || isCloudRef(pdfPath) || (window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud()))
             ? Promise.resolve()
             : (isAssetRef(pdfPath) && window.WebBridge
               ? WebBridge.hasAsset(pdfPath).then(ok => ok ? Promise.resolve() : Promise.reject())
@@ -918,7 +1136,7 @@
           check.then(() => {
             if (S.key === expectKey && S.roomId === expectRoom && S.proj.pdf && S.proj.pdf.path === pdfPath) {
               triggerCloudAssetsCache();
-              openPdfPath(pdfPath, { page: pdfPage, zoom: pdfZoom, skipBuildDocSelect: true });
+              openPdfPath(pdfPath, { page: pdfPage, zoom: pdfZoom, skipBuildDocSelect: true, silentError: willAutoFetchCloud });
             }
           }).catch(() => { triggerCloudAssetsCache(); });
         }, 120);
@@ -927,7 +1145,7 @@
       }
     } else if (canAutoOpenPdf(pdfPath)) {
       triggerCloudAssetsCache();
-      await openPdfPath(pdfPath, { page: pdfPage, zoom: pdfZoom, skipBuildDocSelect: true });
+      await openPdfPath(pdfPath, { page: pdfPage, zoom: pdfZoom, skipBuildDocSelect: true, silentError: willAutoFetchCloud });
     } else {
       triggerCloudAssetsCache();
       if (CCF.viewer) CCF.viewer.clear();
@@ -958,7 +1176,7 @@
     say(`🏠 部屋「${curRoom ? curRoom.name : ''}」に切り替えました`);
   }
 
-  function addRoom(name, initialProject) {
+  async function addRoom(name, initialProject) {
     cp('部屋の作成');
     saveProject(true);
     const container = getRoomContainer(S.key);
@@ -972,10 +1190,21 @@
     container.rooms.push(newRoom);
     container.activeRoomId = newRoom.id;
     saveRoomContainer(S.key, container);
-    S.rooms = container.rooms;
-    switchRoom(newRoom.id);
-    say(`✅ 部屋「${newRoom.name}」を作成しました`);
-    return newRoom;
+    const savedRoom = (Array.isArray(S.rooms) && S.rooms.find(r => r.id === newRoom.id)) || newRoom;
+    try {
+      await switchRoom(savedRoom.id);
+    } catch (e) {
+      if (typeof logSoft === 'function') logSoft('addRoomSwitch', e);
+      S.roomId = savedRoom.id;
+      S.proj = savedRoom.project;
+      if (CCF.sceneUI && CCF.sceneUI.onProjectSwitch) CCF.sceneUI.onProjectSwitch();
+      renderRoomSelect();
+      renderProps();
+      renderCenter();
+      buildDocSelect();
+    }
+    say(`✅ 部屋「${savedRoom.name}」を作成しました`);
+    return savedRoom;
   }
 
   function renameRoom(roomId, newName) {
@@ -1189,6 +1418,7 @@
       onBookmarks: list => { S.proj.bookmarks = list; saveProject(); syncPopout(); },
       onSaveImage: img => saveCropImage(img),
       onClose: had => {   // 「✕ 選択解除」：表示中のPDFを閉じて初期表示へ。次回起動時に勝手に開き直さないよう、保存済みの記録も消す
+        openPdfSeq++;
         if (CCF.viewer) CCF.viewer.setOverlay(null);
         S.proj.pdf = { path: '', page: 1, zoom: (S.proj.pdf && S.proj.pdf.zoom) || 1.2 };
         savePdfPosLocal(S.key, S.roomId, S.proj, { cleared: true });
@@ -1206,128 +1436,20 @@
     });
     CCF.V = CCF.viewer.state;
   }
-  /** 同期テキスト（sc.docTexts）を左ペインのフォールバックビューワで表示する */
-  function splitDocTextPagesForViewer(raw) {
-    const text = String(raw || '');
-    const re = /^=== P\.(\d+) ===\s*$/gm;
-    const matches = [...text.matchAll(re)];
-    if (!matches.length) return [{ page: 1, body: text }];
-    const pages = [];
-    for (let i = 0; i < matches.length; i++) {
-      const m = matches[i];
-      const start = m.index + m[0].length;
-      const end = (i + 1 < matches.length) ? matches[i + 1].index : text.length;
-      pages.push({ page: Number(m[1]) || (i + 1), body: text.slice(start, end).replace(/^\n+|\n+$/g, '') });
-    }
-    return pages;
-  }
+  /** 同期テキスト（sc.docTexts）を左ペインのネイティブ白紙テキストビューワで表示する */
   function openSyncedDocTextViewer(docPath, dt, ov) {
     if (!CCF.viewer || !dt || !dt.text) return false;
     ov = ov || {};
-    const pages = splitDocTextPagesForViewer(dt.text);
+    const ccfText = T || (typeof window !== 'undefined' && window.CCFText) || null;
+    const cleanedText = (ccfText && typeof ccfText.cleanSyncedDocText === 'function')
+      ? ccfText.cleanSyncedDocText(dt.text)
+      : String(dt.text || '');
     const targetPage = Number(ov.page) || (S.proj.pdf && S.proj.pdf.page) || 1;
-    const pageOpts = pages.map(p => `<option value="${p.page}"${p.page === targetPage ? ' selected' : ''}>P.${p.page}</option>`).join('');
-    const html = `<div class="ccf-doctext-wrap" style="display:flex;flex-direction:column;width:100%;height:100%;background:var(--ccf-bg,#1b1e26);color:var(--ccf-fg,#e5e7eb);text-align:left;overflow:hidden;">
-      <div class="ccf-doctext-bar" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 10px;border-bottom:1px solid rgba(255,255,255,0.12);background:rgba(0,0,0,0.22);font-size:12px;">
-        <span style="font-weight:700;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(dt.name)}">📄 ${esc(dt.name)}</span>
-        <span style="font-size:11px;padding:1px 6px;border-radius:10px;background:rgba(99,102,241,0.25);color:#c7d2fe;">同期テキスト (${dt.pageCount || pages.length}P)</span>
-        <select class="ccf-doctext-psel" title="ページジャンプ" style="font-size:12px;padding:2px 4px;border-radius:4px;background:rgba(255,255,255,0.08);color:inherit;border:1px solid rgba(255,255,255,0.18);">${pageOpts}</select>
-        <input type="search" class="ccf-doctext-search" placeholder="キーワード検索..." style="flex:1;min-width:110px;max-width:190px;font-size:12px;padding:3px 6px;border-radius:4px;background:rgba(255,255,255,0.08);color:inherit;border:1px solid rgba(255,255,255,0.18);">
-        <button type="button" class="ccf-mini" data-dt="prev" title="前の候補">▲</button>
-        <button type="button" class="ccf-mini" data-dt="next" title="次の候補">▼</button>
-        <span class="ccf-doctext-hits" style="font-size:11px;opacity:0.75;min-width:36px;">0/0</span>
-        <button type="button" class="ccf-mini" data-dt="copy" title="選択テキスト（未選択時は表示中のページ）を整形コピー">📋 整形コピー</button>
-        <button type="button" class="ccf-mini" data-dt="close" title="同期テキストを閉じる">✕</button>
-      </div>
-      <div class="ccf-doctext-hint" style="padding:4px 10px;font-size:11px;opacity:0.75;border-bottom:1px solid rgba(255,255,255,0.08);">💡 テキストをドラッグ選択すると中央の抽出バッファへ転送されます（Shift+選択で追記）</div>
-      <div class="ccf-doctext-body" style="flex:1;overflow:auto;padding:12px 14px;user-select:text;white-space:pre-wrap;word-break:break-word;line-height:1.75;font-size:13px;"></div>
-    </div>`;
-    CCF.viewer.setOverlay(html);
-    const ovEl = CCF.viewer.els && CCF.viewer.els.overlay;
-    if (!ovEl) return false;
-    const bodyEl = ovEl.querySelector('.ccf-doctext-body');
-    const psel = ovEl.querySelector('.ccf-doctext-psel');
-    const searchEl = ovEl.querySelector('.ccf-doctext-search');
-    const hitsEl = ovEl.querySelector('.ccf-doctext-hits');
-    let curHits = [], curHitIdx = -1, activePage = targetPage;
-
-    const renderBody = q => {
-      const query = String(q || '').trim();
-      const escReg = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = query ? new RegExp(escReg(query), 'gi') : null;
-      const highlight = txt => {
-        if (!re) return esc(txt);
-        let out = '', last = 0;
-        re.lastIndex = 0;
-        for (const m of txt.matchAll(re)) {
-          out += esc(txt.slice(last, m.index)) + `<mark class="ccf-doctext-hit" style="background:#facc15;color:#111;border-radius:2px;padding:0 1px;">${esc(m[0])}</mark>`;
-          last = m.index + m[0].length;
-        }
-        return out + esc(txt.slice(last));
-      };
-      bodyEl.innerHTML = pages.map(p => `<div class="ccf-doctext-page" data-page="${p.page}" style="margin-bottom:18px;">
-        <div class="ccf-doctext-phead" style="font-size:11px;font-weight:700;opacity:0.7;border-bottom:1px dashed rgba(255,255,255,0.18);padding-bottom:2px;margin-bottom:6px;">=== P.${p.page} ===</div>
-        <div class="ccf-doctext-content">${highlight(p.body)}</div>
-      </div>`).join('');
-      curHits = [...bodyEl.querySelectorAll('mark.ccf-doctext-hit')];
-      curHitIdx = curHits.length ? 0 : -1;
-      updateHitUI();
-    };
-    const updateHitUI = () => {
-      if (hitsEl) hitsEl.textContent = curHits.length ? `${curHitIdx + 1}/${curHits.length}` : '0/0';
-      curHits.forEach((m, i) => { m.style.background = i === curHitIdx ? '#f97316' : '#facc15'; });
-      if (curHitIdx >= 0 && curHits[curHitIdx]) curHits[curHitIdx].scrollIntoView({ block: 'center', behavior: 'smooth' });
-    };
-    const jumpPage = pg => {
-      activePage = Number(pg) || 1;
-      const el = bodyEl.querySelector(`.ccf-doctext-page[data-page="${activePage}"]`);
-      if (el) el.scrollIntoView({ block: 'start' });
-      if (psel) psel.value = String(activePage);
-      if (CCF.viewer && CCF.viewer.state) CCF.viewer.state.page = activePage;
-      recordPdfPos({ path: docPath, page: activePage, zoom: 1.2 }, false);
-    };
-
-    renderBody('');
-    if (CCF.viewer.state) {
-      CCF.viewer.state.path = docPath;
-      CCF.viewer.state.page = targetPage;
-      CCF.viewer.state.total = pages.length;
+    if (typeof CCF.viewer.setOverlay === 'function') CCF.viewer.setOverlay(null);
+    if (typeof CCF.viewer.openTextContent === 'function') {
+      return CCF.viewer.openTextContent(dt.name, docPath, cleanedText, '同期テキスト', { page: targetPage, isSyncedText: true });
     }
-    if (CCF.viewer.els && CCF.viewer.els.docsel) CCF.viewer.els.docsel.value = docPath;
-    if (targetPage > 1) setTimeout(() => jumpPage(targetPage), 0);
-
-    if (psel) psel.addEventListener('change', () => jumpPage(psel.value));
-    if (searchEl) searchEl.addEventListener('input', () => renderBody(searchEl.value));
-    ovEl.addEventListener('click', async e => {
-      const b = e.target.closest('[data-dt]');
-      if (!b) return;
-      const act = b.dataset.dt;
-      if (act === 'close') { CCF.viewer.setOverlay(null); return; }
-      if (act === 'prev' && curHits.length) { curHitIdx = (curHitIdx - 1 + curHits.length) % curHits.length; updateHitUI(); return; }
-      if (act === 'next' && curHits.length) { curHitIdx = (curHitIdx + 1) % curHits.length; updateHitUI(); return; }
-      if (act === 'copy') {
-        const sel = window.getSelection ? String(window.getSelection().toString() || '').trim() : '';
-        const pgObj = pages.find(p => p.page === activePage) || pages[0];
-        const rawCopy = sel || (pgObj ? pgObj.body : '');
-        const cleaned = (T && T.cleanText) ? T.cleanText(rawCopy, cleanOpts()) : rawCopy;
-        try { await navigator.clipboard.writeText(cleaned); say('📋 整形コピーしました（' + cleaned.length + '文字）'); }
-        catch (_) { say('⚠️ クリップボードへのコピーに失敗しました'); }
-      }
-    });
-    bodyEl.addEventListener('mouseup', e => {
-      const sel = window.getSelection ? window.getSelection() : null;
-      const raw = sel ? String(sel.toString() || '') : '';
-      if (!raw.trim()) return;
-      let pg = activePage;
-      try {
-        const node = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
-        const pEl = node && node.closest ? node.closest('.ccf-doctext-page') : null;
-        if (pEl && pEl.dataset.page) pg = Number(pEl.dataset.page) || activePage;
-      } catch (_) {}
-      const append = !!(e.shiftKey || (S.proj && S.proj.settings && S.proj.settings.alwaysAppend));
-      pushExtract(raw, append, { path: docPath, name: dt.name, page: pg, rect: null });
-    });
-    return true;
+    return false;
   }
   /** PDFごとの前回のページ位置・倍率を、メモリ上と軽量 localStorage に記憶する（重い saveState / CloudSync は発火しない） */
   function recordPdfPos(s, forceSave) {
@@ -1340,9 +1462,33 @@
     pdfPosDirty = true;
     savePdfPosLocal(S.key, S.roomId, S.proj);
   }
+  let openPdfSeq = 0;
   /** PDF をメイン画面のビューアで開く（別ウィンドウとは独立）。ページ位置の指定が無ければ、この部屋で前回開いていた位置を使う。 */
   async function openPdfPath(p, ov) {
-    ov = ov || {}; const pos = (S.proj.pdfPos && S.proj.pdfPos[p]) || {};
+    ov = ov || {};
+    const mySeq = ++openPdfSeq;
+    if (IS_ELECTRON && fs && CCF.assets && typeof CCF.assets.resolveScenarioLocalDocPath === 'function') {
+      if (isDocTextRef(p)) {
+        const dt0 = findDocTextForPath(p);
+        const candName = (dt0 && dt0.name) || baseName(p);
+        const resolved = (candName ? CCF.assets.resolveScenarioLocalDocPath(S.key, candName) : '')
+          || CCF.assets.resolveScenarioLocalDocPath(S.key, p);
+        if (resolved && fs.existsSync(resolved)) {
+          p = resolved;
+          invalidateDocListCache();
+        }
+      } else {
+        const needResolve = isMissingDocRef(p) || (!isCloudRef(p) && !isAssetRef(p) && !fs.existsSync(p));
+        if (needResolve) {
+          const resolved = CCF.assets.resolveScenarioLocalDocPath(S.key, p);
+          if (resolved && fs.existsSync(resolved)) {
+            p = resolved;
+            invalidateDocListCache();
+          }
+        }
+      }
+    }
+    const pos = (S.proj.pdfPos && S.proj.pdfPos[p]) || {};
     S.proj.pdf = { path: p, page: ov.page || pos.page || 1, zoom: ov.zoom || pos.zoom || (S.proj.pdf && S.proj.pdf.zoom) || 1.2 };
     let addedRef = false;
     if (!IS_ELECTRON && isAssetRef(p) && S.proj) {
@@ -1353,11 +1499,60 @@
         addedRef = true;
       }
     }
+    if (IS_ELECTRON && fs && S.key && S.key !== '_default' && p && !isCloudRef(p) && !isAssetRef(p) && !isDocTextRef(p) && !isMissingDocRef(p)) {
+      let isRealFile = false;
+      try { isRealFile = fs.existsSync(p) && fs.statSync(p).isFile(); } catch (_) { isRealFile = false; }
+      if (isRealFile && CCF.assets && typeof CCF.assets.addPaths === 'function') {
+        const sc = scenarioObj(S.key);
+        if (sc) {
+          const normP = String(p).replace(/\//g, '\\').toLowerCase();
+          const alreadyExact = Array.isArray(sc.docs) && sc.docs.some(d => {
+            if (!d) return false;
+            const dp = d.path ? String(d.path).replace(/\//g, '\\').toLowerCase() : '';
+            if (dp === normP) return true;
+            if (DATA_ROOT && path && d.rel) {
+              try {
+                const abs = path.resolve(DATA_ROOT, d.rel).replace(/\//g, '\\').toLowerCase();
+                if (abs === normP) return true;
+              } catch (_) {}
+            }
+            return false;
+          });
+          if (!alreadyExact) {
+            try {
+              CCF.assets.addPaths(S.key, [p], '資料');
+              invalidateDocListCache();
+            } catch (e) { if (typeof logSoft === 'function') logSoft('openPdfPathAddDoc', e); }
+          }
+        }
+      }
+    }
     savePdfPosLocal(S.key, S.roomId, S.proj);
     pdfPosDirty = true;
     if (addedRef) {
       invalidateDocListCache();
       saveProject();
+    }
+    if (isDocTextRef(p) && window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud()) {
+      const dt0 = findDocTextForPath(p);
+      const candName = (dt0 && dt0.name) || baseName(p);
+      if (candName) {
+        const cloudProbePath = 'missing-doc://' + encodeURIComponent(candName);
+        let cloudOk = false;
+        try {
+          cloudOk = await CCF.viewer.openPath(cloudProbePath, { page: S.proj.pdf.page, zoom: S.proj.pdf.zoom, silentError: true });
+        } catch (_) { cloudOk = false; }
+        if (mySeq !== openPdfSeq) return false;
+        if (cloudOk) {
+          S.proj.pdf.path = cloudProbePath;
+          savePdfPosLocal(S.key, S.roomId, S.proj);
+          pdfPosDirty = true;
+          if (CCF.viewer) CCF.viewer.setOverlay(null);
+          invalidateDocListCache();
+          if (!ov.skipBuildDocSelect) buildDocSelect();
+          return true;
+        }
+      }
     }
     if (!canOpenLocalOrCloudDoc(p)) {
       const dt = findDocTextForPath(p);
@@ -1366,18 +1561,26 @@
         return true;
       }
     }
-    if (CCF.viewer) CCF.viewer.setOverlay(null);
+    const hasFallbackText = !!findDocTextForPath(p);
+    const silentErr = !!(hasFallbackText || ov.silentError);
     let ok = false;
     try {
-      ok = await CCF.viewer.openPath(p, { page: S.proj.pdf.page, zoom: S.proj.pdf.zoom });
+      ok = await CCF.viewer.openPath(p, { page: S.proj.pdf.page, zoom: S.proj.pdf.zoom, silentError: silentErr });
     } catch (_) { ok = false; }
-    if (!ok) {
+    if (mySeq !== openPdfSeq) return false;
+    if (ok) {
+      if (CCF.viewer) CCF.viewer.setOverlay(null);
+    } else {
       const dt = findDocTextForPath(p);
       if (dt && openSyncedDocTextViewer(p, dt, { page: S.proj.pdf.page })) {
         if (!ov.skipBuildDocSelect) buildDocSelect();
         return true;
       }
+      if (hasFallbackText && !ov.silentError) {
+        say('❌ PDFを開けませんでした：' + baseName(p));
+      }
     }
+    if (mySeq !== openPdfSeq) return false;
     if (!ov.skipBuildDocSelect) buildDocSelect();
     return ok;
   }
@@ -1765,6 +1968,7 @@
     if (!S.ready) {
       S.ready = true;
       readyPromise = (async () => {
+        if (CCF.library && CCF.library.restore) { try { CCF.library.restore({ deferWatch: true }); } catch (e) { /* noop */ } }
         let last = '_default'; try { last = localStorage.getItem('ccf_last_project') || '_default'; } catch (e) { if (typeof logSoft === 'function') logSoft('getLastProject', e); }
         if (!scenarioList().some(sc => String(sc.id) === last)) last = '_default';
         S.key = last;
@@ -1969,6 +2173,41 @@
       if (e.target.closest('#ccfList [data-n]')) return CCF.onNpcClick(e);
     });
     window.addEventListener('ccf-refs-changed', () => { invalidateDocListCache(); updateAssetCount(); try { buildDocSelect(); } catch (e) { /* noop */ } });
+    window.addEventListener('cloud-cache-changed', ev => {
+      const sid = ev && ev.detail && ev.detail.scenarioId ? String(ev.detail.scenarioId) : '';
+      if (!S.key || S.key === '_default' || (sid && sid !== String(S.key))) return;
+      if (CCF.assets && CCF.assets.invalidateUnified) CCF.assets.invalidateUnified(S.key, false);
+      invalidateDocListCache();
+      updateAssetCount();
+      try { buildDocSelect(); } catch (e) { /* noop */ }
+      if (!CCF.viewer) return;
+      const ovEl = CCF.viewer.els && CCF.viewer.els.overlay;
+      const isDocTextOverlay = !!(ovEl && !ovEl.hidden && ovEl.querySelector('.ccf-doctext-wrap'));
+      const isSyncedTextView = !!(CCF.viewer.state && CCF.viewer.state.isSyncedText);
+      const isViewerEmpty = !(CCF.viewer.state && (CCF.viewer.state.doc || CCF.viewer.state.textMode));
+      if (!isDocTextOverlay && !isSyncedTextView && !isViewerEmpty) return;
+      const dl = docList();
+      if (!dl.length) return;
+      const curPath = (CCF.viewer.state && CCF.viewer.state.path) || (S.proj && S.proj.pdf && S.proj.pdf.path) || '';
+      const curStem = curPath ? normDocTextStem(baseName(curPath)) : '';
+      const curPage = (CCF.viewer.state && CCF.viewer.state.page) || (S.proj && S.proj.pdf && S.proj.pdf.page) || 1;
+      const curZoom = (S.proj && S.proj.pdf && S.proj.pdf.zoom) || 1.2;
+      let target = null;
+      if (curPath) {
+        target = dl.find(d => !isDocTextRef(d.value) && curStem && normDocTextStem(baseName(d.value)) === curStem)
+          || dl.find(d => String(d.value) === String(curPath));
+      }
+      if (!target) target = dl.find(d => !isDocTextRef(d.value)) || dl[0];
+      if (!target || !target.value) return;
+      if (isDocTextRef(target.value) && (isDocTextOverlay || isSyncedTextView)) {
+        const rawNm = baseName(target.value);
+        if (rawNm && window.CloudSync && CloudSync.canDownloadFromCloud && CloudSync.canDownloadFromCloud()) {
+          void openPdfPath('missing-doc://' + encodeURIComponent(rawNm), { page: curPage, zoom: curZoom, silentError: true });
+        }
+        return;
+      }
+      void openPdfPath(target.value, { page: curPage, zoom: curZoom, silentError: true });
+    });
     root.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'ccfWrapWord') { e.preventDefault(); wrapWordCmd(); } });
     root.addEventListener('input', e => {
       if (e.target.id === 'ccfBuf') { S.bufDirty = true; updateBufInfo(); return; }
@@ -1985,7 +2224,7 @@
   }
   function init() {
     const root = $('ccfTab'); if (!root) return;
-    if (typeof PAGE_NAMES !== 'undefined') PAGE_NAMES.ccfTab = '🎲 ココフォリア準備ツール';
+    if (typeof PAGE_NAMES !== 'undefined') PAGE_NAMES.ccfTab = '🎲 セッション準備';
     const btn = document.querySelector('[data-tab="ccfTab"]');
     if (btn && !btn.dataset.ccfTabWired) {
       btn.dataset.ccfTabWired = '1';

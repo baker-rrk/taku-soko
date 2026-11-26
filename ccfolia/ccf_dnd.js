@@ -135,9 +135,9 @@
 
   // ---------- 中間分類フォルダ判定（版・システム・人数・参加条件・複数シナリオ親）＆ 属性継承 ----------
   const CAT_SYS_RE = /^(?:(?:CoC|クトゥルフ(?:神話)?(?:TRPG)?|新クトゥルフ(?:神話)?(?:TRPG)?)\s*(?:第?[67]版|6th|7th|ver\.?\s*[67])?|第?[67]版|旧6版|新7版|CoC\s*[67]版?|エモクロア(?:TRPG)?|インセイン|シノビガミ|マダミス|マーダーミステリー|ストリテラ|ストーリープレイング|ダブルクロス|DX3(?:rd)?|ソード・?ワールド|SW\s*2(?:\.5)?|フタリソウサ|ネクロニカ|ケダモノオペラ|クラヤミクライン|ブラッドパス|パラノイア|アリアンロッド|TRPG)$/i;
-  const CAT_PPL_RE = /^(?:[0-9]+(?:[\s~〜\-ー・,、]+[0-9]+)?\s*(?:PL|人|名)(?:用|向け|シナリオ|固定|以上|以下|程度)?|ソロ|タイマン|ペア|デュオ|少人数|複数人|多人数|大人数)(?:シナリオ|用|向け)?$/i;
-  const CAT_STYLE_TOKEN_RE = /^(?:新規|継続|限定|推奨|不問|可能|専用|向け|可|不可|OK|NG|置きレス|置き卓|ボイセ|テキセ|半テキ|完テキ|短時間|長時間|短編|長編|キャンペーン|CP|周回|秘匿|秘匿HO|HOあり|HO|うちよそ|R-?18(?:-?G)?|成人向け|全年齢|ホラー|クラシック|クローズド|シティ|茶番|ギャグ|戦闘|戦闘あり|戦闘なし|探索|協力|PvP|ロスト|高ロスト|中ロスト|低ロスト|極高ロスト|確定ロスト|ロストあり|ロストなし|ロスト無|ロスト有|ロスト率高|ロスト率低|ロスト救済|救済|復活|蘇生|KPC|ロストKPC|KPCロスト|PCロスト|KPCあり|KPC専用|SAN回復|SAN値回復|正気度回復|発狂|後遺症|鬱|胸くそ|メリバ|バッドエンド|ハッピーエンド|エモ|シリアス|コメディ|ほのぼの|日常|謎解き|推理|脱出|RP重視|季節|春|夏|秋|冬|ハロウィン|クリスマス|バレンタイン|正月|学園|学校|現代|和風|西洋|中華|SF|ファンタジー|シナリオ|一覧|まとめ|フォルダ|分類|未分類|その他|一般|配布|購入済み?|プレイ済み?|通過済み?|未通過)$/i;
-  const CAT_STYLE_COMPOUND_RE = /^(?:新規|継続|限定|推奨|不問|可能|専用|向け|置きレス|置き卓|ボイセ|テキセ|半テキ|完テキ|ソロ|タイマン|ペア|デュオ|秘匿|HO|短時間|長時間|短編|長編|キャンペーン|CP|周回|クラシック|クローズド|シティ|うちよそ|R-?18(?:-?G)?|ホラー|茶番|ギャグ|戦闘あり|戦闘なし|戦闘|探索|ロスト|高ロスト|中ロスト|低ロスト|極高ロスト|確定ロスト|ロストあり|ロストなし|ロスト無|ロスト有|ロスト率高|ロスト率低|ロスト救済|救済|復活|蘇生|KPC|PC|SAN回復|SAN値回復|正気度回復|発狂|後遺症|鬱|胸くそ|メリバ|バッドエンド|ハッピーエンド|エモ|シリアス|コメディ|ほのぼの|日常|謎解き|推理|脱出|RP重視|季節|春|夏|秋|冬|ハロウィン|クリスマス|バレンタイン|正月|学園|学校|現代|和風|西洋|中華|SF|ファンタジー|シナリオ|一覧|まとめ|フォルダ|分類|未分類)+$/i;
+  const CAT_PPL_RE = /^(?:[0-9]+(?:[\s~〜\-ー・,、]+[0-9]+)?\s*(?:PL|人|名)(?:用|向け|シナリオ|固定|以上|以下|程度)?|ソロ|タイマン|ペア|デュオ|少人数|複数人|多人数|大人数|人数可変|人数固定|可変人数|KPレス(?:シナリオ)?|GMレス(?:シナリオ)?)(?:シナリオ|用|向け)?$/i;
+  const CAT_STYLE_TOKEN_RE = /^(?:新規|継続|限定|推奨|不問|可能|専用|向け|可|不可|OK|NG|置きレス|置き卓|ボイセ|テキセ|半テキ|完テキ|人数可変|人数固定|可変人数|KPレス|KPレスシナリオ|GMレス|GMレスシナリオ|短時間|長時間|短編|長編|キャンペーン|CP|周回|秘匿|秘匿HO|HOあり|HO|うちよそ|R-?18(?:-?G)?|成人向け|全年齢|ホラー|クラシック|クローズド|シティ|茶番|ギャグ|戦闘|戦闘あり|戦闘なし|探索|協力|PvP|ロスト|高ロスト|中ロスト|低ロスト|極高ロスト|確定ロスト|ロストあり|ロストなし|ロスト無|ロスト有|ロスト率高|ロスト率低|ロスト救済|救済|復活|蘇生|KPC|ロストKPC|KPCロスト|PCロスト|KPCあり|KPC専用|SAN回復|SAN値回復|正気度回復|発狂|後遺症|鬱|胸くそ|メリバ|バッドエンド|ハッピーエンド|エモ|シリアス|コメディ|ほのぼの|日常|謎解き|推理|脱出|RP重視|季節|春|夏|秋|冬|ハロウィン|クリスマス|バレンタイン|正月|学園|学校|現代|和風|西洋|中華|SF|ファンタジー|シナリオ|一覧|まとめ|フォルダ|分類|未分類|その他|一般|配布|購入済み?|プレイ済み?|通過済み?|未通過)$/i;
+  const CAT_STYLE_COMPOUND_RE = /^(?:新規|継続|限定|推奨|不問|可能|専用|向け|置きレス|置き卓|ボイセ|テキセ|半テキ|完テキ|ソロ|タイマン|ペア|デュオ|人数可変|人数固定|可変人数|KPレス|GMレス|秘匿|HO|短時間|長時間|短編|長編|キャンペーン|CP|周回|クラシック|クローズド|シティ|うちよそ|R-?18(?:-?G)?|ホラー|茶番|ギャグ|戦闘あり|戦闘なし|戦闘|探索|ロスト|高ロスト|中ロスト|低ロスト|極高ロスト|確定ロスト|ロストあり|ロストなし|ロスト無|ロスト有|ロスト率高|ロスト率低|ロスト救済|救済|復活|蘇生|KPC|PC|SAN回復|SAN値回復|正気度回復|発狂|後遺症|鬱|胸くそ|メリバ|バッドエンド|ハッピーエンド|エモ|シリアス|コメディ|ほのぼの|日常|謎解き|推理|脱出|RP重視|季節|春|夏|秋|冬|ハロウィン|クリスマス|バレンタイン|正月|学園|学校|現代|和風|西洋|中華|SF|ファンタジー|シナリオ|一覧|まとめ|フォルダ|分類|未分類)+$/i;
   const ASSET_SUBDIR_EX_RE = /^(?:本文|本編|本篇|文章|文書|テキスト|シナリオ|小説|ログ|リプレイ|台本|スチル|イラスト|おまけ|オマケ|特典|付録|追加|差分|表情|立ち絵|立絵|キャラ|人物|npc|kpc|前景|背景|マップ|地図|見取り図|部屋素材|素材|画像|アイコン|パネル|マーカー|フレーム|カットイン|トレーラー|表紙|サムネ|タイトル|ロゴ|チケット|カード|シール|案内|招待状|新聞|手紙|メモ|資料|案|pl|kp|gm|pc|ho|配布|配布物|配布用|公開|秘匿|事前|導入|真相|解説|情報|データ|ファイル|フォルダ|クレジット|利用規約|規約|ライセンス|注意|はじめに|説明書|初期版|旧版|新版|改訂版|修正版|完全版|軽量版|分割版|統合版|web版|booth版|印刷用|オンライン|オフライン|部屋|ルーム|ココフォリア|bgm|se|音声|音楽|音源|効果音|ボイス|動画|ムービー|script|scenario|story|text|txt|doc|docs|pdf|still|illust|omake|extra|bonus|image|images|img|imgs|pic|graphic|bg|fg|map|maps|chara|tachie|icon|panel|marker|frame|asset|assets|material|trailer|cover|thumb|title|logo|ticket|card|cutin|credit|credits|readme|license|rule|handout|handouts|info|data|file|files|folder|old|ver|room|rooms|ccfolia|ccf|music|sound|sounds|audio|voice|movie|video|mp3|wav|mp4|webm)$/i;
   const ASSET_SUBDIR_PARTIAL_RE = /(?:本文|本編|本篇|文章|文書|テキスト|シナリオ|小説|ログ|リプレイ|台本|スチル|イラスト|おまけ|オマケ|特典|付録|追加|差分|表情|立ち絵|立絵|キャラ|人物|バストアップ|前景|foreground|背景|background|風景|マップ|地図|見取り図|間取り|フロア|部屋素材|素材|画像|アイコン|パネル|マーカー|フレーム|カットイン|トレーラー|表紙|サムネ|タイトル|概要|お品書き|ロゴ|チケット|カード|シール|案内|招待状|新聞|手紙|メモ|資料|配布|配布物|配布用|公開|秘匿|事前|導入|真相|解説|情報|データ|ファイル|フォルダ|クレジット|利用規約|規約|ライセンス|注意|はじめに|説明書|初期版|旧版|新版|改訂版|修正版|完全版|軽量版|分割版|統合版|web版|booth版|印刷用|オンライン|オフライン|部屋|ルーム|ココフォリア|ハンドアウト|音声|音楽|音源|効果音|ボイス|動画|ムービー|場面|シーン|徒歩|車用|山中|toho|syaryou|yamanaka|用$|案$|(?:^|[\s_\-.(\[【])案(?:$|[\s_\-.)\]】])|(?:^|[^a-z])(?:script|scenario|story|text|txt|docs?|pdf|still|illust|omake|extra|bonus|images?|imgs?|pic|graphic|bg(?!m)|fg|maps?|npc|kpc|chara|tachie|icon|panel|marker|frame|assets?|material|trailer|cover|thumb|title|logo|ticket|card|cutin|credits?|readme|license|rule|handouts?|info|data|files?|folder|old|ver\d*|rooms?|ccfolia|ccf|bgm|se|music|sounds?|audio|voice|movie|video|mp3|wav|mp4|webm|pl|kp|gm|pc|ho\d*)(?:$|[^a-z]))/i;
 
@@ -425,9 +425,9 @@
     return false;
   }
 
-  /** 中間分類フォルダ（監視ルートまたは分類名フォルダ）のみを再帰的に辿り、個別シナリオ候補を列挙する（最大深さ5階層） */
+  /** 中間分類フォルダ（監視ルートまたは分類名フォルダ）のみを再帰的に辿り、個別シナリオ候補を列挙する（最大深さ7階層） */
   function discoverScenarioEntries(rootDir, opts) {
-    const maxDepth = Math.min(5, Math.max(1, Number((opts && opts.maxDepth) || 5)));
+    const maxDepth = Math.min(7, Math.max(1, Number((opts && opts.maxDepth) || 7)));
     const isWatchRoot = !!(opts && opts.isWatchRoot);
     const out = [];
     const initMeta = {
@@ -775,10 +775,14 @@
       ? M.normalizeForMatch(raw)
       : cleanseTitle(raw).normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, ''));
   const looseSame = (a, b) => { const x = normalizeForMatch(a), y = normalizeForMatch(b); if (!x || !y) return false; if (x === y) return true; const [s, l] = x.length <= y.length ? [x, y] : [y, x]; return s.length >= 2 && l.includes(s); };
-  /** 既存シナリオ候補：完全一致を優先し、無ければ部分一致（2文字以上） */
+  /** 既存シナリオ候補：正規化タイトルの完全一致のみで照合する（部分一致による別作品の誤統合を防ぐ） */
   function findExisting(list, names) {
-    for (const n of names) { const h = list.find(s => normalizeForMatch(s.title) && normalizeForMatch(s.title) === normalizeForMatch(n)); if (h) return h; }
-    for (const n of names) { const h = list.find(s => looseSame(s.title, n)); if (h) return h; }
+    for (const n of names) {
+      const target = normalizeForMatch(n);
+      if (!target) continue;
+      const h = list.find(s => normalizeForMatch(s.title) === target);
+      if (h) return h;
+    }
     return null;
   }
   /** フォルダ／ZIP／（対象シナリオの無い）PDF 1つ分を解析して登録・マージする。戻り値：{ sc, created, merged, counts… } か null */

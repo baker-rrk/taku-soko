@@ -58,17 +58,50 @@ function getScenarioSourcePathKey(sc) {
   const p = sc && typeof sc === 'object' ? sc.sourcePath : sc;
   return String(p || '').normalize('NFKC').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
+function areIndependentSourcePaths(scA, scB) {
+  const a = getScenarioSourcePathKey(scA);
+  const b = getScenarioSourcePathKey(scB);
+  if (!a || !b) return false;
+  if (a === b) return false;
+  if (b.startsWith(a + '/') || a.startsWith(b + '/')) return false;
+  return true;
+}
+function normalizeShopUrlForDedup(sc) {
+  const u = sc && typeof sc === 'object' ? sc.shopUrl : '';
+  return String(u || '').trim().split(/[?#]/)[0].replace(/\/+$/, '').toLowerCase();
+}
+function canAutoMergeScenarios(scA, scB) {
+  if (!scA || !scB || typeof scA !== 'object' || typeof scB !== 'object') return true;
+  if (areIndependentSourcePaths(scA, scB)) return false;
+  const urlA = normalizeShopUrlForDedup(scA);
+  const urlB = normalizeShopUrlForDedup(scB);
+  if (urlA && urlB && urlA !== urlB) return false;
+  return true;
+}
 function getScenarioDedupKey(sc) {
   let s = String(typeof sc === 'string' ? sc : (sc && sc.title) || '').normalize('NFKC').trim();
   if (!s) return '';
   // 先頭の記号（☆, ★, ●, ◆ 等）およびソート頭文字を除去
+  const beforeLeadingSym = s;
   s = s.replace(/^(?:[☆★●○◆◇■□▲△▼▽◎※・･\-_=+~～!！?？#＃*＊@＠]+\s*)+/, '');
-  s = s.replace(/^(?:[0-9]{1,3}[._\-:：)）]\s*|[あ-んア-ンa-zA-Z][._\-:：]\s*|[（(【\[][ぁ-んァ-ンa-zA-Z0-9]{1,2}[）)\]】]\s*)+/, '');
+  if (!s.trim()) s = beforeLeadingSym;
+  const beforeSortPrefix = s;
+  s = s.replace(/^(?:[0-9]{1,3}(?:[._\-:：)）]\s*|\s+)|[ぁ-んァ-ヶa-zA-Z](?:[._\-:：]\s*|\s+)|[（(【\[][ぁ-んァ-ンa-zA-Z0-9]{1,2}[）)\]】]\s*)+/, '');
+  if (!s.trim()) s = beforeSortPrefix;
+  const beforeLeadingSym2 = s;
   s = s.replace(/^(?:[☆★●○◆◇■□▲△▼▽◎※・･]+\s*)+/, '');
-  // システム名括弧・人数括弧・バージョン表記・重複連番・年月表記の除去
-  s = s.replace(/[（(【\[「『][^）)\]】」』]*(?:coc|クトゥルフ|クトゥルー|cthulhu|エモクロア|インセイン|シノビガミ|マダミス|マーダーミステリー|ダブルクロス|ソード・?ワールド|ソドワ|\bsw\b|\bdx\b|6版|7版|\d+\s*pl|\d+\s*人|ソロ|タイマン|gm|kp|kpc|改変|booth|pdf|zip|ver\.?|第\d+版|修正|改訂|配布)[^）)\]】」』]*[）)\]】」』]/gi, '');
+  if (!s.trim()) s = beforeLeadingSym2;
+  // システム名括弧・人数括弧・バージョン表記・重複連番・年月表記・配布形態の除去
+  s = s.replace(/[（(【\[「『][^）)\]】」』]*(?:coc|クトゥルフ|クトゥルー|cthulhu|エモクロア|インセイン|シノビガミ|マダミス|マーダーミステリー|ダブルクロス|ソード・?ワールド|ソドワ|\bsw\b|\bdx\b|6版|7版|\d+\s*pl|\d+\s*人|ソロ|タイマン|gm|kp|kpc|改変|booth|pdf|zip|ver\.?|第\d+版|修正|改訂|改定|オンライン|オフライン|完全版|新版|旧版|体験版|web版|配布)[^）)\]】」』]*[）)\]】」』]/gi, '');
   s = s.replace(/(?:^|[\s_\-])(?:ver\.?|v)\s*\d+(?:[._]\d+)*[a-z]?/gi, '');
   s = cleanseScenarioTitleExtras(s);
+  const beforeTrailingEdition = s;
+  for (let i = 0; i < 2; i++) {
+    const prev = s;
+    s = s.replace(/(?:[_\-\s]+(?:修正版|改訂版|改定版|更新版|オンライン版|オフライン版|完全版|新版|旧版|体験版|booth版|pdf版|配布版|web版)|(?:修正版|改訂版|改定版|オンライン版))\s*$/i, '').trim();
+    if (s === prev) break;
+  }
+  if (!s.trim()) s = beforeTrailingEdition;
   s = s.replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase();
   return s;
 }
@@ -104,20 +137,57 @@ function mergeScenarioRecords(baseSc, incSc, opts) {
   };
   const mergeDocsList = (arrA, arrB) => {
     const out = [], byKey = new Map();
+    const normDocNameKey = d => {
+      const raw = String(d.origName || d.name || '').normalize('NFKC').trim();
+      const baseFromPath = String(d.path || d.ref || d.rel || '').split(/[\\/]/).pop() || '';
+      const src = raw || String(baseFromPath).normalize('NFKC').trim();
+      if (!src) return '';
+      const m = /^(.*)\.([a-z0-9]{1,8})$/i.exec(src);
+      const stem = (m ? m[1] : src).trim().toLowerCase();
+      let ext = (m ? m[2] : String(d.ext || '').replace(/^\./, '')).trim().toLowerCase();
+      if (!ext && baseFromPath) {
+        const pm = /\.([a-z0-9]{1,8})$/i.exec(baseFromPath);
+        if (pm) ext = pm[1].toLowerCase();
+      }
+      if (!stem) return '';
+      return 'name:' + (ext ? `${stem}.${ext}` : stem);
+    };
     [...(Array.isArray(arrA) ? arrA : []), ...(Array.isArray(arrB) ? arrB : [])].forEach(d => {
       if (!d || typeof d !== 'object') return;
       const relKey = d.rel ? ('rel:' + String(d.rel).replace(/\\/g, '/').toLowerCase()) : '';
       const pathKey = d.path ? ('path:' + String(d.path).replace(/\\/g, '/').toLowerCase()) : '';
-      const idKey = d.id != null ? ('id:' + String(d.id)) : '';
-      const nameKey = d.name ? ('name:' + String(d.name).normalize('NFKC').toLowerCase()) : '';
-      const hitKey = [relKey, pathKey, idKey, nameKey].find(k => k && byKey.has(k));
+      const refKey = d.ref ? ('ref:' + String(d.ref).replace(/\\/g, '/').toLowerCase()) : '';
+      const idKey = d.id != null && d.id !== '' ? ('id:' + String(d.id)) : '';
+      const nameKey = normDocNameKey(d);
+      const hitKey = [relKey, pathKey, refKey, idKey, nameKey].find(k => k && byKey.has(k));
       if (hitKey) {
         const idx = byKey.get(hitKey);
-        out[idx] = { ...out[idx], ...d, id: out[idx].id || d.id, rel: out[idx].rel || d.rel, path: out[idx].path || d.path, cloudSha: out[idx].cloudSha || d.cloudSha };
+        const cur = out[idx];
+        const merged = {
+          ...d,
+          ...cur,
+          id: cur.id || d.id,
+          name: cur.name || d.name,
+          rel: cur.rel || d.rel || ''
+        };
+        if (cur.origName || d.origName) merged.origName = cur.origName || d.origName;
+        if (cur.path || d.path) merged.path = cur.path || d.path; else delete merged.path;
+        if (cur.ref || d.ref) merged.ref = cur.ref || d.ref; else delete merged.ref;
+        if (cur.ext || d.ext) merged.ext = cur.ext || d.ext;
+        if (cur.category || d.category) merged.category = cur.category || d.category;
+        if (cur.cloudSha || d.cloudSha) merged.cloudSha = cur.cloudSha || d.cloudSha; else delete merged.cloudSha;
+        if (cur.mtime || d.mtime) merged.mtime = Number(cur.mtime || 0) || Number(d.mtime || 0);
+        if (cur.addedAt || d.addedAt) merged.addedAt = Number(cur.addedAt || 0) || Number(d.addedAt || 0);
+        if (Array.isArray(cur.tags) || Array.isArray(d.tags)) {
+          const tags = mergeUniqueArr(cur.tags, d.tags, x => String(x).normalize('NFKC').trim().toLowerCase());
+          if (tags.length) merged.tags = tags;
+        }
+        out[idx] = merged;
+        [relKey, pathKey, refKey, idKey, nameKey].forEach(k => { if (k && !byKey.has(k)) byKey.set(k, idx); });
       } else {
         const idx = out.length;
         out.push({ ...d });
-        [relKey, pathKey, idKey, nameKey].forEach(k => { if (k) byKey.set(k, idx); });
+        [relKey, pathKey, refKey, idKey, nameKey].forEach(k => { if (k) byKey.set(k, idx); });
       }
     });
     return out;
@@ -143,10 +213,11 @@ function mergeScenarioRecords(baseSc, incSc, opts) {
   };
 
   const res = {
-    ...(sTs > pTs ? secondary : primary),
     ...(sTs > pTs ? primary : secondary),
+    ...(sTs > pTs ? secondary : primary),
     id: primary.id || secondary.id,
     title: pickRich(primary.title, secondary.title),
+    author: pickRich(primary.author, secondary.author),
     system: pickRich(primary.system, secondary.system),
     playerCount: pickRich(primary.playerCount, secondary.playerCount),
     playTime: pickRich(primary.playTime, secondary.playTime),
@@ -176,7 +247,7 @@ function mergeScenarioRecords(baseSc, incSc, opts) {
     res.images = mergeImgsList(secondary.images, primary.images);
   }
   if (Array.isArray(primary.docs) || Array.isArray(secondary.docs)) {
-    res.docs = mergeDocsList(secondary.docs, primary.docs);
+    res.docs = mergeDocsList(primary.docs, secondary.docs);
   }
   if (Array.isArray(primary.ccfRooms) || Array.isArray(secondary.ccfRooms)) {
     res.ccfRooms = mergeCcfRoomsList(secondary.ccfRooms, primary.ccfRooms);
@@ -195,6 +266,8 @@ if (typeof window !== 'undefined') {
   window.cleanseScenarioTitleExtras = cleanseScenarioTitleExtras;
   window.getScenarioDedupKey = getScenarioDedupKey;
   window.getScenarioSourcePathKey = getScenarioSourcePathKey;
+  window.areIndependentSourcePaths = areIndependentSourcePaths;
+  window.canAutoMergeScenarios = canAutoMergeScenarios;
   window.mergeScenarioRecords = mergeScenarioRecords;
   window.mergeCcfolia = function (bSc, iSc) {
     const rooms = mergeCcfRoomsList(bSc && bSc.ccfRooms, iSc && iSc.ccfRooms);
@@ -257,7 +330,11 @@ function mergeBackupInto(base, inc) {
     const indexAt = (sc, i) => {
       if (sc.id != null) posId.set(sc.id, i);
       const dk = getScenarioDedupKey(sc);
-      if (dk && !posDedup.has(dk)) posDedup.set(dk, i);
+      if (dk) {
+        if (!posDedup.has(dk)) posDedup.set(dk, []);
+        const arr = posDedup.get(dk);
+        if (!arr.includes(i)) arr.push(i);
+      }
       const pk = getScenarioSourcePathKey(sc);
       if (pk && !posPath.has(pk)) posPath.set(pk, i);
     };
@@ -266,8 +343,11 @@ function mergeBackupInto(base, inc) {
       if (!it || it.id == null) return;
       const dk = getScenarioDedupKey(it), pk = getScenarioSourcePathKey(it);
       let idx = posId.has(it.id) ? posId.get(it.id) : undefined;
-      if (idx === undefined && dk && posDedup.has(dk)) idx = posDedup.get(dk);
       if (idx === undefined && pk && posPath.has(pk)) idx = posPath.get(pk);
+      if (idx === undefined && dk && posDedup.has(dk)) {
+        const cands = posDedup.get(dk);
+        idx = cands.find(ci => canAutoMergeScenarios(out[ci], it));
+      }
       if (idx === undefined) {
         const nextIdx = out.length;
         out.push(it);
@@ -336,6 +416,27 @@ const sanitizeAssets = (list, cats) => (Array.isArray(list) ? list : []).filter(
   if (a.origName) out.origName = _s(a.origName);
   return out;
 });
-const sanitizeDocs = list => (Array.isArray(list) ? list : []).filter(x => x && typeof x === 'object').map(x => ({ id: safeGalId(x.id), name: _s(x.name), rel: _s(x.rel).replace(/\\/g, '/') })).filter(x => x.name && x.rel && !x.rel.startsWith('/') && !/(^|\/)\.\.(\/|$)/.test(x.rel) && !/^[A-Za-z]:/.test(x.rel));   // フォルダの外を指す相対パス（..）や絶対パスは受け付けない
+const sanitizeDocs = list => (Array.isArray(list) ? list : []).filter(x => x && typeof x === 'object').map(x => {
+  const rawRel = _s(x.rel).replace(/\\/g, '/').trim();
+  const safeRel = (rawRel && !rawRel.startsWith('/') && !/(^|\/)\.\.(\/|$)/.test(rawRel) && !/^[A-Za-z]:/.test(rawRel)) ? rawRel : '';
+  const name = _s(x.name).trim();
+  const origName = _s(x.origName).trim();
+  const docPath = _s(x.path).trim();
+  const ref = _s(x.ref).trim();
+  const ext = _s(x.ext).trim();
+  const category = _s(x.category).trim();
+  const cloudSha = _s(x.cloudSha).trim();
+  const out = { id: safeGalId(x.id), name: name || origName, rel: safeRel };
+  if (origName) out.origName = origName;
+  if (docPath) out.path = docPath;
+  if (ref) out.ref = ref;
+  if (ext) out.ext = ext;
+  if (category) out.category = category;
+  if (cloudSha) out.cloudSha = cloudSha;
+  if (Array.isArray(x.tags) && x.tags.length) out.tags = [...new Set(x.tags.map(_s).map(t => t.trim()).filter(Boolean))];
+  if (x.mtime != null && x.mtime !== '' && Number.isFinite(Number(x.mtime))) out.mtime = Number(x.mtime);
+  if (x.addedAt != null && x.addedAt !== '' && Number.isFinite(Number(x.addedAt))) out.addedAt = Number(x.addedAt);
+  return out;
+}).filter(x => !!(x.name || x.rel || x.path || x.ref || x.cloudSha));
 const addCategory = (cats, name) => { const n = String(name).trim(); if (n && !cats.includes(n)) cats.push(n); return n; };
 const uniqueCategory = (cats, base) => { let n = base, i = 2; while (cats.includes(n)) n = base + ' ' + i++; return n; };

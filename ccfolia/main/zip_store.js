@@ -122,8 +122,18 @@ function openStream(id, name) {
     }).catch(reject);
   });
 }
+/** エントリの中身をバッファとして直接読み出す（IPC 経由の高速読み取り用） */
+async function readBuffer(id, name) {
+  const stream = await openStream(id, name);
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    stream.once('end', () => resolve({ buf: Buffer.concat(chunks), mime: mimeOf(name) }));
+    stream.once('error', reject);
+  });
+}
 function closeAll() { [...zips.values()].forEach(closeZip); }
 const has = id => zips.has(id);
 const isHandleOpen = id => { const z = zips.get(id); return !!(z && z.zip && z.zip.isOpen !== false); };
 
-module.exports = { open, openStream, closeAll, closeZip: id => { const z = zips.get(id); if (z) closeZip(z); }, releaseZipHandle: id => { const z = zips.get(id); if (z) releaseZipHandle(z); }, isHandleOpen, mimeOf, idOf, has, decodeName };
+module.exports = { open, openStream, readBuffer, closeAll, closeZip: id => { const z = zips.get(id); if (z) closeZip(z); }, releaseZipHandle: id => { const z = zips.get(id); if (z) releaseZipHandle(z); }, isHandleOpen, mimeOf, idOf, has, decodeName };

@@ -36,7 +36,7 @@
   function queueImage(h, dataUrl) {
     if (storedHashes.has(h)) return; storedHashes.add(h);
     persistChain = persistChain.then(async () => {
-      const blob = dataURLtoBlob(dataUrl); await idbPut('images', h, blob);
+      const blob = dataURLtoBlob(dataUrl); await putIdbImageSafe(h, blob);
       if (!hashToUrl.has(h)) {
         const url = URL.createObjectURL(blob); hashToUrl.set(h, url); imgUrlToHash.set(url, h);
       }
@@ -87,12 +87,6 @@
     };
     if (typeof appState !== 'undefined') {
       scan(appState);
-      if (typeof serializeState === 'function') {
-        try {
-          const serialized = serializeState(appState);
-          for (const m of serialized.matchAll(/@img:([a-z0-9]+)/g)) used.add(m[1]);
-        } catch (e) { logSoft('collectUsedSer', e); }
-      }
     }
     if (typeof blockOrder !== 'undefined') scan(blockOrder);
     if (typeof secretHOs !== 'undefined') scan(secretHOs);
@@ -154,10 +148,98 @@
   function replaceRefs(o) { let n = 0; walkStrings(o, v => { if (v.startsWith('@img:')) { const u = hashToUrl.get(v.slice(5)); if (u) { n++; return u; } } }); return n; }
   async function hydrateRefs(root) {
     const refs = new Set(); walkStrings(root, v => { if (v.startsWith('@img:')) refs.add(v.slice(5)); });
-    await Promise.all([...refs].map(ensureLocalUrl)); replaceRefs(root);
+    const list = [...refs];
+    if (list.length) {
+      const CONCURRENCY = 6;
+      let idx = 0;
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, list.length) }, async () => {
+        while (idx < list.length) await ensureLocalUrl(list[idx++]);
+      }));
+    }
+    replaceRefs(root);
+  }
+  async function toPureBlob(blob) {
+    if (!blob) return null;
+    if (typeof File !== 'undefined' && blob instanceof File) {
+      const ab = await blob.arrayBuffer();
+      return new Blob([ab], { type: blob.type || 'image/png' });
+    }
+    return blob;
+  }
+  async function putIdbImageSafe(h, blob) {
+    if (!h || !blob) return null;
+    const pure = await toPureBlob(blob);
+    await idbPut('images', h, pure);
+    return pure;
+  }
+  function readBlobAsDataUrl(blob) {
+    return new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.onerror = () => rej(r.error || new Error('FileReader error'));
+      r.readAsDataURL(blob);
+    });
+  }
+  async function recoverBrokenIdbImage(h, origErr) {
+    try {
+      const t = await idbGet('thumbs', h);
+      if (t) {
+        const ab = await t.arrayBuffer();
+        const pure = new Blob([ab], { type: t.type || 'image/webp' });
+        await idbPut('images', h, pure);
+        const oldUrl = hashToUrl.get(h);
+        if (oldUrl) {
+          hashToUrl.delete(h);
+          imgUrlToHash.delete(oldUrl);
+          try { URL.revokeObjectURL(oldUrl); } catch (_) {}
+          const newUrl = URL.createObjectURL(pure);
+          hashToUrl.set(h, newUrl);
+          imgUrlToHash.set(newUrl, h);
+        }
+        console.warn('[idb] 読み取り不能な画像をサムネイルから修復しました:', h, origErr);
+        return pure;
+      }
+    } catch (thumbErr) {
+      logSoft('recoverImageFromThumb', thumbErr);
+    }
+    try {
+      if (typeof idbDel === 'function') await idbDel('images', h);
+    } catch (delErr) {
+      logSoft('deleteBrokenImage', delErr);
+    }
+    storedHashes.delete(h);
+    const oldUrl = hashToUrl.get(h);
+    if (oldUrl) {
+      hashToUrl.delete(h);
+      imgUrlToHash.delete(oldUrl);
+      try { URL.revokeObjectURL(oldUrl); } catch (_) {}
+    }
+    console.warn('[idb] 読み取り不能な画像レコードを削除しました:', h, origErr);
+    return null;
   }
   window.imgFlush = () => persistChain;
-  window.idbImageBlob = async (h) => await idbGet('images', h);
+  window.idbImageBlob = async (h) => {
+    if (!h) return null;
+    let blob;
+    try {
+      blob = await idbGet('images', h);
+    } catch (e) {
+      return await recoverBrokenIdbImage(h, e);
+    }
+    if (!blob) return null;
+    if (!(typeof File !== 'undefined' && blob instanceof File)) {
+      if (blob instanceof Blob) return blob;
+      return await recoverBrokenIdbImage(h, new Error('Invalid IDB image entry'));
+    }
+    try {
+      const ab = await blob.arrayBuffer();
+      const pure = new Blob([ab], { type: blob.type || 'image/png' });
+      idbPut('images', h, pure).catch(e => logSoft('upgradeFileToBlob', e));
+      return pure;
+    } catch (e) {
+      return await recoverBrokenIdbImage(h, e);
+    }
+  };
   window.idbThumbBlob = async (h) => {
     let t = await idbGet('thumbs', h);
     if (!t) {
@@ -168,11 +250,12 @@
   };
   window.putIdbImageBlob = async (h, blob) => {
     if (!h || !blob) return;
-    await idbPut('images', h, blob);
+    await putIdbImageSafe(h, blob);
     await ensureLocalUrl(h);
   };
   window.putIdbThumbBlob = async (h, blob) => {
     if (!h || !blob) return;
+    blob = await toPureBlob(blob);
     await idbPut('thumbs', h, blob);
     setThumbUrl(h, blob);
     updateThumbDom(h);
@@ -193,8 +276,23 @@
     });
   };
   window.idbImageDataUrl = async (h) => {
-    const blob = await idbGet('images', h); if (!blob) return null;
-    return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+    if (!h) return null;
+    let blob;
+    try {
+      blob = await idbGet('images', h);
+    } catch (e) {
+      blob = await recoverBrokenIdbImage(h, e);
+      if (!blob) return null;
+      try { return await readBlobAsDataUrl(blob); } catch (_) { return null; }
+    }
+    if (!blob) return null;
+    try {
+      return await readBlobAsDataUrl(blob);
+    } catch (e) {
+      const recovered = await recoverBrokenIdbImage(h, e);
+      if (!recovered) return null;
+      try { return await readBlobAsDataUrl(recovered); } catch (_) { return null; }
+    }
   };
   // クラウドにしかない画像は、画面に出たとき（または投稿・読込で必要になったとき）だけ端末に取り込む
   const lazyQueue = new Set(), lazyBusy = new Set(), lazyFailed = new Set(); let lazyWorkers = 0, lazyRefresh = null;
@@ -293,15 +391,15 @@
       if (window.CloudSync && typeof window.CloudSync.fetchFullImageBlob === 'function') {
         const b = await window.CloudSync.fetchFullImageBlob(h);
         if (hashToUrl.has(h)) stored = true;
-        else if (b) { await idbPut('images', h, b); await ensureLocalUrl(h); stored = true; }
+        else if (b) { await putIdbImageSafe(h, b); await ensureLocalUrl(h); stored = true; }
       }
       if (!stored && typeof window.cloudFetchImage === 'function') {
         const d = await window.cloudFetchImage(h);
-        if (d) { await idbPut('images', h, dataURLtoBlob(d)); await ensureLocalUrl(h); stored = true; }
+        if (d) { await putIdbImageSafe(h, dataURLtoBlob(d)); await ensureLocalUrl(h); stored = true; }
       }
       if (!stored && window.CloudSync && typeof window.CloudSync.fetchMissingImageBlob === 'function') {
         const b2 = await window.CloudSync.fetchMissingImageBlob(h);
-        if (b2) { await idbPut('images', h, b2); await ensureLocalUrl(h); stored = true; }
+        if (b2) { await putIdbImageSafe(h, b2); await ensureLocalUrl(h); stored = true; }
       }
       if (stored) {
         const a = replaceRefs(appState);
@@ -441,7 +539,7 @@
       if (!dataUrl) return null;
 
       const hash = hashStr(dataUrl);
-      await idbPut('images', hash, webpBlob);
+      await putIdbImageSafe(hash, webpBlob);
       storedHashes.add(hash);
       let blobUrl = hashToUrl.get(hash);
       if (!blobUrl) {
@@ -469,25 +567,25 @@
   window.getLocalImageBlobUrl = h => (h ? (hashToUrl.get(String(h)) || '') : '');
   window.imgSrc = imgSrc;
   function drainLazy() {
-    if (!window.cloudImagesReady && !(window.CloudSync && window.CloudSync.canDownloadFromCloud && window.CloudSync.canDownloadFromCloud())) return;
     while (lazyWorkers < 3 && lazyQueue.size) {
       const h = lazyQueue.values().next().value; lazyQueue.delete(h); lazyBusy.add(h); lazyWorkers++;
       (async () => {
         try {
           await ensureLocalUrl(h);
           let stored = hashToUrl.has(h);
-          if (!stored && window.CloudSync && typeof window.CloudSync.fetchFullImageBlob === 'function') {
+          const canDownload = !!(window.cloudImagesReady || (window.CloudSync && window.CloudSync.canDownloadFromCloud && window.CloudSync.canDownloadFromCloud()));
+          if (!stored && canDownload && window.CloudSync && typeof window.CloudSync.fetchFullImageBlob === 'function') {
             const b = await window.CloudSync.fetchFullImageBlob(h);
             if (hashToUrl.has(h)) stored = true;
-            else if (b) { await idbPut('images', h, b); await ensureLocalUrl(h); stored = true; }
+            else if (b) { await putIdbImageSafe(h, b); await ensureLocalUrl(h); stored = true; }
           }
-          if (!stored && typeof window.cloudFetchImage === 'function') {
+          if (!stored && canDownload && typeof window.cloudFetchImage === 'function') {
             const d = await window.cloudFetchImage(h);
-            if (d) { await idbPut('images', h, dataURLtoBlob(d)); await ensureLocalUrl(h); stored = true; }
+            if (d) { await putIdbImageSafe(h, dataURLtoBlob(d)); await ensureLocalUrl(h); stored = true; }
           }
-          if (!stored && window.CloudSync && typeof window.CloudSync.fetchMissingImageBlob === 'function') {
+          if (!stored && canDownload && window.CloudSync && typeof window.CloudSync.fetchMissingImageBlob === 'function') {
             const b = await window.CloudSync.fetchMissingImageBlob(h);
-            if (b) { await idbPut('images', h, b); await ensureLocalUrl(h); }
+            if (b) { await putIdbImageSafe(h, b); await ensureLocalUrl(h); }
           }
         }
         catch (e) { console.error(e); }
@@ -495,17 +593,16 @@
         lazyBusy.delete(h); lazyWorkers--;
         clearTimeout(lazyRefresh);
         lazyRefresh = setTimeout(() => {
-          const a = replaceRefs(appState), b = replaceRefs(blockOrder);
-          if (a) {
-            renderDBView();
-            if (typeof renderGalleryAll === 'function') renderGalleryAll();
-            if (typeof loadBotAvatarToUI === 'function') loadBotAvatarToUI();
-            if (window.CCF && CCF.S && CCF.S.ready) {
-              if (typeof CCF.renderCenter === 'function') CCF.renderCenter();
-              if (typeof CCF.renderProps === 'function') CCF.renderProps();
-            }
+          const b = (typeof blockOrder !== 'undefined') ? replaceRefs(blockOrder) : 0;
+          const c = (window.CCF && CCF.S && CCF.S.proj) ? replaceRefs(CCF.S.proj) : 0;
+          if (c && window.CCF && CCF.S && CCF.S.ready) {
+            if (typeof CCF.renderCenter === 'function') CCF.renderCenter();
+            if (typeof CCF.renderProps === 'function') CCF.renderProps();
           }
-          if (b) { renderBlockUI(); renderPreview(); }
+          if (b) {
+            if (typeof renderBlockUI === 'function') renderBlockUI();
+            if (typeof renderPreview === 'function') renderPreview();
+          }
         }, 300);
         drainLazy();
       })();
@@ -537,13 +634,19 @@
     if (e.target.dataset.thumbRef) requestThumb(e.target.dataset.thumbRef);
     else if (e.target.dataset.ref) requestImage(e.target.dataset.ref);
   }), { rootMargin: '300px' }) : null;
-  const lazyMO = new MutationObserver(() => {
+  let lazyMOTimer = null;
+  const scanLazyImages = () => {
+    lazyMOTimer = null;
     document.querySelectorAll('img[data-ref]:not([data-obs]), img[data-thumb-ref]:not([data-obs])').forEach(i => {
       i.dataset.obs = '1';
       if (lazyIO) lazyIO.observe(i);
       else if (i.dataset.thumbRef) requestThumb(i.dataset.thumbRef);
       else requestImage(i.dataset.ref);
     });
+  };
+  const lazyMO = new MutationObserver(() => {
+    if (lazyMOTimer) clearTimeout(lazyMOTimer);
+    lazyMOTimer = setTimeout(scanLazyImages, 80);
   });
   const startLazyMO = () => lazyMO.observe(document.body, { childList: true, subtree: true });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startLazyMO); else startLazyMO();

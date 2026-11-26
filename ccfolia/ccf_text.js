@@ -8,14 +8,25 @@
 
   // ---------- 文字種 ----------
   const CJK = '\\u3000-\\u303F\\u3040-\\u30FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF\\uFF00-\\uFFEF';
+  const JP_CHAR = '\\u3040-\\u309F\\u30A0-\\u30FF\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF\\u3001\\u3002\\u3005\\u30FC';
   const RE_CJK_CHAR = new RegExp('[' + CJK + ']');
   const RE_SPACE_BETWEEN_CJK = new RegExp('([' + CJK + ']) +(?=[' + CJK + '])', 'g');
+  const RE_SPACE_AFTER_OPEN_BRK = /([「『（(【《〈〔]) +/g;
+  const RE_SPACE_BEFORE_CLOSE_BRK = / +([」』）)】》〉〕])/g;
+  const RE_SPACE_CJK_OPEN_PAREN = new RegExp('([' + CJK + ']) +(?=\\()', 'g');
+  const RE_SPACE_CLOSE_PAREN_CJK = new RegExp('(\\)) +(?=[' + CJK + '])', 'g');
+  const RE_SPACE_ALNUM_JP_PAREN = new RegExp('([A-Za-z0-9]) +(?=\\([' + CJK + '])', 'g');
+  const RE_SPACE_JP_ALNUM = new RegExp('([' + JP_CHAR + ']) +(?=[0-9０-９A-Za-z])', 'g');
+  const RE_SPACE_ALNUM_JP = new RegExp('([0-9０-９A-Za-z]) +(?=[' + JP_CHAR + '])', 'g');
   const RE_ASCII_WORD = /[A-Za-z0-9]/;
-  // ② 行末が文末記号で終わる場合（改行を保持）
-  const TERMINATORS = /[。．｡！？!?」』）)】］〕〉》…‥―ー〜~”"']$/;
-  // ③ 次行の行頭が記号・見出し・箇条書き・台詞・項目で始まる場合（改行を保持）
-  const OPENERS = /^(?:[・●○◎■□◆◇▲△▼▽★☆※【『「（(〔〈《①-⑳―ー─━＊*#＃▶►→⇒⇔§†‡]|[-+]\s)/;
-  const HEADING_BASE = /^(?:[■□◆◇●○▼▽▲△★☆※【〔]|第[0-9０-９一二三四五六七八九十百千]+[章節話幕部回篇]|[0-9０-９]+[\.．、）)\]:：])/i;
+  // ② 行末が文末記号で終わる場合（確実な文末と閉じ括弧類を分離）
+  const STRONG_TERM = /[。．｡！？!?…‥―〜~]$/;
+  const CLOSE_BRK = /[」』）)】］〕〉》”"']$/;
+  const INLINE_CLOSE_BRK = /[）)】］〕〉》]$/;
+  // ③ 次行の行頭が独立オープナー・箇条書き・罫線（長音符「ー」は除外、文中開き括弧は分離）
+  const STRONG_OPENERS = /^(?:[・●○◯〇◎■□◆◇▲△▼▽★☆※①-⑳―─━＊*#＃▶►→⇒⇔§†‡]|[-+]\s)/;
+  const BRACKET_OPENERS = /^[「『（(【〔〈《]/;
+  const HEADING_BASE = /^(?:[■□◆◇●○◯〇▼▽▲△★☆※【〔]|第[0-9０-９一二三四五六七八九十百千]+[章節話幕部回篇]|[0-9０-９]+[\.．）)\]:：])/i;
   const ROLE_HEAD_DELIM = /^(?:HO|ＨＯ|PC|ＰＣ|KP|ＫＰ|GM|ＧＭ|PL|ＰＬ|NPC|ＮＰＣ)(?:[0-9０-９一二三四五六七八九十]+)?\s*[:：・【「『（(/／―─-]/i;
   const ROLE_HEAD_LABEL = /^(?:HO|ＨＯ|PC|ＰＣ|KP|ＫＰ|GM|ＧＭ|PL|ＰＬ|NPC|ＮＰＣ)(?:[0-9０-９一二三四五六七八九十]+)?(?![A-Za-zＡ-Ｚａ-ｚ])/i;
   const ROLE_PROSE_PARTICLE = /[。、．，！？]|(?:から|まで)|[のはがをにへともでや]/;
@@ -27,7 +38,7 @@
     if (ROLE_HEAD_LABEL.test(s)) return Array.from(s).length <= 12 && !ROLE_PROSE_PARTICLE.test(s);
     return false;
   }
-  const NUMBERED = /^[0-9０-９]+[\.．、）)\]:：]/;
+  const NUMBERED = /^[0-9０-９]+[\.．）)\]:：](?:\s|$|\S)/;
 
   // PDF座標抽出時の行メタデータキャッシュ（直近の抽出テキスト → 行ごとの座標判定情報）
   const _rectMetaCache = new Map();
@@ -47,6 +58,15 @@
     const noUrl = t.replace(/https?:\/\/\S+/gi, '');
     return /[：:]/.test(noUrl);
   }
+  function hasUnclosedParen(s) {
+    let depth = 0;
+    for (const ch of String(s || '')) {
+      if (ch === '(' || ch === '（') depth++;
+      else if (ch === ')' || ch === '）') depth = Math.max(0, depth - 1);
+    }
+    return depth > 0;
+  }
+  const NUM_UNIT_CONT = /^(?:時間|分|秒|人|名|版|回|日|週|ヶ月|か月|カ月|年|歳|才|円|前後|程度|以上|以下|ほど|くらい|ぐらい|〜|～|[-~])/;
 
   const DEFAULT_CLEAN = { joinLines: 'smart', stripSpaces: true };
 
@@ -58,25 +78,24 @@
     const rawStr = String(raw == null ? '' : raw);
     const cachedMeta = _rectMetaCache.get(rawStr) || null;
     let t = rawStr
-      .replace(/\r\n?/g, '\n')
+      .replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n')
       .replace(/[\u00AD\u200B-\u200D\u2060\uFEFF\f\v]/g, '')   // ソフトハイフン・ゼロ幅文字・改ページ
       .replace(/\u00A0/g, ' ').replace(/\t/g, ' ');
     const rawLines = t.split('\n');
+    const validMeta = cachedMeta && cachedMeta.length === rawLines.length ? cachedMeta : null;
     const src = rawLines.map((l, idx) => {
-      const m = cachedMeta && cachedMeta[idx] ? cachedMeta[idx] : null;
+      const m = validMeta && validMeta[idx] ? validMeta[idx] : null;
+      const leadMatch = l.match(/^[ \u3000]+/);
+      const isIndent = /^(?:[\u3000]|[ ]{4,})/.test(l)
+        || (/^[ ]{2,3}/.test(l) && !/^[ ]{2,3}[0-9A-Za-z「『（(【〔〈《]/.test(l));
       return {
         text: l.replace(/\s+$/, ''),
-        indent: /^(?:[\u3000]|[ ]{2,})/.test(l),
+        indent: isIndent,
+        leadLen: leadMatch ? leadMatch[0].length : 0,
         shortEndX: !!(m && m.shortEndX),
         yGapBreak: !!(m && m.yGapBreak)
       };
     });
-
-    // 選択ブロック内の最大行文字数（④ 78%未満または24文字以下の短行判定用）
-    const lineLengths = src
-      .map(l => Array.from(l.text.replace(/^[ \u3000]+/, '')).length)
-      .filter(len => len > 0);
-    const maxLineChars = lineLengths.length ? Math.max(...lineLengths) : 0;
 
     // --- 段落（空行区切り）ごとに、行を連結する ---
     const paras = []; let cur = [];   // null は「空行」（連続する空行は1つにまとめる）
@@ -90,21 +109,30 @@
     const out = [];
     paras.forEach(p => {
       if (p === null) { if (out.length && out[out.length - 1] !== '') out.push(''); return; }
+      // 段落内の50%以上の行が先頭空白を持つ場合は「段落全体の左マージン」とみなす
+      const indentedCount = p.filter(l => l.indent).length;
+      const hasCommonMargin = p.length >= 2 && (indentedCount / p.length >= 0.5);
       const lines = p.map(l => ({
         s: o.stripSpaces ? l.text.replace(/^[ \u3000]+/, '') : l.text,
-        indent: l.indent,
+        indent: hasCommonMargin ? false : l.indent,
+        leadLen: l.leadLen,
         shortEndX: l.shortEndX,
         yGapBreak: l.yGapBreak
       }));
+      // 段落単位の最大行文字数（ページ内の別箇所にある長い目次行等による誤判定を防止）
+      const paraLengths = lines.map(l => Array.from(l.s.trim()).length).filter(len => len > 0);
+      const paraMaxChars = paraLengths.length ? Math.max(...paraLengths) : 0;
       if (o.joinLines === 'none') { lines.forEach(l => out.push(l.s)); return; }
       let acc = lines[0].s;
       for (let i = 1; i < lines.length; i++) {
         const prevObj = lines[i - 1], nextObj = lines[i];
+        const nextIndented = nextObj.indent && (prevObj.leadLen !== nextObj.leadLen);
         if (o.joinLines !== 'all' && shouldBreak(prevObj.s, nextObj.s, {
-          nextIndented: nextObj.indent,
+          nextIndented,
           nextYGapBreak: nextObj.yGapBreak,
           prevShortEndX: prevObj.shortEndX,
-          maxLineChars
+          accUnclosedParen: hasUnclosedParen(acc),
+          maxLineChars: paraMaxChars
         })) {
           out.push(acc);
           acc = nextObj.s;
@@ -121,9 +149,20 @@
     if (o.stripSpaces) {
       res = res.split('\n').map(l => {
         let s = l.replace(/ {2,}/g, ' ').replace(/ +$/, '');
-        // 日本語文字同士の間の不自然な半角スペースのみを除去（「あ い う」のように連続する場合も対応、英単語間のスペースは保持）
+        // PDF/整形由来の不要な半角空白を除去（英単語間のスペースや箇条書きは保持）
         let prev;
-        do { prev = s; s = s.replace(RE_SPACE_BETWEEN_CJK, '$1'); } while (s !== prev);
+        do {
+          prev = s;
+          s = s
+            .replace(RE_SPACE_AFTER_OPEN_BRK, '$1')
+            .replace(RE_SPACE_BEFORE_CLOSE_BRK, '$1')
+            .replace(RE_SPACE_CJK_OPEN_PAREN, '$1')
+            .replace(RE_SPACE_CLOSE_PAREN_CJK, '$1')
+            .replace(RE_SPACE_ALNUM_JP_PAREN, '$1')
+            .replace(RE_SPACE_JP_ALNUM, '$1')
+            .replace(RE_SPACE_ALNUM_JP, '$1')
+            .replace(RE_SPACE_BETWEEN_CJK, '$1');
+        } while (s !== prev);
         return s;
       }).join('\n');
     }
@@ -139,26 +178,80 @@
     const p = String(prev || '').trim();
     const n = String(next || '').trim();
     if (!p || !n) return true;
-    // ① 字下げ行・またはPDF座標で通常の行送りの1.35倍以上のYギャップがある行
-    if (ctx.nextIndented || ctx.nextYGapBreak) return true;
-    // ② 行末が文末記号で終わる場合
-    if (TERMINATORS.test(p)) return true;
-    // ③ 次行の行頭が見出し・箇条書き・台詞・番号、または項目行（〇〇：）
-    if (OPENERS.test(n) || NUMBERED.test(n) || isHeadingLine(n) || isColonItemLine(n)) return true;
-    // ④ 現在行が項目行（システム：CoC6版 等）
-    if (isColonItemLine(p)) return true;
-    // 文の途中折り返し（強制結合）
-    if (MID_END.test(p) || MID_END2.test(p) || NEXT_CONT.test(n)) return false;
-    // ⑤ 意図的な短行
+    // ① 行末が確実な文末記号で終わる場合（改行を保持）
+    if (STRONG_TERM.test(p)) return true;
+
+    const unclosedParen = hasUnclosedParen(p) || !!ctx.accUnclosedParen;
+    const isNumUnitCont = /[0-9０-９]$/.test(p) && NUM_UNIT_CONT.test(n);
+    const isAlnumCont = /[A-Za-z0-9]$/.test(p) && INLINE_ALNUM_CONT.test(n);
+    const isMidContinuation = unclosedParen || MID_END.test(p) || MID_END2.test(p) || MID_CLAUSE_END.test(p) || NEXT_CONT.test(n) || isNumUnitCont || isAlnumCont;
+
+    // ② 行末が閉じ括弧類で終わる場合（文中インライン括弧と台詞・見出し末尾を判別）
+    if (CLOSE_BRK.test(p)) {
+      if (NEXT_CONT.test(n) || NEXT_AFTER_CLOSE.test(n)) return false;
+      if (isHeadingLine(p) && Array.from(p).length <= 35) return true;
+      if (STRONG_OPENERS.test(n) || NUMBERED.test(n) || isHeadingLine(n) || isColonItemLine(n)) return true;
+      if (!/^[「『]/.test(p) && INLINE_CLOSE_BRK.test(p)) return false;
+      return true;
+    }
+
+    // ③ 独立行頭オープナー・項目行（〇〇：）は改行を保持
+    if (STRONG_OPENERS.test(n) || isColonItemLine(n)) return true;
+    // 現在行が項目行（システム：CoC6版 等）
+    if (isColonItemLine(p)) {
+      if (/[：:]$/.test(p) && Array.from(n).length <= 25) return false;
+      if (NEXT_CONT.test(n) || unclosedParen || isNumUnitCont) return false;
+      return true;
+    }
+    // ④ 明らかに文の途中折り返し（開き括弧・番号・nextIndented・nextYGapBreak より最優先で強制結合）
+    if (isMidContinuation) return false;
+    // ⑤ 次行が番号付き行・見出し行
+    if (NUMBERED.test(n) || isHeadingLine(n)) return true;
+    // ⑥ 現在行が見出し行（■ 導入 等）
     const pLen = Array.from(p).length, mlc = ctx.maxLineChars || 0;
-    if (mlc >= 14 && pLen < Math.min(14, Math.floor(mlc * 0.68))) return true;
     if (isHeadingLine(p) && pLen <= 35) return true;
+    // ⑦ 次行が開き括弧で始まる場合（同一行内で閉じて後続の文が続くインライン引用は連結）
+    if (BRACKET_OPENERS.test(n)) {
+      if (/^(?:「[^」]+」|『[^』]+』|（[^）]+）|\([^)]+\)|《[^》]+》|〈[^〉]+〉)\S/.test(n)) return false;
+      return true;
+    }
+    // ⑧ 字下げ行・またはPDF座標で通常の行送りより広いYギャップがある行
+    if (ctx.nextIndented || ctx.nextYGapBreak) return true;
+    // ⑨ 意図的な短行
+    if (mlc >= 14 && pLen < Math.min(14, Math.floor(mlc * 0.68))) return true;
     if (ctx.prevShortEndX) return true;
     return false;
   }
   const MID_END = /[、，,っゃゅょァィゥェォッャュョ「『（(【〔〈《]$/;
   const MID_END2 = /[はがをにへでとやもかのよりからまでばかりだけほどくらいなどっててもでもけれどけどしりてでな]$/;
-  const NEXT_CONT = /^(?:[。．、，！？!?」』）)】］〕〉》…‥ー〜~っゃゅょァィゥェォッャュョ]|ではない|ではなく|である|であった|であり|ですか|ます[。、！？]?|ました|ません|だった|だ[。、！？]|た[。、！？、]|て[、。いるいたいくおくしま]|に[もはてよ関現不]|を|が|は[、。]|と[はもい]|の[はでがをに]|へ|で[はもあ]|や|も|から|ので|けれど|しかし|するのが|居る)/;
+  const MID_CLAUSE_END = /(?:である|であった|であり|という|といった|とする|とした|による|における|について|に対して|に関して|する|ある|いる|なる|れる|せる|ない|った|した)$/;
+  const NEXT_CONT = /^(?:[。．、，！？!?」』）)】］〕〉》…‥ー〜~んンっゃゅょァィゥェォッャュョ]|ではない|ではなく|である|であった|であり|ですか|ます[。、！？]?|ました|ません|だった|だ[。、！？]|た[。、！？、]|て[、。いるいたいくおくしま]|に[もはてよ関現不な]|を|が|は[、。]|と(?:になる|なる|して|した|する|いう|いった|[はもい])|の[はでがをに]|へ|で[はもあ]|や|も|から|ので|けれど|しかし|するのが|居る)/;
+  const NEXT_AFTER_CLOSE = /^(?:[、。，．！？!?」』）)】］〕〉》…‥ー〜~a-z]|は|が|を|に|へ|で|と|の|も|や|から|まで|である|であった|であり|ではない|ではなく|です|ます|だった|だ[。、！？]|た[。、！？]|て)/;
+  const INLINE_ALNUM_CONT = /^(?:[A-Za-z0-9（(「『【〔〈《]|は|が|を|に|へ|で|と|の|も|や|から|まで)/;
+
+  /** 同期テキスト（=== P.1 === 等のページ区切り付き）の各ページ本文に cleanText を適用しつつページ見出し行を保持する */
+  function cleanSyncedDocText(raw) {
+    const text = String(raw == null ? '' : raw).replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n');
+    if (!text.trim()) return '';
+    const re = /^=== P\.(\d+) ===\s*$/gm;
+    const matches = [...text.matchAll(re)];
+    if (!matches.length) {
+      return cleanText(text, { joinLines: 'smart', stripSpaces: true });
+    }
+    const parts = [];
+    const pre = text.slice(0, matches[0].index).trim();
+    if (pre) parts.push(cleanText(pre, { joinLines: 'smart', stripSpaces: true }));
+    for (let i = 0; i < matches.length; i++) {
+      const m = matches[i];
+      const head = `=== P.${m[1]} ===`;
+      const start = m.index + m[0].length;
+      const end = (i + 1 < matches.length) ? matches[i + 1].index : text.length;
+      const pageBody = text.slice(start, end);
+      const cleanedBody = cleanText(pageBody, { joinLines: 'smart', stripSpaces: true });
+      parts.push(cleanedBody ? (head + '\n' + cleanedBody) : head);
+    }
+    return parts.join('\n\n');
+  }
   function joinPair(a, b) {
     if (!a) return b; if (!b) return a;
     const x = a[a.length - 1], y = b[0];
@@ -299,7 +392,7 @@
     }
     const metaList = [];
     const text = o.twoColumn ? orderBands(chunks, metaList, o.pageW) : chunksToLines(chunks, metaList, o.pageW);
-    if (text && metaList.length) _rememberRectMeta(text, metaList);
+    if (text && metaList.length && metaList.length === text.split('\n').length) _rememberRectMeta(text, metaList);
     return text;
   }
 
@@ -340,7 +433,7 @@
     // 2行以上にわたってほぼ同じX位置に水平ギャップがある縦カラム群を左ブロック→右ブロックへ分離
     if (depth < 4 && rawLines.length >= 2) {
       const rowGaps = rawLines.map((l, rIdx) => {
-        const gapThresh = Math.max(l.h * 0.9, 7);
+        const gapThresh = Math.max(l.h * 1.65, 14);
         const gs = [];
         for (let i = 1; i < l.chunks.length; i++) {
           const v0 = Math.max(l.chunks[i - 1].x0, l.chunks[i - 1].x1);
@@ -394,7 +487,9 @@
             });
             const leftW = isFinite(lMaxX) ? Math.max(0, lMaxX - lMinX) : 0;
             const rightW = isFinite(rMaxX) ? Math.max(0, rMaxX - rMinX) : 0;
-            const inlineGapOnly = gappedRows < 3 && minGap < medH * 2.0 && (leftW < medH * 2.5 || rightW < medH * 2.5);
+            const enoughColWidth = leftW >= medH * 5 && rightW >= medH * 5;
+            const enoughGapRows = gappedRows >= 3 || (rawLines.length > 0 && (gappedRows / rawLines.length) >= 0.5);
+            const inlineGapOnly = !(enoughColWidth && enoughGapRows);
             const isStatTable = statPairedRows >= 2;
             segs.push({ rows: curRows, split: gappedRows >= 2 && hasL && hasR && !inlineGapOnly && !isStatTable, gappedRows, minGap: isFinite(minGap) ? minGap : 0 });
             curRows = [];
@@ -469,14 +564,17 @@
       if (dy > 0 && dy < Math.max(lines[i].h, medH) * 3.2) dys.push(dy);
     }
     dys.sort((a, b) => a - b);
-    const normalDy = dys.length ? dys[Math.floor((dys.length - 1) * 0.4)] : (medH * 1.45);
+    const medDy = dys.length
+      ? (dys.length % 2 === 1 ? dys[(dys.length - 1) / 2] : (dys[dys.length / 2 - 1] + dys[dys.length / 2]) / 2)
+      : (medH * 1.45);
+    const normalDy = Math.max(medH * 1.15, medDy);
 
     const outLines = [];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
       const dy = i > 0 ? (l.y - lines[i - 1].y) : 0;
-      const yGapBreak = i > 0 && normalDy > 0 && dy >= normalDy * 1.45;
-      if (i > 0 && normalDy > 0 && dy >= normalDy * 1.8) {
+      const yGapBreak = i > 0 && normalDy > 0 && dy >= normalDy * 1.65;
+      if (i > 0 && normalDy > 0 && dy >= normalDy * 2.1) {
         outLines.push('');
         if (Array.isArray(metaOut)) metaOut.push({ shortEndX: false, yGapBreak: true });
       }
@@ -682,7 +780,12 @@
       } else band.push(c);
     });
     flush();
-    return out.filter(Boolean).join('\n');
+    const res = out.filter(Boolean).join('\n');
+    if (Array.isArray(metaOut)) {
+      const lineCount = res ? res.split('\n').length : 0;
+      if (metaOut.length !== lineCount) metaOut.length = 0;
+    }
+    return res;
   }
 
   // ---------- 1行目の自動タイトル化 ----------
@@ -757,23 +860,139 @@
     return { text: out, count };
   }
 
-  // ---------- テキスト系資料（.txt/.html/.htm/.md）の読み込み ----------
-  const TEXT_DOC_RE = /\.(?:txt|html?|md)$/i;
-  /** バイト列 → 文字列（BOM / UTF-8 / UTF-16 / Shift_JIS(CP932) / EUC-JP を自動判別）。{ text, enc } */
-  function decodeBytes(buf) {
-    const u = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-    const td = (enc, fatal) => { try { return new TextDecoder(enc, { fatal: !!fatal }).decode(u); } catch (e) { return null; } };
-    if (u[0] === 0xEF && u[1] === 0xBB && u[2] === 0xBF) return { text: td('utf-8').replace(/^\uFEFF/, ''), enc: 'UTF-8 (BOM)' };
-    if (u[0] === 0xFF && u[1] === 0xFE) return { text: td('utf-16le'), enc: 'UTF-16LE' };
-    if (u[0] === 0xFE && u[1] === 0xFF) return { text: td('utf-16be'), enc: 'UTF-16BE' };
-    let t = td('utf-8', true); if (t != null) return { text: t, enc: 'UTF-8' };
-    const sj = td('shift_jis', true), eu = td('euc-jp', true), bad = s => (s.match(/\uFFFD/g) || []).length;
-    const score = s => s == null ? -1 : (s.match(/[\u3040-\u30FF\u4E00-\u9FFF]/g) || []).length - bad(s) * 5;
-    if (score(sj) >= score(eu) && sj != null) return { text: sj, enc: 'Shift_JIS' };
-    if (eu != null) return { text: eu, enc: 'EUC-JP' };
-    return { text: td('utf-8') || '', enc: 'UTF-8 (不明)' };
+  // ---------- テキスト系資料（.txt/.html/.htm/.md/.markdown/.docx）の読み込み ----------
+  const TEXT_DOC_RE = /\.(?:txt|html?|md|markdown|docx)$/i;
+  const DOCX_NAME_RE = /\.docx(?:\.txt)?$/i;
+  const CTRL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
+  const CTRL_G_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g;
+  const BINARY_ERR_MSG = '⚠️ このファイルはバイナリ形式（旧 .doc 等）のためテキスト表示できません。PDFまたは .docx / .txt 形式で登録してください。';
+
+  function toUint8(buf) {
+    if (buf instanceof Uint8Array) return buf;
+    if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
+    if (ArrayBuffer.isView(buf)) return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    return new Uint8Array(buf || []);
   }
+  function isZipBytes(buf) {
+    const u = toUint8(buf);
+    return u.byteLength >= 4 && u[0] === 0x50 && u[1] === 0x4B && u[2] === 0x03 && u[3] === 0x04;
+  }
+  function isLegacyDocBinary(buf) {
+    const u = toUint8(buf);
+    return u.byteLength >= 4 && u[0] === 0xD0 && u[1] === 0xCF && u[2] === 0x11 && u[3] === 0xE0;
+  }
+  function detectBomlessUtf16(u) {
+    const sampleLen = Math.min(u.byteLength, 512);
+    if (sampleLen < 8) return '';
+    let evenZeros = 0, oddZeros = 0;
+    for (let i = 0; i < sampleLen; i++) {
+      if (u[i] === 0) { if (i % 2 === 0) evenZeros++; else oddZeros++; }
+    }
+    if (oddZeros >= sampleLen * 0.25 && oddZeros > evenZeros * 3) return 'utf-16le';
+    if (evenZeros >= sampleLen * 0.25 && evenZeros > oddZeros * 3) return 'utf-16be';
+    return '';
+  }
+  function hasIso2022JpEsc(u) {
+    const len = u.byteLength;
+    for (let i = 0; i + 2 < len; i++) {
+      if (u[i] === 0x1B) {
+        const b1 = u[i + 1], b2 = u[i + 2];
+        if ((b1 === 0x24 && (b2 === 0x42 || b2 === 0x40)) || (b1 === 0x28 && b2 === 0x42)) return true;
+      }
+    }
+    return false;
+  }
+  function isLikelyBinaryBytes(buf) {
+    const u = toUint8(buf);
+    if (!u.byteLength) return false;
+    if (isLegacyDocBinary(u)) return true;
+    if (u.byteLength >= 2 && ((u[0] === 0xFF && u[1] === 0xFE) || (u[0] === 0xFE && u[1] === 0xFF))) return false;
+    if (detectBomlessUtf16(u)) return false;
+    const sampleLen = Math.min(u.byteLength, 1024);
+    if (sampleLen < 16) return false;
+    let nul = 0;
+    for (let i = 0; i < sampleLen; i++) if (u[i] === 0) nul++;
+    return (nul / sampleLen) >= 0.1;
+  }
+  function scoreJapaneseText(s) {
+    if (s == null) return -1e12;
+    const hira = (s.match(/[\u3041-\u3096]/g) || []).length;
+    const kata = (s.match(/[\u30A1-\u30FA\u30FC]/g) || []).length;
+    const kanji = (s.match(/[\u3400-\u4DBF\u4E00-\u9FFF\u3005]/g) || []).length;
+    const jpPunct = (s.match(/[、。・「」『』（）【】《》〈〉！？：；]/g) || []).length;
+    const fffd = (s.match(/\uFFFD/g) || []).length;
+    const ctrl = (s.match(CTRL_G_RE) || []).length;
+    const halfKataRuns = s.match(/[\uFF61-\uFF9F]{2,}/g) || [];
+    let halfKata = 0;
+    for (let i = 0; i < halfKataRuns.length; i++) halfKata += halfKataRuns[i].length;
+    const latinExt = (s.match(/[\u0080-\u024F]/g) || []).length;
+    return hira * 4 + kata * 2 + kanji * 2 + jpPunct * 2 - fffd * 50 - ctrl * 50 - halfKata * 8 - latinExt * 12;
+  }
+
+  /** バイト列 → 文字列（BOM / UTF-16 / ISO-2022-JP / UTF-8 / Shift_JIS(CP932) / EUC-JP を自動判別）。{ text, enc } */
+  function decodeBytes(buf) {
+    const u = toUint8(buf);
+    if (!u.byteLength) return { text: '', enc: 'UTF-8' };
+    const td = (enc, fatal, slice) => {
+      try { return new TextDecoder(enc, { fatal: !!fatal }).decode(slice || u); } catch (_) { return null; }
+    };
+    // ① BOM
+    if (u.byteLength >= 3 && u[0] === 0xEF && u[1] === 0xBB && u[2] === 0xBF) {
+      const t = td('utf-8', false, u.subarray(3));
+      return { text: String(t || '').replace(/^\uFEFF/, ''), enc: 'UTF-8 (BOM)' };
+    }
+    if (u.byteLength >= 2 && u[0] === 0xFF && u[1] === 0xFE) {
+      const t = td('utf-16le', false, u.subarray(2));
+      if (t != null) return { text: t.replace(/^\uFEFF/, ''), enc: 'UTF-16LE' };
+    }
+    if (u.byteLength >= 2 && u[0] === 0xFE && u[1] === 0xFF) {
+      const t = td('utf-16be', false, u.subarray(2));
+      if (t != null) return { text: t.replace(/^\uFEFF/, ''), enc: 'UTF-16BE' };
+    }
+    // ② BOMなし UTF-16LE / UTF-16BE
+    const u16 = detectBomlessUtf16(u);
+    if (u16) {
+      const t = td(u16, false);
+      if (t != null) return { text: t.replace(/^\uFEFF/, ''), enc: u16 === 'utf-16le' ? 'UTF-16LE' : 'UTF-16BE' };
+    }
+    // ③ ISO-2022-JP
+    if (hasIso2022JpEsc(u)) {
+      const t = td('iso-2022-jp', false);
+      if (t != null) return { text: t, enc: 'ISO-2022-JP' };
+    }
+    // ④ 厳密 UTF-8（fatal:true かつ制御文字なし）
+    const utf8Strict = td('utf-8', true);
+    if (utf8Strict != null && !utf8Strict.includes('\uFFFD') && !CTRL_RE.test(utf8Strict)) {
+      return { text: utf8Strict, enc: 'UTF-8' };
+    }
+    // ⑤ Shift_JIS (CP932)・EUC-JP・UTF-8 のスコアリング比較（fatal:false を必ず再評価）
+    const cands = [
+      { enc: 'Shift_JIS', text: td('shift_jis', true), strict: true },
+      { enc: 'Shift_JIS', text: td('shift_jis', false), strict: false },
+      { enc: 'EUC-JP', text: td('euc-jp', true), strict: true },
+      { enc: 'EUC-JP', text: td('euc-jp', false), strict: false },
+      { enc: 'UTF-8', text: td('utf-8', false), strict: false }
+    ].filter(c => c.text != null);
+    let best = null, bestScore = -1e15;
+    for (const c of cands) {
+      const sc = scoreJapaneseText(c.text) + (c.strict ? 1 : 0);
+      if (sc > bestScore) { bestScore = sc; best = c; }
+    }
+    if (best) return { text: best.text, enc: best.enc };
+    return { text: td('utf-8', false) || '', enc: 'UTF-8 (不明)' };
+  }
+
   const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+  function decodeXmlEntities(s) {
+    return String(s || '').replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+      if (e[0] === '#') {
+        const n = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        try { return isFinite(n) ? String.fromCodePoint(n) : ''; } catch (_) { return ''; }
+      }
+      const lo = e.toLowerCase();
+      return ENT[lo] != null ? ENT[lo] : m;
+    });
+  }
   /** HTML → 読みやすいプレーンテキスト（script/style 除去、ブロック要素は改行） */
   function htmlToText(html) {
     return String(html || '').replace(/<(script|style|head)[\s\S]*?<\/\1>/gi, '').replace(/<!--[\s\S]*?-->/g, '')
@@ -781,14 +1000,238 @@
       .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => { if (e[0] === '#') { const n = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : +e.slice(1); try { return String.fromCodePoint(n); } catch (er) { return ''; } } return ENT[e.toLowerCase()] != null ? ENT[e.toLowerCase()] : m; })
       .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   }
-  /** パス/バイト列 → { text, enc }（.html/.htm はタグを除去） */
-  function loadTextDoc(name, buf) {
-    const d = decodeBytes(buf);
-    if (/\.html?$/i.test(name || '')) { const m = /<meta[^>]+charset=["']?\s*([\w-]+)/i.exec(d.text.slice(0, 2000)); if (m && /shift|sjis|932/i.test(m[1]) && d.enc.startsWith('UTF-8') && /\uFFFD/.test(d.text)) { try { d.text = new TextDecoder('shift_jis').decode(buf); d.enc = 'Shift_JIS'; } catch (e) { /* noop */ } } d.text = htmlToText(d.text); }
-    d.text = d.text.replace(/\r\n?/g, '\n'); return d;
+
+  // ---------- 純JS .docx（Word XML in ZIP）本文抽出 ----------
+  function parseZipEntriesRaw(buf) {
+    const u = toUint8(buf);
+    if (!isZipBytes(u)) return [];
+    const dv = new DataView(u.buffer, u.byteOffset, u.byteLength);
+    const len = u.byteLength;
+    const decName = bytes => { try { return new TextDecoder('utf-8').decode(bytes).replace(/\\/g, '/'); } catch (_) { return ''; } };
+    const entries = [];
+    // 中央ディレクトリ終端 (EOCD: 0x06054b50) を後方走査
+    let eocd = -1;
+    const minOff = Math.max(0, len - 65557);
+    for (let i = len - 22; i >= minOff; i--) {
+      if (u[i] === 0x50 && u[i + 1] === 0x4B && u[i + 2] === 0x05 && u[i + 3] === 0x06) { eocd = i; break; }
+    }
+    if (eocd >= 0) {
+      const cdSize = dv.getUint32(eocd + 12, true);
+      const cdOff = dv.getUint32(eocd + 16, true);
+      let pos = cdOff;
+      const cdEnd = Math.min(len, cdOff + cdSize);
+      while (pos + 46 <= cdEnd && dv.getUint32(pos, true) === 0x02014b50) {
+        const method = dv.getUint16(pos + 10, true);
+        const compSize = dv.getUint32(pos + 20, true);
+        const nameLen = dv.getUint16(pos + 28, true);
+        const extraLen = dv.getUint16(pos + 30, true);
+        const commentLen = dv.getUint16(pos + 32, true);
+        const localOff = dv.getUint32(pos + 42, true);
+        const name = decName(u.subarray(pos + 46, pos + 46 + nameLen));
+        if (localOff + 30 <= len && dv.getUint32(localOff, true) === 0x04034b50) {
+          const lNameLen = dv.getUint16(localOff + 26, true);
+          const lExtraLen = dv.getUint16(localOff + 28, true);
+          const dataStart = localOff + 30 + lNameLen + lExtraLen;
+          if (dataStart + compSize <= len) {
+            entries.push({ name, method, data: u.subarray(dataStart, dataStart + compSize) });
+          }
+        }
+        pos += 46 + nameLen + extraLen + commentLen;
+      }
+    }
+    if (entries.length) return entries;
+    // EOCDが無い最小ZIPの場合はローカルファイルヘッダを順次走査
+    let pos = 0;
+    while (pos + 30 <= len && dv.getUint32(pos, true) === 0x04034b50) {
+      const method = dv.getUint16(pos + 8, true);
+      const compSize = dv.getUint32(pos + 18, true);
+      const nameLen = dv.getUint16(pos + 26, true);
+      const extraLen = dv.getUint16(pos + 28, true);
+      const name = decName(u.subarray(pos + 30, pos + 30 + nameLen));
+      const dataStart = pos + 30 + nameLen + extraLen;
+      if (dataStart + compSize > len) break;
+      entries.push({ name, method, data: u.subarray(dataStart, dataStart + compSize) });
+      pos = dataStart + compSize;
+    }
+    return entries;
+  }
+  function extractWordXmlText(xml) {
+    const src = String(xml || '');
+    if (!src) return '';
+    const paras = [];
+    let inP = 0, inT = false, inFallback = 0, cur = '';
+    const tagRe = /<(\/?)([a-zA-Z0-9_:-]+)([^>]*?)(\/?)>/g;
+    let lastIdx = 0, m;
+    while ((m = tagRe.exec(src)) !== null) {
+      if (inT && !inFallback && m.index > lastIdx) {
+        cur += decodeXmlEntities(src.slice(lastIdx, m.index));
+      }
+      lastIdx = tagRe.lastIndex;
+      const isClose = m[1] === '/';
+      const name = m[2].toLowerCase();
+      const isSelf = m[4] === '/';
+      if (name === 'mc:fallback') {
+        if (!isSelf) inFallback = Math.max(0, inFallback + (isClose ? -1 : 1));
+        continue;
+      }
+      if (inFallback > 0) continue;
+      if (name === 'w:p') {
+        if (isSelf) {
+          paras.push('');
+        } else if (!isClose) {
+          if (inP > 0 && cur) { paras.push(cur); cur = ''; }
+          inP++;
+        } else if (inP > 0) {
+          paras.push(cur);
+          cur = '';
+          inP--;
+        }
+      } else if (name === 'w:t') {
+        if (!isSelf) inT = !isClose;
+      } else if (name === 'w:tab' && !isClose) {
+        cur += '\t';
+      } else if ((name === 'w:br' || name === 'w:cr') && !isClose) {
+        cur += '\n';
+      }
+    }
+    if (cur) paras.push(cur);
+    return paras.join('\n').replace(/\r\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  function inflateZipEntrySync(ent) {
+    if (!ent) return null;
+    if (ent.method === 0) return ent.data;
+    if (ent.method === 8 && typeof require === 'function') {
+      try {
+        const zlib = require('zlib');
+        if (zlib && typeof zlib.inflateRawSync === 'function') {
+          const out = zlib.inflateRawSync(ent.data);
+          return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
+        }
+      } catch (_) { return null; }
+    }
+    return null;
+  }
+  async function inflateZipEntryAsync(ent) {
+    if (!ent) return null;
+    if (ent.method === 0) return ent.data;
+    if (ent.method === 8) {
+      const syncOut = inflateZipEntrySync(ent);
+      if (syncOut) return syncOut;
+      if (typeof DecompressionStream === 'function') {
+        try {
+          const ds = new DecompressionStream('deflate-raw');
+          const writer = ds.writable.getWriter();
+          const writeP = writer.write(ent.data).then(() => writer.close());
+          const reader = ds.readable.getReader();
+          const chunks = [];
+          let total = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) { chunks.push(value); total += value.byteLength; }
+          }
+          await writeP;
+          const out = new Uint8Array(total);
+          let off = 0;
+          for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+          return out;
+        } catch (_) { return null; }
+      }
+    }
+    return null;
+  }
+  function findDocxEntries(buf) {
+    const entries = parseZipEntriesRaw(buf);
+    let docEnt = null, footEnt = null;
+    for (const e of entries) {
+      const lo = String(e.name || '').toLowerCase();
+      if (lo === 'word/document.xml') docEnt = e;
+      else if (lo === 'word/footnotes.xml') footEnt = e;
+    }
+    return { docEnt, footEnt };
+  }
+  function extractDocxTextSync(buf) {
+    const { docEnt, footEnt } = findDocxEntries(buf);
+    if (!docEnt) return null;
+    const rawDoc = inflateZipEntrySync(docEnt);
+    if (!rawDoc) return null;
+    const utf8 = new TextDecoder('utf-8');
+    let text = extractWordXmlText(utf8.decode(rawDoc));
+    if (footEnt) {
+      const rawFoot = inflateZipEntrySync(footEnt);
+      if (rawFoot) {
+        const ft = extractWordXmlText(utf8.decode(rawFoot));
+        if (ft) text = text ? (text + '\n\n' + ft) : ft;
+      }
+    }
+    return text;
+  }
+  async function extractDocxTextAsync(buf) {
+    const { docEnt, footEnt } = findDocxEntries(buf);
+    if (!docEnt) return null;
+    const rawDoc = await inflateZipEntryAsync(docEnt);
+    if (!rawDoc) return null;
+    const utf8 = new TextDecoder('utf-8');
+    let text = extractWordXmlText(utf8.decode(rawDoc));
+    if (footEnt) {
+      const rawFoot = await inflateZipEntryAsync(footEnt);
+      if (rawFoot) {
+        const ft = extractWordXmlText(utf8.decode(rawFoot));
+        if (ft) text = text ? (text + '\n\n' + ft) : ft;
+      }
+    }
+    return text;
   }
 
-  const api = { cleanText, shouldBreak, joinPair, layoutItems, extractRectText, splitTitleBody, bodyHeight, stockTitle, chunkText, buildPaletteLines, toHalfWidthAlnum, toFullWidthAlnum, wrapWord, decodeBytes, htmlToText, loadTextDoc, TEXT_DOC_RE, _mul: mul };
+  function decodeHtmlAndNormalize(name, u) {
+    const d = decodeBytes(u);
+    if (/\.html?$/i.test(name || '')) {
+      const m = /<meta[^>]+charset=["']?\s*([\w-]+)/i.exec(d.text.slice(0, 2000));
+      if (m && /shift|sjis|932/i.test(m[1]) && d.enc.startsWith('UTF-8') && /\uFFFD/.test(d.text)) {
+        try { d.text = new TextDecoder('shift_jis').decode(u); d.enc = 'Shift_JIS'; } catch (_) { /* noop */ }
+      }
+      d.text = htmlToText(d.text);
+    }
+    d.text = d.text.replace(/\r\n?/g, '\n');
+    return d;
+  }
+
+  /** パス/バイト列 → { text, enc }（.docx は本文抽出、.html/.htm はタグ除去、旧 .doc 等バイナリは安全ガード） */
+  function loadTextDoc(name, buf) {
+    const u = toUint8(buf);
+    if (isZipBytes(u)) {
+      const { docEnt } = findDocxEntries(u);
+      if (DOCX_NAME_RE.test(name || '') || docEnt) {
+        const extracted = extractDocxTextSync(u);
+        if (extracted != null) return { text: extracted.replace(/\r\n?/g, '\n'), enc: 'DOCX (Word)' };
+        return { text: BINARY_ERR_MSG, enc: 'バイナリ非対応', isBinaryError: true };
+      }
+      return { text: BINARY_ERR_MSG, enc: 'バイナリ非対応', isBinaryError: true };
+    }
+    if (isLegacyDocBinary(u) || isLikelyBinaryBytes(u)) {
+      return { text: BINARY_ERR_MSG, enc: 'バイナリ非対応', isBinaryError: true };
+    }
+    return decodeHtmlAndNormalize(name, u);
+  }
+  /** 非同期版 loadTextDoc（ブラウザ環境の deflate-raw 圧縮 .docx にも対応） */
+  async function loadTextDocAsync(name, buf) {
+    const u = toUint8(buf);
+    if (isZipBytes(u)) {
+      const { docEnt } = findDocxEntries(u);
+      if (DOCX_NAME_RE.test(name || '') || docEnt) {
+        const extracted = await extractDocxTextAsync(u);
+        if (extracted != null) return { text: extracted.replace(/\r\n?/g, '\n'), enc: 'DOCX (Word)' };
+        return { text: BINARY_ERR_MSG, enc: 'バイナリ非対応', isBinaryError: true };
+      }
+      return { text: BINARY_ERR_MSG, enc: 'バイナリ非対応', isBinaryError: true };
+    }
+    if (isLegacyDocBinary(u) || isLikelyBinaryBytes(u)) {
+      return { text: BINARY_ERR_MSG, enc: 'バイナリ非対応', isBinaryError: true };
+    }
+    return decodeHtmlAndNormalize(name, u);
+  }
+
+  const api = { cleanText, cleanSyncedDocText, shouldBreak, joinPair, layoutItems, extractRectText, splitTitleBody, bodyHeight, stockTitle, chunkText, buildPaletteLines, toHalfWidthAlnum, toFullWidthAlnum, wrapWord, decodeBytes, htmlToText, isZipBytes, isLegacyDocBinary, extractDocxTextSync, extractDocxTextAsync, loadTextDoc, loadTextDocAsync, TEXT_DOC_RE, _mul: mul };
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (typeof window !== 'undefined') window.CCFText = api;
 })();

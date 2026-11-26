@@ -77,6 +77,10 @@ function setup({ appDir, dataRoot, getMainWindow, webPreferences }) {
     try { const r = await zipStore.open(String(p || '')); return { ok: true, id: r.id, path: r.path, entries: r.entries, truncated: !!r.truncated }; }
     catch (err) { return { ok: false, error: String(err && err.message || err) }; }
   });
+  ipcMain.handle('ccf:zip-read', async (_e, id, name) => {
+    try { const r = await zipStore.readBuffer(String(id || ''), String(name || '')); return { ok: true, buf: r.buf, mime: r.mime }; }
+    catch (err) { return { ok: false, error: String(err && err.message || err) }; }
+  });
   ipcMain.handle('ccf:zip-close', (e, id) => { zipStore.closeZip(String(id || '')); return true; });
 
   // ---- 2b. HTML → しおり（アウトライン）付き PDF。見えないウィンドウで描画し、見出し（h1〜h3）を PDF の目次ツリーにする。保存先は _TRPG_Data 配下に限定 ----

@@ -67,6 +67,8 @@
   let localSaveWarned = false;
   let saveStateTimer = null;
   let scJsonCache = null;   // シナリオ部分のシリアライズ結果。設定だけの変更(saveState(true))では再計算しない（通常のsaveState()は必ず破棄）
+  let lastSerializedStateJson = null;
+  let lastSerializedStateDirty = true;
   let pendingSkipCloud = false;
   let pendingSkipDetailEdited = false;
   let suppressDetailEditedCount = 0;
@@ -74,6 +76,8 @@
   window.endSuppressDetailEdited = function () { suppressDetailEditedCount = Math.max(0, suppressDetailEditedCount - 1); };
   function saveState(settingsOnly, opts) {
     if (!settingsOnly) scJsonCache = null;
+    lastSerializedStateDirty = true;
+    lastSerializedStateJson = null;
     if (!(opts && opts.skipCloud)) pendingSkipCloud = false;
     else if (!saveStateTimer) pendingSkipCloud = true;
     const skipDetail = !!(opts && opts.skipDetailEdited) || suppressDetailEditedCount > 0;
@@ -81,81 +85,78 @@
     else if (skipDetail) pendingSkipDetailEdited = true;
     clearTimeout(saveStateTimer);
     saveStateTimer = setTimeout(() => { saveStateTimer = null; const sc = pendingSkipCloud; const sd = pendingSkipDetailEdited; pendingSkipCloud = false; pendingSkipDetailEdited = false; saveStateNow({ skipCloud: sc, skipDetailEdited: sd }); }, 300);
-    scheduleDiskAutosave(1500);
+    scheduleDiskAutosave(4000);
     if (!settingsOnly && !(opts && opts.skipCloud) && typeof window.scheduleAutoDocTextExtraction === 'function') {
       window.scheduleAutoDocTextExtraction();
     }
   }
+  let _suppressDiskSaveOnUnload = false;
   window.addEventListener('pagehide', () => {
+    if (_suppressDiskSaveOnUnload) return;
     if (saveStateTimer) { clearTimeout(saveStateTimer); saveStateTimer = null; const sc = pendingSkipCloud; const sd = pendingSkipDetailEdited; pendingSkipCloud = false; pendingSkipDetailEdited = false; saveStateNow({ skipCloud: sc, skipDetailEdited: sd }); }
-    saveDiskAutosaveNow();
+    saveDiskAutosaveNow(false, { sync: true });
   });
-  window.addEventListener('beforeunload', () => { saveDiskAutosaveNow(); });
+  window.addEventListener('beforeunload', () => { if (_suppressDiskSaveOnUnload) return; saveDiskAutosaveNow(false, { sync: true }); });
 
   // ===== ローカル自動保存（3世代ローテーションバックアップ） =====
-  function sanitizeStateObjectForDisk(o) {
-    if (!o || typeof o !== 'object') return o;
+  function filterUnlinkedRoomsForDisk(o) {
+    if (!o || typeof o !== 'object' || !o.unlinkedCcfRooms || typeof o.unlinkedCcfRooms !== 'object') {
+      return { changed: false, value: o && o.unlinkedCcfRooms };
+    }
     const validIds = new Set(
       (Array.isArray(o.scenarios) ? o.scenarios : [])
         .map(sc => (sc && sc.id != null) ? String(sc.id) : '')
         .filter(Boolean)
     );
-    if (o.unlinkedCcfRooms && typeof o.unlinkedCcfRooms === 'object') {
-      if (Array.isArray(o.unlinkedCcfRooms)) {
-        const isEdited = typeof window.isProjectActuallyEdited === 'function' ? window.isProjectActuallyEdited : null;
-        o.unlinkedCcfRooms = o.unlinkedCcfRooms.filter(r => {
-          if (!r || typeof r !== 'object') return false;
-          const rSid = r.scenarioId != null ? String(r.scenarioId) : (r.scId != null ? String(r.scId) : '');
-          if (rSid && !validIds.has(rSid)) return false;
-          return isEdited ? isEdited(r) : true;
-        });
-      } else {
-        for (const k of Object.keys(o.unlinkedCcfRooms)) {
-          if (!validIds.has(String(k))) delete o.unlinkedCcfRooms[k];
-        }
+    if (Array.isArray(o.unlinkedCcfRooms)) {
+      const isEdited = typeof window.isProjectActuallyEdited === 'function' ? window.isProjectActuallyEdited : null;
+      const nextArr = o.unlinkedCcfRooms.filter(r => {
+        if (!r || typeof r !== 'object') return false;
+        const rSid = r.scenarioId != null ? String(r.scenarioId) : (r.scId != null ? String(r.scId) : '');
+        if (rSid && !validIds.has(rSid)) return false;
+        return isEdited ? isEdited(r) : true;
+      });
+      return { changed: nextArr.length !== o.unlinkedCcfRooms.length, value: nextArr };
+    }
+    let changed = false;
+    const nextObj = {};
+    for (const k of Object.keys(o.unlinkedCcfRooms)) {
+      if (validIds.has(String(k))) nextObj[k] = o.unlinkedCcfRooms[k];
+      else changed = true;
+    }
+    return { changed, value: changed ? nextObj : o.unlinkedCcfRooms };
+  }
+  function serializeStateForDisk(src) {
+    const toRef = typeof urlToRef === 'function' ? urlToRef : (typeof window !== 'undefined' && typeof window.urlToRef === 'function' ? window.urlToRef : null);
+    const ul = filterUnlinkedRoomsForDisk(src);
+    const target = ul.changed ? Object.assign({}, src, { unlinkedCcfRooms: ul.value }) : src;
+    return JSON.stringify(target, (k, v) => {
+      if (typeof v !== 'string') return v;
+      if (v.startsWith('data:image/') && v.length >= 5000) {
+        const ref = toRef ? toRef(v) : '';
+        return (typeof ref === 'string' && ref.startsWith('@img:')) ? ref : '';
+      }
+      if (toRef && k !== 'botAvatarData') return toRef(v);
+      return v;
+    });
+  }
+  function buildFullAppStateJsonSync() {
+    if (typeof cleanStaleBlobUrls === 'function') cleanStaleBlobUrls(appState);
+    if (!lastSerializedStateDirty && lastSerializedStateJson) {
+      const ul = filterUnlinkedRoomsForDisk(appState);
+      if (!ul.changed && lastSerializedStateJson.indexOf('data:image/') === -1) {
+        return lastSerializedStateJson;
       }
     }
-    const toRef = typeof urlToRef === 'function' ? urlToRef : (typeof window !== 'undefined' && typeof window.urlToRef === 'function' ? window.urlToRef : null);
-    const scrubLongBase64 = node => {
-      if (!node || typeof node !== 'object') return;
-      if (Array.isArray(node)) {
-        for (let i = 0; i < node.length; i++) {
-          const v = node[i];
-          if (typeof v === 'string') {
-            if (v.startsWith('data:image/') && v.length >= 5000) {
-              const ref = toRef ? toRef(v) : '';
-              node[i] = (typeof ref === 'string' && ref.startsWith('@img:')) ? ref : '';
-            }
-          } else if (v && typeof v === 'object') {
-            scrubLongBase64(v);
-          }
-        }
-        return;
-      }
-      for (const k of Object.keys(node)) {
-        const v = node[k];
-        if (typeof v === 'string') {
-          if (v.startsWith('data:image/') && v.length >= 5000) {
-            const ref = toRef ? toRef(v) : '';
-            node[k] = (typeof ref === 'string' && ref.startsWith('@img:')) ? ref : '';
-          }
-        } else if (v && typeof v === 'object') {
-          scrubLongBase64(v);
-        }
-      }
-    };
-    scrubLongBase64(o);
-    return o;
+    return serializeStateForDisk(appState);
   }
   async function buildFullAppStateJson() {
-    if (typeof cleanStaleBlobUrls === 'function') cleanStaleBlobUrls(appState);
-    const o = JSON.parse(serializeState(appState));
-    sanitizeStateObjectForDisk(o);
+    const json = buildFullAppStateJsonSync();
     await persistChain;
-    return JSON.stringify(o);
+    return json;
   }
   let lastRotationTime = 0;
-  function rotateDiskBackups(force) {
+  function rotateDiskBackupsSync(force) {
     if (!IS_ELECTRON || !fs || !DATA_ROOT) return;
     try {
       fs.mkdirSync(DATA_ROOT, { recursive: true });
@@ -168,19 +169,39 @@
       if (fs.existsSync(b2)) { try { fs.copyFileSync(b2, b3); } catch (e) { logSoft('rot b3', e); } }
       if (fs.existsSync(b1)) { try { fs.copyFileSync(b1, b2); } catch (e) { logSoft('rot b2', e); } }
       try { fs.copyFileSync(autoFile, b1); } catch (e) { logSoft('rot b1', e); }
+    } catch (e) { logSoft('rotateDiskBackupsSync', e); }
+  }
+  async function rotateDiskBackups(force, opts) {
+    if (!IS_ELECTRON || !fs || !DATA_ROOT) return;
+    if ((opts && opts.sync) || !fs.promises) {
+      rotateDiskBackupsSync(force);
+      return;
+    }
+    try {
+      await fs.promises.mkdir(DATA_ROOT, { recursive: true });
+      const autoFile = path.join(DATA_ROOT, 'autosave_state.json');
+      try { await fs.promises.access(autoFile); } catch (_) { return; }
+      const now = Date.now();
+      if (!force && (now - lastRotationTime < 30000)) return;
+      lastRotationTime = now;
+      const b1 = path.join(DATA_ROOT, 'backup_1.json'), b2 = path.join(DATA_ROOT, 'backup_2.json'), b3 = path.join(DATA_ROOT, 'backup_3.json');
+      try { await fs.promises.access(b2); await fs.promises.copyFile(b2, b3); } catch (e) { if (e && e.code !== 'ENOENT') logSoft('rot b3', e); }
+      try { await fs.promises.access(b1); await fs.promises.copyFile(b1, b2); } catch (e) { if (e && e.code !== 'ENOENT') logSoft('rot b2', e); }
+      try { await fs.promises.copyFile(autoFile, b1); } catch (e) { logSoft('rot b1', e); }
     } catch (e) { logSoft('rotateDiskBackups', e); }
   }
   let diskAutosaveTimer = null;
-  function scheduleDiskAutosave(delayMs = 1500) {
+  let diskAutosaveInFlight = false;
+  let diskAutosavePending = null;
+  function scheduleDiskAutosave(delayMs = 4000) {
     clearTimeout(diskAutosaveTimer);
-    diskAutosaveTimer = setTimeout(() => { diskAutosaveTimer = null; saveDiskAutosaveNow(); }, delayMs);
+    diskAutosaveTimer = setTimeout(() => { diskAutosaveTimer = null; void saveDiskAutosaveNow(); }, delayMs);
   }
-  async function saveDiskAutosaveNow(forceOverwriteAll) {
-    if (diskAutosaveTimer) { clearTimeout(diskAutosaveTimer); diskAutosaveTimer = null; }
+  function saveDiskAutosaveSyncFallback(forceOverwriteAll) {
     if (!IS_ELECTRON || !fs || !DATA_ROOT) return;
     try {
-      if (!forceOverwriteAll) rotateDiskBackups(false);
-      const json = await buildFullAppStateJson();
+      if (!forceOverwriteAll) rotateDiskBackupsSync(false);
+      const json = buildFullAppStateJsonSync();
       const autoFile = path.join(DATA_ROOT, 'autosave_state.json'), tmpFile = autoFile + '.tmp';
       fs.mkdirSync(DATA_ROOT, { recursive: true });
       try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch (_) { }
@@ -201,7 +222,53 @@
           }
         }
       }
+    } catch (e) { console.error('[diskAutosave] 同期保存失敗', e); }
+  }
+  async function saveDiskAutosaveNow(forceOverwriteAll, opts) {
+    if (_suppressDiskSaveOnUnload) return;
+    if (diskAutosaveTimer) { clearTimeout(diskAutosaveTimer); diskAutosaveTimer = null; }
+    if (!IS_ELECTRON || !fs || !DATA_ROOT) return;
+    if ((opts && opts.sync) || !fs.promises) {
+      saveDiskAutosaveSyncFallback(forceOverwriteAll);
+      return;
+    }
+    if (diskAutosaveInFlight) {
+      diskAutosavePending = !!(diskAutosavePending || forceOverwriteAll);
+      return;
+    }
+    diskAutosaveInFlight = true;
+    try {
+      if (!forceOverwriteAll) await rotateDiskBackups(false);
+      const json = await buildFullAppStateJson();
+      const autoFile = path.join(DATA_ROOT, 'autosave_state.json'), tmpFile = autoFile + '.tmp';
+      await fs.promises.mkdir(DATA_ROOT, { recursive: true });
+      try { await fs.promises.unlink(tmpFile); } catch (_) { }
+      await fs.promises.writeFile(tmpFile, json, 'utf8');
+      try {
+        await fs.promises.rename(tmpFile, autoFile);
+      } catch (_renErr) {
+        await fs.promises.writeFile(autoFile, json, 'utf8');
+        try { await fs.promises.unlink(tmpFile); } catch (_) { }
+      }
+      if (forceOverwriteAll === true) {
+        lastRotationTime = Date.now();
+        for (let i = 1; i <= 3; i++) {
+          const bf = path.join(DATA_ROOT, `backup_${i}.json`);
+          try { await fs.promises.copyFile(autoFile, bf); }
+          catch (e) {
+            try { await fs.promises.writeFile(bf, json, 'utf8'); } catch (e2) { logSoft(`forceRot b${i}`, e2 || e); }
+          }
+        }
+      }
     } catch (e) { console.error('[diskAutosave] 保存失敗', e); }
+    finally {
+      diskAutosaveInFlight = false;
+      if (diskAutosavePending !== null) {
+        const nextForce = diskAutosavePending;
+        diskAutosavePending = null;
+        void saveDiskAutosaveNow(nextForce);
+      }
+    }
   }
   window.buildFullAppStateJson = buildFullAppStateJson;
   window.rotateDiskBackups = rotateDiskBackups;
@@ -332,9 +399,17 @@
 
   function saveStateNow(opts) {
     if (typeof cleanStaleBlobUrls === 'function') cleanStaleBlobUrls(appState);
-    if (Array.isArray(appState.scenarios)) appState.scenarios.forEach(sc => syncScenarioAssetCatalog(sc));
     if (appState.history && appState.history.length > 500) appState.history = appState.history.slice(-500);
-    (() => { const rest = serializeState({ ...appState, scenarios: [] }); if (scJsonCache === null) { stampScenarios(opts); scJsonCache = serializeState(appState.scenarios); } const json = rest.replace('"scenarios":[]', () => '"scenarios":' + scJsonCache); return persistChain.then(() => window.idbSetRaw('state', json)); })()
+    (() => {
+      const rest = serializeState({ ...appState, scenarios: [] });
+      if (scJsonCache === null) { stampScenarios(opts); scJsonCache = serializeState(appState.scenarios); }
+      const scJson = scJsonCache;
+      if (scJson && scJson.length > 2 * 1024 * 1024) scJsonCache = null;
+      const json = rest.replace('"scenarios":[]', () => '"scenarios":' + scJson);
+      lastSerializedStateJson = json;
+      lastSerializedStateDirty = false;
+      return persistChain.then(() => window.idbSetRaw('state', json)).finally(() => { scJsonCache = null; });
+    })()
       .then(() => { try { localStorage.removeItem('discord_forum_tool_data_v1'); } catch (e) { logSoft('saveStateNow', e); } }) // 旧保存先を整理
       .catch((e) => {
         console.error(e);
@@ -403,7 +478,7 @@
   }
   function trimScenarioDocTextsToBudget(sc, maxTotalChars) {
     if (!sc || !Array.isArray(sc.docTexts) || !sc.docTexts.length) return sc;
-    const cap = Math.max(1000, Number(maxTotalChars) || 250000);
+    const cap = Math.max(1000, Number(maxTotalChars) || 600000);
     let total = 0;
     const cleaned = [];
     for (const dt of sc.docTexts) {
@@ -427,10 +502,16 @@
 
   function sanitizeForCloudSync(srcState) {
     if (typeof cleanStaleBlobUrls === 'function') cleanStaleBlobUrls(srcState);
-    if (srcState && Array.isArray(srcState.scenarios)) {
-      srcState.scenarios.forEach(sc => syncScenarioAssetCatalog(sc));
+    if (srcState === appState) {
+      stampScenarios();
+    } else if (srcState && Array.isArray(srcState.scenarios)) {
+      srcState.scenarios.forEach(sc => {
+        if (!sc || !sc.id) return;
+        if (!Array.isArray(sc.assetCatalog) || scSigs.get(sc.id) !== sigOf(sc)) {
+          syncScenarioAssetCatalog(sc);
+        }
+      });
     }
-    stampScenarios();
     const o = JSON.parse(serializeState(srcState));
     if (typeof o.botAvatarData === 'string' && o.botAvatarData) {
       o.botAvatarData = urlToRef(o.botAvatarData);
@@ -454,7 +535,7 @@
           sc.fullBlockData.forEach(b => { if (b && typeof b === 'object') delete b.file; });
         }
         if (Array.isArray(sc.ccfRooms)) sc.ccfRooms.forEach(cleanCcfRoomForCloud);
-        trimScenarioDocTextsToBudget(sc, 250000);
+        trimScenarioDocTextsToBudget(sc, 600000);
         return sc;
       });
     }
@@ -466,7 +547,7 @@
         syncGDriveAssets: o.cloudSettings.syncGDriveAssets !== false,
         compressImagesWebp: o.cloudSettings.compressImagesWebp !== false,
         uploadScope: o.cloudSettings.uploadScope === 'all' ? 'all' : 'edited_only',
-        webAssetSyncMode: (o.cloudSettings.webAssetSyncMode === 'edited_only' || o.cloudSettings.webAssetSyncMode === 'manual') ? o.cloudSettings.webAssetSyncMode : 'auto_all'
+        webAssetSyncMode: (o.cloudSettings.webAssetSyncMode === 'auto_all' || o.cloudSettings.webAssetSyncMode === 'manual') ? o.cloudSettings.webAssetSyncMode : 'edited_only'
       };
       if (o.cloudSettings.gdriveBridgeToken) {
         nextCs.gdriveBridgeToken = String(o.cloudSettings.gdriveBridgeToken);
@@ -592,18 +673,38 @@
     const remScMap = new Map((Array.isArray(rem.scenarios) ? rem.scenarios : []).filter(s => s && s.id).map(s => [s.id, s]));
     const locDedupMap = new Map(), remDedupMap = new Map();
     const dkOf = typeof window.getScenarioDedupKey === 'function' ? window.getScenarioDedupKey : () => '';
-    (Array.isArray(loc.scenarios) ? loc.scenarios : []).forEach(s => { const k = dkOf(s); if (k && !locDedupMap.has(k)) locDedupMap.set(k, s); });
-    (Array.isArray(rem.scenarios) ? rem.scenarios : []).forEach(s => { const k = dkOf(s); if (k && !remDedupMap.has(k)) remDedupMap.set(k, s); });
+    const canMerge = typeof window.canAutoMergeScenarios === 'function' ? window.canAutoMergeScenarios : () => true;
+    const pushDedup = (map, s) => {
+      const k = dkOf(s);
+      if (!k) return;
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(s);
+    };
+    (Array.isArray(loc.scenarios) ? loc.scenarios : []).forEach(s => pushDedup(locDedupMap, s));
+    (Array.isArray(rem.scenarios) ? rem.scenarios : []).forEach(s => pushDedup(remDedupMap, s));
+
+    const isCloudBlobPtr = v => !!(v && typeof v === 'object' && !Array.isArray(v) && typeof v.__cloudBlob === 'string' && v.__cloudBlob);
+    const isEmptyOrUnset = v => v === undefined || v === null || (Array.isArray(v) && v.length === 0);
 
     if (Array.isArray(merged.scenarios)) {
       merged.scenarios.forEach(sc => {
         if (!sc || !sc.id) return;
         const dk = dkOf(sc);
-        const scL = locScMap.get(sc.id) || (dk ? locDedupMap.get(dk) : null);
-        const scR = remScMap.get(sc.id) || (dk ? remDedupMap.get(dk) : null);
+        const findDedup = map => (dk && map.has(dk)) ? (map.get(dk).find(cand => canMerge(sc, cand)) || null) : null;
+        const scL = locScMap.get(sc.id) || findDedup(locDedupMap);
+        const scR = remScMap.get(sc.id) || findDedup(remDedupMap);
         if (scL && scR) {
-          if (Array.isArray(scL.ccfRooms) || Array.isArray(scR.ccfRooms)) {
+          if (isCloudBlobPtr(scL.ccfRooms) && isEmptyOrUnset(scR.ccfRooms)) {
+            sc.ccfRooms = scL.ccfRooms;
+          } else if (isCloudBlobPtr(scR.ccfRooms) && isEmptyOrUnset(scL.ccfRooms)) {
+            sc.ccfRooms = scR.ccfRooms;
+          } else if (Array.isArray(scL.ccfRooms) || Array.isArray(scR.ccfRooms)) {
             sc.ccfRooms = reconcileRoomArrays(scL.ccfRooms, scR.ccfRooms, sc.ccfRooms, lastSyncAt);
+          }
+          if (isCloudBlobPtr(scL.docTexts) && isEmptyOrUnset(scR.docTexts)) {
+            sc.docTexts = scL.docTexts;
+          } else if (isCloudBlobPtr(scR.docTexts) && isEmptyOrUnset(scL.docTexts)) {
+            sc.docTexts = scR.docTexts;
           }
           const tL = Number(scL.updatedAt) || 0, tR = Number(scR.updatedAt) || 0;
           const scBothEdited = lastSyncAt > 0 ? (tL > lastSyncAt && tR > lastSyncAt) : (tL > 0 && tR > 0);
@@ -716,7 +817,23 @@
   const nowTs = () => Date.now() + clockOffset;
   window.setClockOffset = ms => { clockOffset = ms; try { localStorage.setItem('cloud_clock_offset', String(ms)); } catch (e) { logSoft('saveStateNow', e); } };
   const scSigs = new Map();
-  const sigOf = sc => JSON.stringify(sc, (k, v) => (k === 'updatedAt' || k === 'cloudKeepAssets' || k === 'detailEdited') ? undefined : (typeof v === 'string' ? (v.startsWith('blob:') ? '@img:' + (imgUrlToHash.get(v) || v) : v.startsWith('data:image/') ? 'data:' + v.length + v.slice(-24) : v) : v));
+  const sigOf = sc => {
+    const raw = JSON.stringify(sc, (k, v) => {
+      if (k === 'updatedAt' || k === 'cloudKeepAssets' || k === 'detailEdited') return undefined;
+      if (k === 'docTexts' && Array.isArray(v)) {
+        return v.map(d => (d && typeof d === 'object')
+          ? { id: d.id || '', name: d.name || '', len: (d.text || '').length, extractedAt: d.extractedAt || 0 }
+          : d);
+      }
+      if (typeof v === 'string') {
+        if (v.startsWith('blob:')) return '@img:' + (imgUrlToHash.get(v) || v);
+        if (v.startsWith('data:image/')) return 'data:' + v.length + v.slice(-24);
+      }
+      return v;
+    });
+    if (!raw) return '';
+    return (typeof hashStr === 'function') ? hashStr(raw) : raw;
+  };
   function primeScenarioSigs(onlyIds) {
     if (!onlyIds) {
       scSigs.clear();
@@ -738,10 +855,17 @@
       if (!sc || !sc.id) return;
       const g = sigOf(sc);
       const hadPrev = scSigs.has(sc.id);
-      if (scSigs.get(sc.id) !== g) {
-        scSigs.set(sc.id, g);
+      const changed = scSigs.get(sc.id) !== g;
+      const needsCatalog = !Array.isArray(sc.assetCatalog) || changed;
+      if (needsCatalog) {
+        syncScenarioAssetCatalog(sc);
+      }
+      if (changed) {
         sc.updatedAt = nowTs();
         if (hadPrev && allowDetailEdited) sc.detailEdited = true;
+      }
+      if (changed || needsCatalog) {
+        scSigs.set(sc.id, sigOf(sc));
       }
     });
   }
@@ -750,6 +874,7 @@
     if (typeof appState === 'undefined' || !Array.isArray(appState.scenarios) || appState.scenarios.length < 2) return 0;
     const dkOf = typeof window.getScenarioDedupKey === 'function' ? window.getScenarioDedupKey : () => '';
     const pkOf = typeof window.getScenarioSourcePathKey === 'function' ? window.getScenarioSourcePathKey : () => '';
+    const canMerge = typeof window.canAutoMergeScenarios === 'function' ? window.canAutoMergeScenarios : () => true;
     const mergeRec = typeof window.mergeScenarioRecords === 'function' ? window.mergeScenarioRecords : (a, b) => ({ ...b, ...a });
     const scoreSc = (sc, idx) => {
       if (!sc) return -1;
@@ -783,20 +908,36 @@
         return;
       }
       arr.sort((a, b) => scoreSc(b.sc, b.idx) - scoreSc(a.sc, a.idx));
-      let primary = arr[0].sc;
-      for (let i = 1; i < arr.length; i++) {
-        const sec = arr[i].sc;
-        primary = mergeRec(primary, sec, { preferBase: true });
-        if (sec.id && sec.id !== primary.id) {
-          (appState.deletedScenarios = appState.deletedScenarios || {})[sec.id] = ts;
-          if (typeof currentScenarioId !== 'undefined' && currentScenarioId === sec.id) {
-            currentScenarioId = primary.id;
-          }
+      const clusters = [];
+      arr.forEach(item => {
+        const sc = item.sc;
+        const hit = clusters.find(c => canMerge(c.lead, sc));
+        if (hit) {
+          hit.items.push(sc);
+        } else {
+          clusters.push({ lead: sc, items: [sc] });
         }
-        removedCount++;
-      }
-      primary.updatedAt = ts;
-      nextList.push(primary);
+      });
+      clusters.forEach(c => {
+        if (c.items.length === 1) {
+          nextList.push(c.items[0]);
+          return;
+        }
+        let primary = c.items[0];
+        for (let i = 1; i < c.items.length; i++) {
+          const sec = c.items[i];
+          primary = mergeRec(primary, sec, { preferBase: true });
+          if (sec.id && sec.id !== primary.id) {
+            (appState.deletedScenarios = appState.deletedScenarios || {})[sec.id] = ts;
+            if (typeof currentScenarioId !== 'undefined' && currentScenarioId === sec.id) {
+              currentScenarioId = primary.id;
+            }
+          }
+          removedCount++;
+        }
+        primary.updatedAt = ts;
+        nextList.push(primary);
+      });
     });
     if (removedCount > 0) {
       appState.scenarios = nextList;
@@ -827,11 +968,13 @@
       if (typeof IS_ELECTRON === 'undefined' || !IS_ELECTRON) return;
       setTimeout(async () => {
         try {
+          let res = null;
           if (typeof window.purgeOrphanAndEmptyProjects === 'function') {
-            await window.purgeOrphanAndEmptyProjects();
+            res = await window.purgeOrphanAndEmptyProjects();
           }
-          if (typeof window.saveDiskAutosaveNow === 'function') {
-            await window.saveDiskAutosaveNow(true);
+          const deletedCount = (res && ((Number(res.totalDeleted) || 0) + (Number(res.removedImages) || 0))) || 0;
+          if (deletedCount > 0 && typeof window.saveDiskAutosaveNow === 'function') {
+            await window.saveDiskAutosaveNow(false);
           }
         } catch (e) { logSoft('startupPurgeAndSlim', e); }
       }, 2000);
@@ -903,8 +1046,38 @@
     ensureChannelIds(); appState.scenarios.forEach(x => { if (!x.id) x.id = uid(); }); appState.scenarios.forEach(normalizePosted);
     if (typeof cleanStaleBlobUrls === 'function') cleanStaleBlobUrls(appState, { forceClear: true });
     if (typeof window.deduplicateScenariosInPlace === 'function') window.deduplicateScenariosInPlace({ skipSave: true, skipRender: true });
-    await hydrateRefs(appState); primeScenarioSigs();
-    if (typeof requestRefsIn === 'function') requestRefsIn(appState);
+    {
+      const priorityTargets = [];
+      if (typeof appState.botAvatarData === 'string' && appState.botAvatarData.startsWith('@img:')) {
+        priorityTargets.push({ u: appState.botAvatarData, apply: u => { appState.botAvatarData = u; } });
+      }
+      const scList = Array.isArray(appState.scenarios) ? appState.scenarios : [];
+      const limit = Math.min(60, scList.length);
+      for (let i = 0; i < limit; i++) {
+        const sc = scList[i];
+        if (sc && typeof sc.imageUrl === 'string' && sc.imageUrl.startsWith('@img:')) {
+          priorityTargets.push({ u: sc.imageUrl, apply: u => { sc.imageUrl = u; } });
+        }
+      }
+      if (priorityTargets.length && typeof ensureLocalUrl === 'function') {
+        const hashes = [...new Set(priorityTargets.map(t => t.u.slice(5)).filter(Boolean))];
+        const CONCURRENCY = 6;
+        let idx = 0;
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, hashes.length) }, async () => {
+          while (idx < hashes.length) await ensureLocalUrl(hashes[idx++]);
+        }));
+        if (typeof hashToUrl !== 'undefined') {
+          priorityTargets.forEach(t => {
+            const resolved = hashToUrl.get(t.u.slice(5));
+            if (resolved) t.apply(resolved);
+          });
+        }
+      }
+    }
+    primeScenarioSigs();
+    if (typeof requestImage === 'function' && typeof appState.botAvatarData === 'string' && appState.botAvatarData.startsWith('@img:')) {
+      requestImage(appState.botAvatarData.slice(5));
+    }
     saveState(false, { skipCloud: !!(opts && opts.fromCloud) });
     populateScenarioDBSelect(); renderDBView(); renderHistoryTable(); renderChannelConfigList(); renderChannelCheckboxes(); updateTagCheckboxes();
     if (typeof loadSettingsToUI === 'function') loadSettingsToUI();
@@ -960,7 +1133,22 @@
         });
         return toast('✅ 統合しました（シナリオ 追加' + S.scenAdded + '・更新' + S.scenUpdated + '／チャンネル 追加' + S.chAdded + '・更新' + S.chUpdated + '）');
       }
-      await window.idbSetRaw('state', JSON.stringify(parsed)); try { localStorage.setItem('discord_forum_tool_dirty', '1'); } catch (x) { logSoft('importData', x); }
+      _suppressDiskSaveOnUnload = true;
+      const sanitized = typeof sanitizeStateObjectForDisk === 'function' ? sanitizeStateObjectForDisk(parsed) : parsed;
+      const nextJson = JSON.stringify(sanitized);
+      await window.idbSetRaw('state', nextJson); try { localStorage.setItem('discord_forum_tool_dirty', '1'); } catch (x) { logSoft('importData', x); }
+      if (IS_ELECTRON && fs && DATA_ROOT) {
+        try {
+          await rotateDiskBackups(true);
+          const autoFile = path.join(DATA_ROOT, 'autosave_state.json');
+          const tmpFile = autoFile + '.tmp';
+          fs.mkdirSync(DATA_ROOT, { recursive: true });
+          try { if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile); } catch (_) { }
+          fs.writeFileSync(autoFile, nextJson, 'utf8');
+        } catch (diskErr) {
+          logSoft('importData disk write', diskErr);
+        }
+      }
       toast('✅ 設定データを復元しました。'); setTimeout(() => location.reload(), 1200);
     })(); };
     reader.readAsText(file);
@@ -1090,7 +1278,8 @@
     const SHA_CACHE_KV_KEY = 'cloud_sha256_cache_v1';
     const MANIFEST_KV_KEY = 'cloud_manifest_cache_v1';
     const IDB_ASSET_META_KV_KEY = 'cloud_idb_asset_index_v1';
-    const BACKUP_ROTATE_THROTTLE_MS = 5 * 60 * 1000;
+    const BACKUP_ROTATE_THROTTLE_MS = 30 * 60 * 1000;
+    const BACKUP_FORCE_MIN_INTERVAL_MS = 5 * 60 * 1000;
     const DRIVE_ROOT_NAME = '卓倉庫_クラウド同期';
     const DRIVE_SUBS = ['meta', 'assets', 'backups', 'exports'];
     const DRIVE_API = 'https://www.googleapis.com/drive/v3/files';
@@ -1106,7 +1295,11 @@
     let lastFolderVerifyAt = 0;
     let driveFoldersJustRecreated = false;
     let ensureFoldersPromise = null;
-    const FOLDER_VERIFY_TTL_MS = 10 * 1000;
+    const FOLDER_VERIFY_TTL_MS = 5 * 60 * 1000;
+    const LOCAL_THUMBS_HASH_KEY = 'taku_local_thumbs_hash_v1';
+    const REMOTE_MANIFEST_SIG_KEY = 'taku_remote_manifest_sig_v1';
+    const REMOTE_STATE_META_SIG_KEY = 'taku_remote_state_meta_sig_v1';
+    const LAST_SYNCED_META_HASH_KEY = 'taku_last_synced_meta_hash_v1';
     let cloudUploadQueue = [];
     let queueLoaded = false;
     let queueResetGen = 0;
@@ -1126,6 +1319,12 @@
     let packManifest = {}; // packKey -> { packName, packHash, packType, scenarioId, updatedAt, itemCount, totalSize }
     let remoteThumbsPackHash = '';
     let unpackedThumbsPackSig = (() => { try { return localStorage.getItem('taku_unpacked_thumbs_sig_v1') || ''; } catch (_) { return ''; } })();
+    let localThumbsInputHash = (() => { try { return localStorage.getItem(LOCAL_THUMBS_HASH_KEY) || ''; } catch (_) { return ''; } })();
+    let lastRemoteManifestSig = (() => { try { return localStorage.getItem(REMOTE_MANIFEST_SIG_KEY) || ''; } catch (_) { return ''; } })();
+    let lastRemoteStateMetaSig = (() => { try { return localStorage.getItem(REMOTE_STATE_META_SIG_KEY) || ''; } catch (_) { return ''; } })();
+    let lastSyncedMetaHash = (() => { try { return localStorage.getItem(LAST_SYNCED_META_HASH_KEY) || ''; } catch (_) { return ''; } })();
+    let manifestDirty = false;
+    let lastPullMergedState = false;
     let localCloudAssetSet = new Set(); // Set<sha256> cached in cloud_cache or IDB assets
     let idbAssetMeta = {}; // idbRef -> { sha256, name, mime, size, isCloudCache }
     let offlinePinnedIds = new Set();
@@ -1139,6 +1338,7 @@
     let folderAssetSet = null; // Set<fileName>
     let folderMetaSet = null; // Set<fileName>
     let lastCloudBackupAt = Number((() => { try { return localStorage.getItem('taku_last_cloud_backup_at') || 0; } catch (_) { return 0; } })() || 0);
+    let lastCloudBackupCount = Number((() => { try { const v = localStorage.getItem('taku_last_cloud_backup_count'); return v != null ? v : -1; } catch (_) { return -1; } })());
     let exitFlowActive = false;
     let exitSkipped = false;
     let exitInitialTotal = 0;
@@ -1208,6 +1408,7 @@
         if (typeof saved.webDirName === 'string') base.webDirName = saved.webDirName;
         if (typeof saved.compressImagesWebp === 'boolean') base.compressImagesWebp = saved.compressImagesWebp;
         if (saved.uploadScope === 'all' || saved.uploadScope === 'edited_only') base.uploadScope = saved.uploadScope;
+        if (saved.webAssetSyncMode === 'auto_all' || saved.webAssetSyncMode === 'edited_only' || saved.webAssetSyncMode === 'manual') base.webAssetSyncMode = saved.webAssetSyncMode;
         if (typeof saved.gdriveBridgeToken === 'string' && saved.gdriveBridgeToken) {
           base.gdriveBridgeToken = saved.gdriveBridgeToken;
           base.gdriveBridgeExpiresAt = Number(saved.gdriveBridgeExpiresAt) || 0;
@@ -1474,9 +1675,20 @@
       packManifest = {};
       remoteThumbsPackHash = '';
       unpackedThumbsPackSig = '';
+      localThumbsInputHash = '';
+      lastRemoteManifestSig = '';
+      lastRemoteStateMetaSig = '';
+      lastSyncedMetaHash = '';
+      manifestDirty = true;
       lastCloudBackupAt = 0;
+      lastCloudBackupCount = -1;
       try { localStorage.removeItem('taku_last_cloud_backup_at'); } catch (_) {}
+      try { localStorage.removeItem('taku_last_cloud_backup_count'); } catch (_) {}
       try { localStorage.removeItem('taku_unpacked_thumbs_sig_v1'); } catch (_) {}
+      try { localStorage.removeItem(LOCAL_THUMBS_HASH_KEY); } catch (_) {}
+      try { localStorage.removeItem(REMOTE_MANIFEST_SIG_KEY); } catch (_) {}
+      try { localStorage.removeItem(REMOTE_STATE_META_SIG_KEY); } catch (_) {}
+      try { localStorage.removeItem(LAST_SYNCED_META_HASH_KEY); } catch (_) {}
     }
 
     async function verifyDriveFolderExists(fid) {
@@ -1632,6 +1844,16 @@
       });
     }
 
+    async function renameDriveFile(fileId, newName, appProps) {
+      const body = { name: newName, ...(appProps ? { appProperties: appProps } : {}) };
+      const res = await driveFetch(`${DRIVE_API}/${encodeURIComponent(fileId)}?fields=id,name,size,modifiedTime,appProperties`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      return await res.json();
+    }
+
     // ---- 方式B：ローカル / Web File System Access API 同期フォルダ ----
     async function ensureFolderTargetReady(askWebPerm) {
       const cs = getSettings();
@@ -1720,6 +1942,9 @@
         /^(?:image\/(?:webp|png|jpeg|gif)|audio\/(?:mpeg|mp3|ogg|mp4|aac|flac)|video\/|application\/zip)/i.test(m);
     }
     async function zipBytesFromEntries(entries) {
+      if (window.WebBridge && typeof window.WebBridge.buildZipBytes === 'function') {
+        return await window.WebBridge.buildZipBytes(entries);
+      }
       if (!window.WebBridge || typeof window.WebBridge.buildZipBlob !== 'function') {
         throw new Error('ZIPビルダー (WebBridge.buildZipBlob) が利用できません');
       }
@@ -1939,8 +2164,8 @@
     async function persistShaCache() {
       if (!shaCache || typeof window.idbSetRaw !== 'function') return;
       try {
-        if (shaCache.size > 4000) {
-          const entries = [...shaCache.entries()].slice(-3000);
+        if (shaCache.size > 30000) {
+          const entries = [...shaCache.entries()].slice(-25000);
           shaCache = new Map(entries);
         }
         await window.idbSetRaw(SHA_CACHE_KV_KEY, Object.fromEntries(shaCache));
@@ -2238,7 +2463,7 @@
       return null;
     }
 
-    function collectSyncCandidates(cs) {
+    function collectSyncCandidates(cs, skipScenarioIds) {
       const candidates = [];
       const seenKeys = new Set();
       const usageMap = computeCommonAssetUsage();
@@ -2257,6 +2482,7 @@
           if (c) pushCandidate(candidates, seenKeys, c);
         });
         if (!isScenarioAssetsEligible(sc, cs)) return;
+        if (skipScenarioIds && sc.id != null && skipScenarioIds.has(String(sc.id))) return;
 
         // 2) 対象シナリオの実体ファイル（画像・資料・ZIP未解凍・部屋素材）
         if (sc.imageUrl) pushCandidate(candidates, seenKeys, refToCandidate(sc.imageUrl, 'cover.png', sc.id, false, { kind: 'image' }));
@@ -2268,12 +2494,14 @@
             pushCandidate(candidates, seenKeys, refToCandidate(path.resolve(DATA_ROOT, im.rel), im.name, sc.id, false, { kind: 'image', rel: im.rel }));
           }
         });
+        const _docBase = s => (typeof path !== 'undefined' && path && typeof path.basename === 'function') ? path.basename(s) : String(s || '').split(/[\\/]/).pop();
         (sc.docs || []).forEach(d => {
           if (!d) return;
-          if (d.ref) pushCandidate(candidates, seenKeys, refToCandidate(d.ref, d.name, sc.id, false, { kind: 'doc', rel: d.rel || '' }));
-          if (d.path) pushCandidate(candidates, seenKeys, refToCandidate(d.path, d.name, sc.id, false, { kind: 'doc', rel: d.rel || '' }));
+          const docNameHint = d.origName || (d.path ? _docBase(d.path) : '') || (d.rel ? _docBase(d.rel) : '') || d.name;
+          if (d.ref) pushCandidate(candidates, seenKeys, refToCandidate(d.ref, docNameHint, sc.id, false, { kind: 'doc', rel: d.rel || '' }));
+          if (d.path) pushCandidate(candidates, seenKeys, refToCandidate(d.path, docNameHint, sc.id, false, { kind: 'doc', rel: d.rel || '' }));
           if (IS_ELECTRON && d.rel && DATA_ROOT && path) {
-            pushCandidate(candidates, seenKeys, refToCandidate(path.resolve(DATA_ROOT, d.rel), d.name, sc.id, false, { kind: 'doc', rel: d.rel }));
+            pushCandidate(candidates, seenKeys, refToCandidate(path.resolve(DATA_ROOT, d.rel), docNameHint, sc.id, false, { kind: 'doc', rel: d.rel }));
           }
         });
         if (sc.sourcePath && /\.zip$/i.test(sc.sourcePath)) {
@@ -2390,6 +2618,11 @@
 
     function buildCloudMetadataPayload(usageMap) {
       const stateCopy = window.getAppStateForSync ? window.getAppStateForSync({ forCloud: true }) : JSON.parse(serializeState(appState));
+      if (stateCopy && Array.isArray(stateCopy.scenarios)) {
+        stateCopy.scenarios.forEach(sc => {
+          if (sc && typeof sc === 'object' && 'docTexts' in sc) delete sc.docTexts;
+        });
+      }
       const libUsage = {};
       if (usageMap) usageMap.forEach((set, id) => { libUsage[id] = [...set]; });
       const payload = {
@@ -2455,8 +2688,12 @@
     }
     async function saveCloudBackupRotation(targets, payload, force) {
       const now = Date.now();
-      if (!force && lastCloudBackupAt && (now - lastCloudBackupAt < BACKUP_ROTATE_THROTTLE_MS)) return;
       const scCount = Array.isArray(payload && payload.state && payload.state.scenarios) ? payload.state.scenarios.length : 0;
+      if (lastCloudBackupAt) {
+        const elapsed = now - lastCloudBackupAt;
+        if (!force && elapsed < BACKUP_ROTATE_THROTTLE_MS) return;
+        if (force && elapsed < BACKUP_FORCE_MIN_INTERVAL_MS && lastCloudBackupCount === scCount) return;
+      }
       const roomCount = countTotalRooms(payload && payload.state);
       const snapObj = {
         schemaVersion: 2,
@@ -2470,9 +2707,14 @@
 
       const updateTargetBackups = async (readFn, writeFn, readIndexFn, writeIndexFn) => {
         let idx = (await readIndexFn()) || { gens: {} };
-        const g1 = idx.gens && idx.gens['1'];
-        const g2 = idx.gens && idx.gens['2'];
-        const g3 = idx.gens && idx.gens['3'];
+        if (!idx.gens || typeof idx.gens !== 'object') idx.gens = {};
+        const g1 = idx.gens['1'];
+        if (scCount <= 2 && g1 && Number(g1.scenarioCount) >= 10) {
+          console.warn(`[CloudSync] saveCloudBackupRotation skipped: scenarioCount dropped (${g1.scenarioCount} -> ${scCount})`);
+          return;
+        }
+        const g2 = idx.gens['2'];
+        const g3 = idx.gens['3'];
 
         // 2 -> 3（前日分または過去世代を残す。3が無い場合や2が別日/12h超の場合は3へ繰り下げ）
         if (g2) {
@@ -2499,32 +2741,87 @@
         await writeIndexFn(idx);
       };
 
-      try {
-        if (targets.gdrive && gdriveToken && !gdriveNeedsReauth) {
-          const fIds = await ensureDriveFolders();
-          const bFiles = await listDriveFolderFiles(fIds.backups);
-          await updateTargetBackups(
-            async name => { const f = bFiles.get(name); return f ? await downloadDriveFile(f.id) : null; },
-            async (name, bytes, props) => {
-              const cur = bFiles.get(name);
-              const up = await uploadDriveResumable(fIds.backups, name, bytes, 'application/gzip', cur ? cur.id : null, props);
-              bFiles.set(name, up);
-            },
-            async () => {
-              const f = bFiles.get('backups_index.json');
-              if (!f) return null;
-              try { return JSON.parse(new TextDecoder().decode(await downloadDriveFile(f.id))); } catch (_) { return null; }
-            },
-            async idx => {
-              const cur = bFiles.get('backups_index.json');
-              const bytes = new TextEncoder().encode(JSON.stringify(idx));
-              const up = await uploadDriveResumable(fIds.backups, 'backups_index.json', bytes, 'application/json', cur ? cur.id : null);
-              bFiles.set('backups_index.json', up);
+      const updateGDriveBackupsByRename = async () => {
+        const fIds = await ensureDriveFolders();
+        const bFiles = await listDriveFolderFiles(fIds.backups);
+        let idx = { gens: {} };
+        const idxFile = bFiles.get('backups_index.json');
+        if (idxFile) {
+          try {
+            const parsed = JSON.parse(new TextDecoder().decode(await downloadDriveFile(idxFile.id)));
+            if (parsed && typeof parsed === 'object') idx = parsed;
+          } catch (_) {}
+        }
+        if (!idx.gens || typeof idx.gens !== 'object') idx.gens = {};
+        const g1 = idx.gens['1'];
+        if (scCount <= 2 && g1 && Number(g1.scenarioCount) >= 10) {
+          console.warn(`[CloudSync] saveCloudBackupRotation skipped: scenarioCount dropped (${g1.scenarioCount} -> ${scCount})`);
+          return;
+        }
+        const g2 = idx.gens['2'];
+        const g3 = idx.gens['3'];
+        const f1 = bFiles.get('backup_1.json.gz');
+        const f2 = bFiles.get('backup_2.json.gz');
+        const f3 = bFiles.get('backup_3.json.gz');
+
+        // Google Drive上でリネームのみでローテーション（PCへのダウンロード＆再アップロードを廃止）
+        let rotated2To3 = false;
+        if (f2) {
+          const g2SavedAt = (g2 && g2.savedAt) || (f2.appProperties && Number(f2.appProperties.savedAt)) || 0;
+          const g3SavedAt = (g3 && g3.savedAt) || (f3 && f3.appProperties && Number(f3.appProperties.savedAt)) || 0;
+          const shouldRotate3 = !f3 || !g3 || !sameDayYmd(g2SavedAt, now) || (now - g3SavedAt >= 12 * 3600 * 1000);
+          if (shouldRotate3) {
+            if (f3) {
+              try { await trashDriveFile(f3.id); } catch (e) { logSoft('trashOldB3', e); }
+              bFiles.delete('backup_3.json.gz');
             }
-          );
+            const renamed3 = await renameDriveFile(f2.id, 'backup_3.json.gz', {
+              savedAt: String(g2SavedAt || 0),
+              scenarioCount: String((g2 && g2.scenarioCount) || (f2.appProperties && f2.appProperties.scenarioCount) || 0)
+            });
+            bFiles.set('backup_3.json.gz', renamed3);
+            bFiles.delete('backup_2.json.gz');
+            if (g2) idx.gens['3'] = { ...g2, gen: 3 };
+            rotated2To3 = true;
+          }
+        }
+        if (f1) {
+          if (f2 && !rotated2To3) {
+            try { await trashDriveFile(f2.id); } catch (e) { logSoft('trashOldB2', e); }
+            bFiles.delete('backup_2.json.gz');
+          }
+          const g1SavedAt = (g1 && g1.savedAt) || (f1.appProperties && Number(f1.appProperties.savedAt)) || 0;
+          const renamed2 = await renameDriveFile(f1.id, 'backup_2.json.gz', {
+            savedAt: String(g1SavedAt || 0),
+            scenarioCount: String((g1 && g1.scenarioCount) || (f1.appProperties && f1.appProperties.scenarioCount) || 0)
+          });
+          bFiles.set('backup_2.json.gz', renamed2);
+          bFiles.delete('backup_1.json.gz');
+          if (g1) idx.gens['2'] = { ...g1, gen: 2 };
+        }
+        const cur1 = bFiles.get('backup_1.json.gz');
+        const up1 = await uploadDriveResumable(
+          fIds.backups,
+          'backup_1.json.gz',
+          gz,
+          'application/gzip',
+          cur1 ? cur1.id : null,
+          { savedAt: String(now), scenarioCount: String(scCount), roomCount: String(roomCount) }
+        );
+        bFiles.set('backup_1.json.gz', up1);
+        idx.gens['1'] = { gen: 1, savedAt: now, scenarioCount: scCount, roomCount, size: gz.byteLength };
+        const idxBytes = new TextEncoder().encode(JSON.stringify(idx));
+        const upIdx = await uploadDriveResumable(fIds.backups, 'backups_index.json', idxBytes, 'application/json', idxFile ? idxFile.id : null);
+        bFiles.set('backups_index.json', upIdx);
+      };
+
+      try {
+        const ops = [];
+        if (targets.gdrive && gdriveToken && !gdriveNeedsReauth) {
+          ops.push(updateGDriveBackupsByRename());
         }
         if (targets.folder) {
-          await updateTargetBackups(
+          ops.push(updateTargetBackups(
             async name => await readFolderSyncFile(targets.folder, ['backups', name]),
             async (name, bytes) => { await writeFolderSyncFile(targets.folder, ['backups', name], bytes); },
             async () => {
@@ -2535,19 +2832,178 @@
             async idx => {
               await writeFolderSyncFile(targets.folder, ['backups', 'backups_index.json'], new TextEncoder().encode(JSON.stringify(idx)));
             }
-          );
+          ));
         }
+        await Promise.all(ops);
         lastCloudBackupAt = now;
+        lastCloudBackupCount = scCount;
         try { localStorage.setItem('taku_last_cloud_backup_at', String(now)); } catch (_) {}
+        try { localStorage.setItem('taku_last_cloud_backup_count', String(scCount)); } catch (_) {}
       } catch (e) {
         console.warn('[CloudSync] backup rotation skipped:', e);
       }
     }
 
+    function pruneManifestData() {
+      if (typeof appState === 'undefined' || !appState || !Array.isArray(appState.scenarios)) return false;
+      const scenarios = appState.scenarios;
+      if (scenarios.length === 0 && Object.keys(scenarioAssets).length >= 5) return false;
+
+      let changed = false;
+      const liveScIds = new Set(scenarios.filter(s => s && s.id).map(s => String(s.id)));
+
+      // 1) 削除済みシナリオIDの scenarioAssets / packManifest を削除
+      for (const sid of Object.keys(scenarioAssets)) {
+        if (!liveScIds.has(String(sid))) { delete scenarioAssets[sid]; changed = true; }
+      }
+      for (const pk of Object.keys(packManifest)) {
+        if (pk.startsWith('scenario:') && !liveScIds.has(pk.slice('scenario:'.length))) {
+          delete packManifest[pk];
+          changed = true;
+        }
+      }
+
+      // 2) 現行シナリオ・共通素材・送信待ちキューで使われている参照キー／SHAを収集（docTextsは除外して高速化）
+      const liveRefs = new Set();
+      const liveShas = new Set();
+      const addRefStr = v => {
+        if (typeof v !== 'string' || !v) return;
+        liveRefs.add(v);
+        if (v.startsWith('blob:') && typeof imgUrlToHash !== 'undefined') {
+          const h = imgUrlToHash.get(v);
+          if (h) liveRefs.add('@img:' + h);
+        } else if (isCloudAssetRef(v)) {
+          const p = parseCloudAssetRef(v);
+          if (p && p.sha256) liveShas.add(p.sha256.toLowerCase());
+        }
+      };
+      const walkLive = node => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) {
+          for (let i = 0; i < node.length; i++) walkLive(node[i]);
+          return;
+        }
+        for (const k of Object.keys(node)) {
+          if (k === 'docTexts') continue;
+          const v = node[k];
+          if (typeof v === 'string') {
+            if (k === 'cloudSha' && /^[0-9a-f]{64}$/i.test(v)) {
+              liveShas.add(v.toLowerCase());
+            } else if (k === 'rel' && IS_ELECTRON && typeof DATA_ROOT !== 'undefined' && DATA_ROOT && typeof path !== 'undefined' && v) {
+              try { liveRefs.add(path.resolve(DATA_ROOT, v)); } catch (_) {}
+            } else if (
+              v.startsWith('@img:') || v.startsWith('blob:') ||
+              v.startsWith('idb-asset://') || v.startsWith('cloud-asset://') ||
+              /^[A-Za-z]:[\\/]/.test(v)
+            ) {
+              addRefStr(v);
+            }
+          } else if (v && typeof v === 'object') {
+            walkLive(v);
+          }
+        }
+      };
+      for (const sc of scenarios) {
+        if (sc) walkLive(sc);
+      }
+      if (appState.imageAssets) walkLive(appState.imageAssets);
+      if (appState.unlinkedCcfRooms) walkLive(appState.unlinkedCcfRooms);
+      if (appState.ccfCutinPackages) walkLive(appState.ccfCutinPackages);
+      if (typeof appState.botAvatarData === 'string') addRefStr(appState.botAvatarData);
+      for (const q of cloudUploadQueue) {
+        if (!q || !Array.isArray(q.items)) continue;
+        for (const it of q.items) {
+          if (!it) continue;
+          if (it.refKey) liveRefs.add(String(it.refKey));
+          if (it.sha256) liveShas.add(String(it.sha256).toLowerCase());
+        }
+      }
+
+      // 3) refToSha のうち未使用ローカル絶対パス（^[A-Za-z]:[\\/]）および削除済みシナリオ専用エントリを剪定
+      const ABS_WIN_RE = /^[A-Za-z]:[\\/]/;
+      for (const [rKey, info] of Object.entries(refToSha)) {
+        if (ABS_WIN_RE.test(rKey) && !liveRefs.has(rKey)) {
+          delete refToSha[rKey];
+          changed = true;
+          continue;
+        }
+        const sid = info && info.scenarioId ? String(info.scenarioId) : '';
+        if (sid && sid !== '_common' && sid !== '_settings' && sid !== '_thumbs' && !liveScIds.has(sid) && !liveRefs.has(rKey)) {
+          delete refToSha[rKey];
+          changed = true;
+        }
+      }
+
+      // 4) 残存 scenarioAssets / refToSha / 現行シナリオから参照されているSHA集合を作成し、remoteManifest の孤立SHAおよび不要フルパスを剪定
+      const referencedShas = new Set(liveShas);
+      for (const list of Object.values(scenarioAssets)) {
+        if (!Array.isArray(list)) continue;
+        for (const ent of list) {
+          if (!ent || typeof ent !== 'object') continue;
+          if (ent.sha256) referencedShas.add(String(ent.sha256).toLowerCase());
+          if (typeof ent.refKey === 'string' && ABS_WIN_RE.test(ent.refKey)) {
+            delete ent.refKey;
+            changed = true;
+          }
+        }
+      }
+      for (const info of Object.values(refToSha)) {
+        if (!info || typeof info !== 'object') continue;
+        if (info.fullSha) referencedShas.add(String(info.fullSha).toLowerCase());
+        if (info.thumbSha) referencedShas.add(String(info.thumbSha).toLowerCase());
+      }
+      for (const sha of Object.keys(remoteManifest)) {
+        if (!referencedShas.has(String(sha).toLowerCase())) {
+          delete remoteManifest[sha];
+          changed = true;
+          continue;
+        }
+        const ent = remoteManifest[sha];
+        if (ent && typeof ent === 'object' && typeof ent.refKey === 'string' && ABS_WIN_RE.test(ent.refKey)) {
+          delete ent.refKey;
+          changed = true;
+        }
+      }
+      return changed;
+    }
+
     async function syncMetadataToTargets(targets, usageMap, opts) {
       const o = opts || {};
+      if (pruneManifestData()) manifestDirty = true;
       const payload = buildCloudMetadataPayload(usageMap);
-      const stateGz = await window.CloudCodec.gzipCompress(JSON.stringify(payload));
+
+      let currentMetaHash = '';
+      try {
+        const stateSigStr = JSON.stringify({ state: payload.state, libraryMeta: payload.libraryMeta });
+        const manifestSigStr = JSON.stringify({
+          thumbsPackHash: remoteThumbsPackHash || '',
+          packs: packManifest,
+          filesCount: Object.keys(remoteManifest).length,
+          refCount: Object.keys(refToSha).length,
+          scAssetsCount: Object.keys(scenarioAssets).length
+        });
+        if (window.CloudCodec && typeof window.CloudCodec.sha256Hex === 'function') {
+          currentMetaHash = await window.CloudCodec.sha256Hex(new TextEncoder().encode(stateSigStr + '|' + manifestSigStr));
+        }
+      } catch (_) {}
+
+      const hasRemoteMetaG = !targets.gdrive || !!(gdriveMetaSet && gdriveMetaSet.has('state_meta.json.gz') && gdriveMetaSet.has('manifest.json.gz'));
+      const hasRemoteMetaF = !targets.folder || !!(folderMetaSet && folderMetaSet.has('state_meta.json.gz') && folderMetaSet.has('manifest.json.gz'));
+      if (
+        o.allowNoOpSkip &&
+        !o.hadUploads &&
+        cloudUploadQueue.length === 0 &&
+        !o.remoteStateChanged &&
+        !manifestDirty &&
+        currentMetaHash &&
+        lastSyncedMetaHash &&
+        currentMetaHash === lastSyncedMetaHash &&
+        hasRemoteMetaG &&
+        hasRemoteMetaF
+      ) {
+        return { skipped: true };
+      }
+
       const manifestObj = {
         schemaVersion: 3,
         updatedAt: Date.now(),
@@ -2557,49 +3013,59 @@
         packs: packManifest,
         thumbsPackHash: remoteThumbsPackHash || ''
       };
-      const manifestGz = await window.CloudCodec.gzipCompress(JSON.stringify(manifestObj));
+      const [stateGz, manifestGz] = await Promise.all([
+        window.CloudCodec.gzipCompress(JSON.stringify(payload)),
+        window.CloudCodec.gzipCompress(JSON.stringify(manifestObj))
+      ]);
 
       if (targets.gdrive && gdriveToken && !gdriveNeedsReauth) {
-        const fIds = await ensureDriveFolders();
-        const metaFiles = await listDriveFolderFiles(fIds.meta);
-        gdriveMetaSet = metaFiles;
-        const curState = metaFiles.get('state_meta.json.gz');
-        await uploadDriveResumable(fIds.meta, 'state_meta.json.gz', stateGz, 'application/gzip', curState ? curState.id : null);
-        const curManifest = metaFiles.get('manifest.json.gz');
-        await uploadDriveResumable(fIds.meta, 'manifest.json.gz', manifestGz, 'application/gzip', curManifest ? curManifest.id : null);
+        await ensureDriveFolders();
+      }
+      const tasks = [];
+      if (targets.gdrive && gdriveToken && !gdriveNeedsReauth) {
+        tasks.push((async () => {
+          const fIds = await ensureDriveFolders();
+          const metaFiles = (o.reuseMetaSet && gdriveMetaSet) ? gdriveMetaSet : await listDriveFolderFiles(fIds.meta);
+          gdriveMetaSet = metaFiles;
+          const curState = metaFiles.get('state_meta.json.gz');
+          const curManifest = metaFiles.get('manifest.json.gz');
+          const [upState, upManifest] = await Promise.all([
+            uploadDriveResumable(fIds.meta, 'state_meta.json.gz', stateGz, 'application/gzip', curState ? curState.id : null),
+            uploadDriveResumable(fIds.meta, 'manifest.json.gz', manifestGz, 'application/gzip', curManifest ? curManifest.id : null)
+          ]);
+          if (upState) {
+            metaFiles.set('state_meta.json.gz', upState);
+            const sSig = `${upState.modifiedTime || ''}:${upState.size || ''}`;
+            if (sSig !== ':') {
+              lastRemoteStateMetaSig = sSig;
+              try { localStorage.setItem(REMOTE_STATE_META_SIG_KEY, sSig); } catch (_) {}
+            }
+          }
+          if (upManifest) {
+            metaFiles.set('manifest.json.gz', upManifest);
+            const mSig = `${upManifest.modifiedTime || ''}:${upManifest.size || ''}`;
+            if (mSig !== ':') {
+              lastRemoteManifestSig = mSig;
+              try { localStorage.setItem(REMOTE_MANIFEST_SIG_KEY, mSig); } catch (_) {}
+            }
+          }
+        })());
       }
       if (targets.folder) {
-        await writeFolderSyncFile(targets.folder, ['meta', 'state_meta.json.gz'], stateGz);
-        await writeFolderSyncFile(targets.folder, ['meta', 'manifest.json.gz'], manifestGz);
+        tasks.push(Promise.all([
+          writeFolderSyncFile(targets.folder, ['meta', 'state_meta.json.gz'], stateGz),
+          writeFolderSyncFile(targets.folder, ['meta', 'manifest.json.gz'], manifestGz)
+        ]));
       }
-      await saveManifestCache();
-      await saveCloudBackupRotation(targets, payload, !!o.forceBackup);
-
-      if (o.forceSnapshot && targets.gdrive && gdriveToken && !gdriveNeedsReauth) {
-        const now = Date.now();
-        const scCount = Array.isArray(payload && payload.state && payload.state.scenarios) ? payload.state.scenarios.length : 0;
-        const roomCount = countTotalRooms(payload && payload.state);
-        const snapObj = {
-          schemaVersion: 2,
-          savedAt: now,
-          scenarioCount: scCount,
-          roomCount,
-          state: payload.state,
-          libraryMeta: payload.libraryMeta
-        };
-        const snapGz = await window.CloudCodec.gzipCompress(JSON.stringify(snapObj));
-        const fIds = await ensureDriveFolders();
-        const bFiles = await listDriveFolderFiles(fIds.backups);
-        const curSnap = bFiles.get('snapshot_1.json.gz');
-        await uploadDriveResumable(
-          fIds.backups,
-          'snapshot_1.json.gz',
-          snapGz,
-          'application/gzip',
-          curSnap ? curSnap.id : null,
-          { savedAt: String(now), scenarioCount: String(scCount), roomCount: String(roomCount) }
-        );
+      tasks.push(saveManifestCache());
+      tasks.push(saveCloudBackupRotation(targets, payload, !!o.forceBackup));
+      await Promise.all(tasks);
+      if (currentMetaHash) {
+        lastSyncedMetaHash = currentMetaHash;
+        try { localStorage.setItem(LAST_SYNCED_META_HASH_KEY, lastSyncedMetaHash); } catch (_) {}
       }
+      manifestDirty = false;
+      return { skipped: false };
     }
 
     async function getActiveTargets(askWebPerm) {
@@ -2636,6 +3102,34 @@
       const list = (idxObj && Array.isArray(idxObj.thumbs)) ? idxObj.thumbs : [];
       const handledEntries = new Set(['index.json']);
       let unpacked = 0;
+      const THUMB_IDB_BATCH = 40;
+      const thumbBatch = [];
+      const flushThumbBatch = async () => {
+        if (!thumbBatch.length) return;
+        const batch = thumbBatch.splice(0, thumbBatch.length);
+        if (typeof idbOpen === 'function') {
+          try {
+            const db = await idbOpen();
+            await new Promise((resolve, reject) => {
+              const tx = db.transaction('thumbs', 'readwrite');
+              const store = tx.objectStore('thumbs');
+              for (const { key, blob } of batch) store.put(blob, key);
+              tx.oncomplete = () => resolve();
+              tx.onerror = tx.onabort = () => reject(tx.error);
+            });
+            for (const { key, blob } of batch) {
+              if (typeof setThumbUrl === 'function') setThumbUrl(key, blob);
+            }
+            return;
+          } catch (batchErr) {
+            console.warn('[CloudSync] thumb batch IDB write fallback:', batchErr);
+          }
+        }
+        for (const { key, blob } of batch) {
+          if (typeof window.putIdbThumbBlob === 'function') await window.putIdbThumbBlob(key, blob);
+          else if (typeof idbPut === 'function') await idbPut('thumbs', key, blob);
+        }
+      };
 
       for (const info of list) {
         if (!info || !info.entry) continue;
@@ -2649,8 +3143,8 @@
           const imgHash = info.imgHash || (info.refKey && info.refKey.startsWith('@img:') ? info.refKey.slice(5) : '');
           if (imgHash) {
             thumbsPackMemMap.set(imgHash, { bytes: u8, mime });
-            if (typeof window.putIdbThumbBlob === 'function') await window.putIdbThumbBlob(imgHash, blob);
-            else if (typeof idbPut === 'function') await idbPut('thumbs', imgHash, blob);
+            thumbBatch.push({ key: imgHash, blob });
+            if (thumbBatch.length >= THUMB_IDB_BATCH) await flushThumbBatch();
           }
           if (info.sha256) {
             const sha = String(info.sha256).toLowerCase();
@@ -2686,17 +3180,19 @@
           if (base) {
             const blob = new Blob([u8], { type: 'image/webp' });
             thumbsPackMemMap.set(base, { bytes: u8, mime: 'image/webp' });
-            if (typeof window.putIdbThumbBlob === 'function') await window.putIdbThumbBlob(base, blob);
-            else if (typeof idbPut === 'function') await idbPut('thumbs', base, blob);
+            thumbBatch.push({ key: base, blob });
+            if (thumbBatch.length >= THUMB_IDB_BATCH) await flushThumbBatch();
             unpacked++;
           }
         } catch (_) {}
       }
+      await flushThumbBatch();
 
       if (sig) {
         unpackedThumbsPackSig = String(sig);
         try { localStorage.setItem('taku_unpacked_thumbs_sig_v1', unpackedThumbsPackSig); } catch (_) {}
       }
+      if (thumbsPackMemMap.size > 120) thumbsPackMemMap.clear();
       if (typeof window.refreshThumbDomAll === 'function') window.refreshThumbDomAll();
       return unpacked;
     }
@@ -2723,9 +3219,10 @@
           || (tf && tf.appProperties && tf.appProperties.packHash)
           || (tf ? `${tf.modifiedTime || ''}:${tf.size || ''}` : '');
 
-        // 既に最新パックを展開済みならスキップ（ただしカード表紙のいずれかがローカル欠損している場合は取得する）
+        // 最新パックを展開済みなら即スキップ（破損削除等で元々パックに無い@img:による毎回の再ダウンロードを防止）
+        if (!o.force && sig && unpackedThumbsPackSig === sig) return 0;
         let needUnpack = !!o.force || !unpackedThumbsPackSig || (sig && sig !== unpackedThumbsPackSig);
-        if (!needUnpack && typeof window.hasLocalThumbHashAsync === 'function' && typeof appState !== 'undefined') {
+        if (!needUnpack && !sig && typeof window.hasLocalThumbHashAsync === 'function' && typeof appState !== 'undefined') {
           for (const sc of (appState.scenarios || [])) {
             const u = sc && sc.imageUrl;
             if (typeof u === 'string' && u.startsWith('@img:')) {
@@ -2755,104 +3252,136 @@
     }
 
     // ---- 第1段階：クラウドメタデータ & 軽量マニフェスト取得 ----
+    let pullManifestInFlight = null;
     async function pullManifestAndMeta(opts) {
-      const o = opts || {};
-      pullMetaRunning++;
-      try {
-        const targets = await getActiveTargets(false);
-        if (!targets.gdrive && !targets.folder) return false;
-
-        let manifestBytes = null;
-        let stateMetaBytes = null;
-        let metaFiles = null;
-        if (targets.folder) {
-          manifestBytes = await readFolderSyncFile(targets.folder, ['meta', 'manifest.json.gz']);
-          if (o.includeState || targets.cs.syncFirestoreText === false || !currentAuthUser) {
-            stateMetaBytes = await readFolderSyncFile(targets.folder, ['meta', 'state_meta.json.gz']);
-          }
-        }
-        if (targets.gdrive) {
-          const fIds = await ensureDriveFolders(!!o.forceVerify);
-          metaFiles = await listDriveFolderFiles(fIds.meta);
-          gdriveMetaSet = metaFiles;
-          if (!manifestBytes) {
-            const mf = metaFiles.get('manifest.json.gz');
-            if (mf && mf.id) manifestBytes = await downloadDriveFile(mf.id);
-          }
-          if (!stateMetaBytes && (o.includeState || targets.cs.syncFirestoreText === false || !currentAuthUser)) {
-            const sf = metaFiles.get('state_meta.json.gz');
-            if (sf && sf.id) stateMetaBytes = await downloadDriveFile(sf.id);
-          }
-        }
-
-        if (manifestBytes && window.CloudCodec) {
-          const jsonStr = await window.CloudCodec.gzipDecompress(manifestBytes);
-          const parsed = JSON.parse(jsonStr);
-          if (parsed && typeof parsed === 'object') {
-            if (parsed.files) Object.assign(remoteManifest, parsed.files);
-            if (parsed.refToSha) Object.assign(refToSha, parsed.refToSha);
-            if (parsed.scenarioAssets) Object.assign(scenarioAssets, parsed.scenarioAssets);
-            if (parsed.packs) Object.assign(packManifest, parsed.packs);
-            if (parsed.thumbsPackHash) remoteThumbsPackHash = String(parsed.thumbsPackHash);
-            await saveManifestCache();
-          }
-        }
-
-        // サムネイル一括パック (meta/thumbs_pack.zip) を1回の通信で展開
+      if (pullManifestInFlight) return pullManifestInFlight;
+      const run = (async () => {
+        const o = opts || {};
+        pullMetaRunning++;
+        lastPullMergedState = false;
         try {
-          await ensureThumbsPackUnpacked({ targets, metaFiles, force: !!o.forceThumbs });
-        } catch (te) {
-          if (!o.silent) console.warn('[CloudSync] pull thumbs_pack.zip skipped:', te);
-        }
+          const targets = await getActiveTargets(false);
+          if (!targets.gdrive && !targets.folder) return false;
 
-        if (stateMetaBytes && window.CloudCodec && typeof window.mergeCloudStates === 'function' && typeof window.applyMergedState === 'function') {
-          const metaJson = await window.CloudCodec.gzipDecompress(stateMetaBytes);
-          const remotePayload = JSON.parse(metaJson);
-          if (remotePayload && remotePayload.state) {
-            const lastSyncAt = getLastCloudSyncAt();
-            if (!lastSyncAt || Number(remotePayload.exportedAt || 0) > lastSyncAt) {
-              const local = window.getAppStateForSync({ forCloud: true });
-              window._lastCloudConflictCount = 0;
-              const merged = window.mergeCloudStates(local, remotePayload.state);
-              await window.applyMergedState(merged, { fromCloud: true });
-              if (window._lastCloudConflictCount > 0 && typeof toast === 'function') {
-                toast(`🛡️ 別端末との競合を検出し、${window._lastCloudConflictCount}件の古いデータを別名バックアップとして退避しました`);
-              }
-              try {
-                const uidStr = currentAuthUser ? currentAuthUser.uid : '';
-                const v = String(Date.now());
-                if (uidStr) localStorage.setItem('taku_last_cloud_sync_at_' + uidStr, v);
-                localStorage.setItem('taku_last_cloud_sync_at', v);
-              } catch (_) {}
+          if (!Object.keys(packManifest).length && !Object.keys(remoteManifest).length) {
+            await loadManifestCache();
+          }
+
+          let manifestBytes = null;
+          let stateMetaBytes = null;
+          let metaFiles = null;
+          let downloadedManifestSig = '';
+          let downloadedStateMetaSig = '';
+          if (targets.folder) {
+            manifestBytes = await readFolderSyncFile(targets.folder, ['meta', 'manifest.json.gz']);
+            if (o.includeState || targets.cs.syncFirestoreText === false || !currentAuthUser) {
+              stateMetaBytes = await readFolderSyncFile(targets.folder, ['meta', 'state_meta.json.gz']);
             }
           }
+          if (targets.gdrive) {
+            const fIds = await ensureDriveFolders(!!o.forceVerify);
+            metaFiles = o.prefetchedMetaFiles || await listDriveFolderFiles(fIds.meta);
+            gdriveMetaSet = metaFiles;
+            if (!manifestBytes) {
+              const mf = metaFiles.get('manifest.json.gz');
+              const mfSig = mf ? `${mf.modifiedTime || ''}:${mf.size || ''}` : '';
+              const hasLoadedManifest = Object.keys(packManifest).length > 0 || Object.keys(remoteManifest).length > 0;
+              if (mf && mf.id && (o.forceDownload || !hasLoadedManifest || !mfSig || mfSig !== lastRemoteManifestSig)) {
+                manifestBytes = await downloadDriveFile(mf.id);
+                downloadedManifestSig = mfSig;
+              }
+            }
+            if (!stateMetaBytes && (o.includeState || targets.cs.syncFirestoreText === false || !currentAuthUser)) {
+              const sf = metaFiles.get('state_meta.json.gz');
+              const sfSig = sf ? `${sf.modifiedTime || ''}:${sf.size || ''}` : '';
+              if (sf && sf.id && (o.forceDownload || !sfSig || sfSig !== lastRemoteStateMetaSig)) {
+                stateMetaBytes = await downloadDriveFile(sf.id);
+                downloadedStateMetaSig = sfSig;
+              }
+            }
+          }
+
+          if (manifestBytes && window.CloudCodec) {
+            const jsonStr = await window.CloudCodec.gzipDecompressText(manifestBytes);
+            const parsed = JSON.parse(jsonStr);
+            if (parsed && typeof parsed === 'object') {
+              if (parsed.files) Object.assign(remoteManifest, parsed.files);
+              if (parsed.refToSha) Object.assign(refToSha, parsed.refToSha);
+              if (parsed.scenarioAssets) Object.assign(scenarioAssets, parsed.scenarioAssets);
+              if (parsed.packs) Object.assign(packManifest, parsed.packs);
+              if (parsed.thumbsPackHash) remoteThumbsPackHash = String(parsed.thumbsPackHash);
+              await saveManifestCache();
+              if (downloadedManifestSig && downloadedManifestSig !== ':') {
+                lastRemoteManifestSig = downloadedManifestSig;
+                try { localStorage.setItem(REMOTE_MANIFEST_SIG_KEY, lastRemoteManifestSig); } catch (_) {}
+              }
+            }
+          }
+
+          // サムネイル一括パック (meta/thumbs_pack.zip) を1回の通信で展開
+          let unpackedThumbs = 0;
+          try {
+            unpackedThumbs = await ensureThumbsPackUnpacked({ targets, metaFiles, force: !!o.forceThumbs }) || 0;
+          } catch (te) {
+            if (!o.silent) console.warn('[CloudSync] pull thumbs_pack.zip skipped:', te);
+          }
+
+          if (stateMetaBytes && window.CloudCodec && typeof window.mergeCloudStates === 'function' && typeof window.applyMergedState === 'function') {
+            const metaJson = await window.CloudCodec.gzipDecompressText(stateMetaBytes);
+            const remotePayload = JSON.parse(metaJson);
+            if (remotePayload && remotePayload.state) {
+              const lastSyncAt = getLastCloudSyncAt();
+              if (!lastSyncAt || Number(remotePayload.exportedAt || 0) > lastSyncAt) {
+                const local = window.getAppStateForSync({ forCloud: true });
+                window._lastCloudConflictCount = 0;
+                const merged = window.mergeCloudStates(local, remotePayload.state);
+                await window.applyMergedState(merged, { fromCloud: true });
+                lastPullMergedState = true;
+                if (window._lastCloudConflictCount > 0 && typeof toast === 'function') {
+                  toast(`🛡️ 別端末との競合を検出し、${window._lastCloudConflictCount}件の古いデータを別名バックアップとして退避しました`);
+                }
+                try {
+                  const uidStr = currentAuthUser ? currentAuthUser.uid : '';
+                  const v = String(Date.now());
+                  if (uidStr) localStorage.setItem('taku_last_cloud_sync_at_' + uidStr, v);
+                  localStorage.setItem('taku_last_cloud_sync_at', v);
+                } catch (_) {}
+              }
+            }
+            if (downloadedStateMetaSig && downloadedStateMetaSig !== ':') {
+              lastRemoteStateMetaSig = downloadedStateMetaSig;
+              try { localStorage.setItem(REMOTE_STATE_META_SIG_KEY, lastRemoteStateMetaSig); } catch (_) {}
+            }
+          }
+          if (manifestBytes || stateMetaBytes || unpackedThumbs > 0) {
+            if (typeof window.fetchMissingImages === 'function') window.fetchMissingImages();
+            if (typeof renderDBView === 'function') renderDBView();
+          }
+          // ピン留め済みシナリオの未キャッシュ素材があればバックグラウンドで優先取得
+          for (const scId of offlinePinnedIds) {
+            void ensureScenarioAssetsCached(scId, { silent: true, priority: true });
+          }
+          return true;
+        } catch (e) {
+          if (!o.silent) console.warn('[CloudSync] pullManifestAndMeta error:', e);
+          return false;
+        } finally {
+          pullMetaRunning = Math.max(0, pullMetaRunning - 1);
+          notifySyncIdleIfReady();
         }
-        if (typeof window.fetchMissingImages === 'function') window.fetchMissingImages();
-        if (typeof renderDBView === 'function') renderDBView();
-        // ピン留め済みシナリオの未キャッシュ素材があればバックグラウンドで優先取得
-        for (const scId of offlinePinnedIds) {
-          void ensureScenarioAssetsCached(scId, { silent: true, priority: true });
-        }
-        return true;
-      } catch (e) {
-        if (!o.silent) console.warn('[CloudSync] pullManifestAndMeta error:', e);
-        return false;
-      } finally {
-        pullMetaRunning = Math.max(0, pullMetaRunning - 1);
-        notifySyncIdleIfReady();
-      }
+      })();
+      pullManifestInFlight = run;
+      try { return await run; } finally { if (pullManifestInFlight === run) pullManifestInFlight = null; }
     }
 
     async function computePackHash(items) {
       const sigList = items.map(it => ({
         sha256: it.sha256 || '',
-        refKey: it.refKey || '',
         name: it.name || '',
-        rel: it.rel || '',
         kind: it.kind || '',
         isThumb: !!it.isThumb
       }));
-      sigList.sort((a, b) => (a.sha256 + '|' + a.refKey + '|' + a.name).localeCompare(b.sha256 + '|' + b.refKey + '|' + b.name));
+      sigList.sort((a, b) => (a.sha256 + '|' + a.name + '|' + a.kind + '|' + (a.isThumb ? '1' : '0')).localeCompare(b.sha256 + '|' + b.name + '|' + b.kind + '|' + (b.isThumb ? '1' : '0')));
       return await window.CloudCodec.sha256Hex(new TextEncoder().encode(JSON.stringify(sigList)));
     }
 
@@ -2902,12 +3431,14 @@
 
       if (typeof window.imgFlush === 'function') await window.imgFlush();
 
+      let wasDriveRecreated = !!driveFoldersJustRecreated;
       if (targets.gdrive) {
         const loadDriveSets = async () => {
-          const fIds = await ensureDriveFolders(!!o.forceVerify || !!o.manual);
+          const fIds = await ensureDriveFolders(!!o.forceVerify);
           const freshAssets = await listDriveFolderFiles(fIds.assets);
-          const freshMeta = await listDriveFolderFiles(fIds.meta);
+          const freshMeta = o.prefetchedMetaFiles || await listDriveFolderFiles(fIds.meta);
           if (driveFoldersJustRecreated || !freshMeta.has('manifest.json.gz')) {
+            wasDriveRecreated = true;
             driveFoldersJustRecreated = false;
             resetDriveSyncCaches({ keepFolders: true });
             await saveManifestCache();
@@ -2936,7 +3467,27 @@
       }
 
       await purgeUploadQueue({ skipSave: true });
-      const { candidates, usageMap } = collectSyncCandidates(targets.cs);
+      const queuedPackKeys = new Set(cloudUploadQueue.map(q => q && q.packKey).filter(Boolean));
+      const skipScenarioIds = new Set();
+      if (!wasDriveRecreated && !o.forceRescan && typeof appState !== 'undefined' && Array.isArray(appState.scenarios)) {
+        for (const sc of appState.scenarios) {
+          if (!sc || sc.id == null) continue;
+          const sid = String(sc.id);
+          const packKey = getPackKey('scenario', sid);
+          if (queuedPackKeys.has(packKey)) continue;
+          const packName = getPackFileName('scenario', sid);
+          const hasG = !targets.gdrive || !!(gdriveAssetSet && gdriveAssetSet.has(packName));
+          const hasF = !targets.folder || !!(folderAssetSet && folderAssetSet.has(packName));
+          if (!hasG || !hasF) continue;
+          const pm = packManifest[packKey];
+          const pmUpdated = Number(pm && pm.updatedAt || 0);
+          const scUpdated = Math.max(Number(sc.updatedAt || 0), Number(sc.detailEditedAt || 0));
+          if (pm && pm.packHash && pmUpdated > scUpdated) {
+            skipScenarioIds.add(sid);
+          }
+        }
+      }
+      const { candidates, usageMap } = collectSyncCandidates(targets.cs, skipScenarioIds);
       const compressWebp = targets.cs.compressImagesWebp !== false;
 
       const nextScenarioAssets = {};
@@ -2959,54 +3510,101 @@
         return b;
       };
 
-      let candIdx = 0;
-      for (const item of candidates) {
-        candIdx++;
-        if (candIdx % 40 === 0) await new Promise(r => setTimeout(r, 0));
+      const FINGERPRINT_CONCURRENCY = 8;
+      const fpResults = new Array(candidates.length);
+      let nextCandIdx = 0;
+      let doneCandCount = 0;
+      const fpWorker = async () => {
+        while (true) {
+          const myIdx = nextCandIdx++;
+          if (myIdx >= candidates.length) break;
+          const item = candidates[myIdx];
+          const fp = await computeAssetFingerprint(item, item.isThumb ? false : compressWebp);
+          const localAvail = (fp && fp.sha256) ? await isItemLocallyAvailable(item, fp.sha256) : false;
+          fpResults[myIdx] = { item, fp, localAvail };
+          doneCandCount++;
+          if (doneCandCount % 40 === 0) await new Promise(r => setTimeout(r, 0));
+        }
+      };
+      const workerCount = Math.min(FINGERPRINT_CONCURRENCY, candidates.length);
+      if (workerCount > 0) {
+        await Promise.all(Array.from({ length: workerCount }, () => fpWorker()));
+      }
+
+      const ABS_WIN_RE = /^[A-Za-z]:[\\/]/;
+      for (let i = 0; i < fpResults.length; i++) {
+        const resEntry = fpResults[i];
+        if (!resEntry) continue;
+        const { item, fp, localAvail } = resEntry;
 
         const pType = item.isThumb ? 'thumbs' : ((item.scenarioId && item.scenarioId !== '_common' && item.scenarioId !== '_settings') ? 'scenario' : 'common');
         const bucket = getBucket(pType, item.scenarioId);
 
-        const fp = await computeAssetFingerprint(item, item.isThumb ? false : compressWebp);
         if (!fp || !fp.sha256) {
           bucket.missingLocal++;
           continue;
         }
-        const localAvail = await isItemLocallyAvailable(item, fp.sha256);
         if (!localAvail) {
           bucket.missingLocal++;
         }
 
-        remoteManifest[fp.sha256] = {
+        const safeRefKey = (item.refKey && !ABS_WIN_RE.test(item.refKey)) ? item.refKey : '';
+        const prevRm = remoteManifest[fp.sha256];
+        const nextRm = {
           name: item.name || fp.sha256,
           mime: fp.mime,
           size: fp.size,
           isThumb: !!item.isThumb,
           scenarioId: item.scenarioId || '',
-          refKey: item.refKey || '',
+          ...(safeRefKey ? { refKey: safeRefKey } : {}),
           kind: item.kind || ''
         };
+        if (
+          !prevRm ||
+          prevRm.name !== nextRm.name ||
+          prevRm.mime !== nextRm.mime ||
+          prevRm.size !== nextRm.size ||
+          !!prevRm.isThumb !== nextRm.isThumb ||
+          (prevRm.scenarioId || '') !== nextRm.scenarioId ||
+          (prevRm.refKey || '') !== (nextRm.refKey || '') ||
+          (prevRm.kind || '') !== nextRm.kind
+        ) {
+          remoteManifest[fp.sha256] = nextRm;
+          manifestDirty = true;
+        }
         if (item.refKey) {
-          const prev = refToSha[item.refKey] || {};
-          if (item.isThumb) prev.thumbSha = fp.sha256;
-          else prev.fullSha = fp.sha256;
-          prev.name = item.name || prev.name || fp.sha256;
-          prev.mime = fp.mime || prev.mime;
-          prev.size = fp.size || prev.size;
-          if (item.scenarioId && !prev.scenarioId) prev.scenarioId = String(item.scenarioId);
-          refToSha[item.refKey] = prev;
+          const prev = refToSha[item.refKey];
+          const nextRef = Object.assign({}, prev || {});
+          if (item.isThumb) nextRef.thumbSha = fp.sha256;
+          else nextRef.fullSha = fp.sha256;
+          nextRef.name = item.name || nextRef.name || fp.sha256;
+          nextRef.mime = fp.mime || nextRef.mime;
+          nextRef.size = fp.size || nextRef.size;
+          if (item.scenarioId && !nextRef.scenarioId) nextRef.scenarioId = String(item.scenarioId);
+          if (
+            !prev ||
+            prev.fullSha !== nextRef.fullSha ||
+            prev.thumbSha !== nextRef.thumbSha ||
+            prev.name !== nextRef.name ||
+            prev.mime !== nextRef.mime ||
+            prev.size !== nextRef.size ||
+            prev.scenarioId !== nextRef.scenarioId
+          ) {
+            refToSha[item.refKey] = nextRef;
+            manifestDirty = true;
+          }
         }
         if (item.scenarioId && item.scenarioId !== '_common' && item.scenarioId !== '_settings') {
           const sid = String(item.scenarioId);
           if (!nextScenarioAssets[sid]) nextScenarioAssets[sid] = [];
-          if (!nextScenarioAssets[sid].some(x => x.sha256 === fp.sha256 && x.refKey === (item.refKey || ''))) {
+          if (!nextScenarioAssets[sid].some(x => x.sha256 === fp.sha256 && (x.refKey || '') === safeRefKey)) {
             nextScenarioAssets[sid].push({
               sha256: fp.sha256,
               name: item.name || fp.sha256,
               mime: fp.mime,
               size: fp.size,
               kind: item.kind || '',
-              refKey: item.refKey || '',
+              ...(safeRefKey ? { refKey: safeRefKey } : {}),
               rel: item.rel || '',
               isThumb: !!item.isThumb
             });
@@ -3025,12 +3623,24 @@
       // 既存のクラウド側シナリオ素材一覧をマージ（この端末がクラウドのみ表示で実体を持たないシナリオの情報を失わないため）
       for (const [sid, list] of Object.entries(nextScenarioAssets)) {
         const mergedList = Array.isArray(scenarioAssets[sid]) ? [...scenarioAssets[sid]] : [];
+        let listChanged = !Array.isArray(scenarioAssets[sid]);
         list.forEach(ent => {
           const idx = mergedList.findIndex(x => x.sha256 === ent.sha256 || (ent.refKey && x.refKey === ent.refKey));
-          if (idx >= 0) mergedList[idx] = Object.assign({}, mergedList[idx], ent);
-          else mergedList.push(ent);
+          if (idx >= 0) {
+            const oldEnt = mergedList[idx];
+            if (oldEnt.sha256 !== ent.sha256 || oldEnt.name !== ent.name || oldEnt.size !== ent.size || (oldEnt.rel || '') !== (ent.rel || '') || !!oldEnt.isThumb !== !!ent.isThumb) {
+              mergedList[idx] = Object.assign({}, oldEnt, ent);
+              listChanged = true;
+            }
+          } else {
+            mergedList.push(ent);
+            listChanged = true;
+          }
         });
-        scenarioAssets[sid] = mergedList;
+        if (listChanged) {
+          scenarioAssets[sid] = mergedList;
+          manifestDirty = true;
+        }
       }
 
       // パック単位（1シナリオ = 1件、サムネ一括 = 1件、共通ライブラリ = 1件）でキューへ積む
@@ -3053,15 +3663,28 @@
         const remoteMeta = packManifest[bucket.packKey];
         const remoteHash = (remoteMeta && remoteMeta.packHash) || (bucket.packType === 'thumbs' ? remoteThumbsPackHash : '') || '';
         const gPropHash = (gFile && gFile.appProperties && gFile.appProperties.packHash) || '';
+        const gLocalThumbHash = (gFile && gFile.appProperties && gFile.appProperties.localThumbsInputHash) || '';
+
+        if (bucket.packType === 'thumbs' && gFile && ((gPropHash && gPropHash === packHash) || (gLocalThumbHash && gLocalThumbHash === packHash))) {
+          if (localThumbsInputHash !== packHash) {
+            localThumbsInputHash = packHash;
+            try { localStorage.setItem(LOCAL_THUMBS_HASH_KEY, localThumbsInputHash); } catch (_) {}
+          }
+        }
 
         const needTargets = [];
         if (targets.gdrive) {
-          if (!gFile || (gPropHash ? gPropHash !== packHash : remoteHash !== packHash)) {
+          const thumbsUnchangedG = bucket.packType === 'thumbs' && !!(gdriveMetaSet && gdriveMetaSet.has('thumbs_pack.zip')) && (
+            (localThumbsInputHash && localThumbsInputHash === packHash) ||
+            (gLocalThumbHash && gLocalThumbHash === packHash)
+          );
+          if (!thumbsUnchangedG && (!gFile || (gPropHash ? gPropHash !== packHash : remoteHash !== packHash))) {
             needTargets.push('gdrive');
           }
         }
         if (targets.folder) {
-          if (!fHas || remoteHash !== packHash) {
+          const thumbsUnchangedF = bucket.packType === 'thumbs' && fHas && !!localThumbsInputHash && localThumbsInputHash === packHash;
+          if (!thumbsUnchangedF && (!fHas || remoteHash !== packHash)) {
             needTargets.push('folder');
           }
         }
@@ -3090,192 +3713,227 @@
           createdAt: Date.now()
         });
         added++;
+        manifestDirty = true;
       }
 
       await persistShaCache();
       await savePersistedQueue();
       if (!cloudUploadQueue.length) {
-        await syncMetadataToTargets(targets, usageMap);
+        if (!o.skipFinalMetaSync) await syncMetadataToTargets(targets, usageMap);
       } else if (!o.skipAutoDrain) {
-        void drainQueue(usageMap, { interactive: !!o.interactive });
+        void drainQueue(usageMap, { interactive: !!o.interactive, skipFinalMetaSync: !!o.skipFinalMetaSync });
       }
       return { enqueued: added, targets };
     }
 
     async function buildPackZipBytes(packItem, targets) {
+      const MAX_SINGLE_PACK_FILE_BYTES = 64 * 1024 * 1024;
+      const MAX_TOTAL_PACK_BYTES = 160 * 1024 * 1024;
       const zipEntries = [];
       const usedEntryPaths = new Set();
       const shaEntryMap = new Map(); // sha256 -> entryPath
 
-      if (packItem.packType === 'thumbs') {
-        const thumbsIndex = [];
-        const coveredImgHashes = new Set();
-        const coveredRefKeys = new Set();
+      try {
+        if (packItem.packType === 'thumbs') {
+          const thumbsIndex = [];
+          const coveredImgHashes = new Set();
+          const coveredRefKeys = new Set();
 
+          for (const sub of (packItem.items || [])) {
+            let res = null;
+            try {
+              res = await resolveSourceBytes(sub, false);
+            } catch (_) {}
+            if (!res || !res.bytes) continue;
+
+            const imgHash = (sub.refKey && sub.refKey.startsWith('@img:')) ? sub.refKey.slice(5) : (sub.sourceType === 'thumbWebp' ? sub.sourceRef : '');
+            const baseKey = imgHash ? safeScenarioPackId(imgHash) : res.sha256;
+            let entryPath = `thumbs/${baseKey}.webp`;
+            let suffix = 2;
+            while (usedEntryPaths.has(entryPath.toLowerCase()) && !shaEntryMap.has(res.sha256)) {
+              entryPath = `thumbs/${baseKey}_${suffix++}.webp`;
+            }
+            if (!shaEntryMap.has(res.sha256)) {
+              usedEntryPaths.add(entryPath.toLowerCase());
+              shaEntryMap.set(res.sha256, entryPath);
+              zipEntries.push({ name: entryPath, data: res.bytes, store: true });
+            } else {
+              entryPath = shaEntryMap.get(res.sha256);
+            }
+            if (imgHash) coveredImgHashes.add(imgHash);
+            if (sub.refKey) coveredRefKeys.add(sub.refKey);
+            thumbsIndex.push({
+              entry: entryPath,
+              sha256: res.sha256,
+              imgHash,
+              refKey: sub.refKey || '',
+              scenarioId: sub.scenarioId || '',
+              name: sub.name || '',
+              mime: 'image/webp',
+              size: res.bytes.byteLength
+            });
+          }
+
+          // 既存 thumbs_pack.zip があれば、この端末にローカル実体が無い他端末サムネイルを保全マージ
+          try {
+            let prevZip = null;
+            if (targets.folder) prevZip = await readFolderSyncFile(targets.folder, ['meta', 'thumbs_pack.zip']);
+            if (!prevZip && targets.gdrive && gdriveMetaSet) {
+              const tf = gdriveMetaSet.get('thumbs_pack.zip');
+              if (tf && tf.id) prevZip = await downloadDriveFile(tf.id);
+            }
+            if (prevZip && prevZip.byteLength) {
+              const zr = await readZipEntries(prevZip);
+              const eMap = new Map();
+              zr.entries.forEach(e => { if (e && !e.dir) eMap.set(e.name, e); });
+              const idxEnt = eMap.get('index.json');
+              if (idxEnt) {
+                const prevIdx = JSON.parse(new TextDecoder().decode(await zr.readEntry(idxEnt)));
+                const liveScIds = new Set((appState.scenarios || []).filter(Boolean).map(s => String(s.id)));
+                for (const pi of (prevIdx && Array.isArray(prevIdx.thumbs) ? prevIdx.thumbs : [])) {
+                  if (!pi || !pi.entry) continue;
+                  if (pi.scenarioId && !liveScIds.has(String(pi.scenarioId))) continue;
+                  if ((pi.imgHash && coveredImgHashes.has(pi.imgHash)) || (pi.refKey && coveredRefKeys.has(pi.refKey))) continue;
+                  const ent = eMap.get(pi.entry);
+                  if (!ent) continue;
+                  const u8 = await zr.readEntry(ent);
+                  let ep = pi.entry;
+                  if (!shaEntryMap.has(pi.sha256) && !usedEntryPaths.has(ep.toLowerCase())) {
+                    usedEntryPaths.add(ep.toLowerCase());
+                    if (pi.sha256) shaEntryMap.set(pi.sha256, ep);
+                    zipEntries.push({ name: ep, data: u8, store: true });
+                  } else if (pi.sha256 && shaEntryMap.has(pi.sha256)) {
+                    ep = shaEntryMap.get(pi.sha256);
+                  } else {
+                    continue;
+                  }
+                  if (pi.imgHash) coveredImgHashes.add(pi.imgHash);
+                  if (pi.refKey) coveredRefKeys.add(pi.refKey);
+                  thumbsIndex.push(Object.assign({}, pi, { entry: ep }));
+                }
+              }
+            }
+          } catch (_) {}
+
+          const indexJson = JSON.stringify({
+            schemaVersion: 1,
+            packType: 'thumbs',
+            packHash: packItem.packHash || '',
+            updatedAt: Date.now(),
+            thumbs: thumbsIndex
+          });
+          zipEntries.push({ name: 'index.json', data: indexJson, store: false });
+          const bytes = await zipBytesFromEntries(zipEntries);
+          return { bytes, itemCount: thumbsIndex.length };
+        }
+
+        // シナリオ単位パック (assets/scenario_<id>.zip) または 共通マイライブラリ (assets/common_library.zip)
+        const assetsIndex = [];
+        const compressWebp = !!packItem.compressWebp;
+        let totalPackBytes = 0;
         for (const sub of (packItem.items || [])) {
+          if (totalPackBytes >= MAX_TOTAL_PACK_BYTES) {
+            console.warn('[CloudSync] 1パック累計160MB上限に達したためエントリをスキップ:', packItem.packName, sub && sub.name);
+            continue;
+          }
+          if (sub && sub.sourceType === 'fsPath' && IS_ELECTRON && fs && sub.sourceRef) {
+            try {
+              const st = await fs.promises.stat(sub.sourceRef);
+              if (st && st.size > MAX_SINGLE_PACK_FILE_BYTES) {
+                console.warn('[CloudSync] 64MB超の巨大ファイルのためパック同期をスキップ:', sub.name || sub.sourceRef, `${(st.size / (1024 * 1024)).toFixed(1)}MB`);
+                continue;
+              }
+            } catch (_) {}
+          }
           let res = null;
           try {
-            res = await resolveSourceBytes(sub, false);
-          } catch (_) {}
+            res = await resolveSourceBytes(sub, compressWebp);
+          } catch (readErr) {
+            console.warn('[CloudSync] ZIPパッキング読み取り/変換エラー（スキップ）:', sub.name, readErr);
+            continue;
+          }
           if (!res || !res.bytes) continue;
 
-          const imgHash = (sub.refKey && sub.refKey.startsWith('@img:')) ? sub.refKey.slice(5) : (sub.sourceType === 'thumbWebp' ? sub.sourceRef : '');
-          const baseKey = imgHash ? safeScenarioPackId(imgHash) : res.sha256;
-          let entryPath = `thumbs/${baseKey}.webp`;
-          let suffix = 2;
-          while (usedEntryPaths.has(entryPath.toLowerCase()) && !shaEntryMap.has(res.sha256)) {
-            entryPath = `thumbs/${baseKey}_${suffix++}.webp`;
+          if (res.bytes.byteLength > MAX_SINGLE_PACK_FILE_BYTES) {
+            console.warn('[CloudSync] 64MB超の巨大ファイルのためパック同期をスキップ:', sub.name || sub.sourceRef, `${(res.bytes.byteLength / (1024 * 1024)).toFixed(1)}MB`);
+            res.bytes = null;
+            continue;
           }
-          if (!shaEntryMap.has(res.sha256)) {
+
+          const sha = res.sha256;
+          const mime = res.mime || sub.mime || 'application/octet-stream';
+          let entryPath = shaEntryMap.get(sha);
+          if (!entryPath) {
+            if (totalPackBytes + res.bytes.byteLength > MAX_TOTAL_PACK_BYTES) {
+              console.warn('[CloudSync] 1パック累計160MB上限超過のため追加エントリをスキップ:', packItem.packName, sub.name, `${(res.bytes.byteLength / (1024 * 1024)).toFixed(1)}MB`);
+              res.bytes = null;
+              continue;
+            }
+            const ext = extFromMimeOrName(mime, sub.name);
+            entryPath = `files/${sha}${ext}`;
+            let n = 2;
+            while (usedEntryPaths.has(entryPath.toLowerCase())) {
+              entryPath = `files/${sha}_${n++}${ext}`;
+            }
             usedEntryPaths.add(entryPath.toLowerCase());
-            shaEntryMap.set(res.sha256, entryPath);
-            zipEntries.push({ name: entryPath, data: res.bytes, store: true });
-          } else {
-            entryPath = shaEntryMap.get(res.sha256);
+            shaEntryMap.set(sha, entryPath);
+            totalPackBytes += res.bytes.byteLength;
+            zipEntries.push({ name: entryPath, data: res.bytes, store: isAlreadyCompressedEntry(entryPath, mime) });
           }
-          if (imgHash) coveredImgHashes.add(imgHash);
-          if (sub.refKey) coveredRefKeys.add(sub.refKey);
-          thumbsIndex.push({
-            entry: entryPath,
-            sha256: res.sha256,
-            imgHash,
+
+          // remoteManifest / refToSha も最新MIME/SHAに同期
+          remoteManifest[sha] = {
+            name: sub.name || sha,
+            mime,
+            size: res.bytes.byteLength,
+            isThumb: false,
+            scenarioId: sub.scenarioId || packItem.scenarioId || '',
             refKey: sub.refKey || '',
-            scenarioId: sub.scenarioId || '',
-            name: sub.name || '',
-            mime: 'image/webp',
-            size: res.bytes.byteLength
+            kind: sub.kind || ''
+          };
+          if (sub.refKey) {
+            const prev = refToSha[sub.refKey] || {};
+            prev.fullSha = sha;
+            prev.name = sub.name || prev.name || sha;
+            prev.mime = mime;
+            prev.size = res.bytes.byteLength;
+            prev.scenarioId = String(sub.scenarioId || packItem.scenarioId || prev.scenarioId || '');
+            refToSha[sub.refKey] = prev;
+          }
+
+          assetsIndex.push({
+            entry: entryPath,
+            sha256: sha,
+            name: sub.name || sha,
+            origName: sub.name || sha,
+            category: sub.kind || 'asset',
+            kind: sub.kind || 'asset',
+            mime,
+            origMime: res.origMime || sub.origMime || mime,
+            size: res.bytes.byteLength,
+            refKey: sub.refKey || '',
+            rel: sub.rel || '',
+            scenarioId: sub.scenarioId || packItem.scenarioId || ''
           });
         }
 
-        // 既存 thumbs_pack.zip があれば、この端末にローカル実体が無い他端末サムネイルを保全マージ
-        try {
-          let prevZip = null;
-          if (targets.folder) prevZip = await readFolderSyncFile(targets.folder, ['meta', 'thumbs_pack.zip']);
-          if (!prevZip && targets.gdrive && gdriveMetaSet) {
-            const tf = gdriveMetaSet.get('thumbs_pack.zip');
-            if (tf && tf.id) prevZip = await downloadDriveFile(tf.id);
-          }
-          if (prevZip && prevZip.byteLength) {
-            const zr = await readZipEntries(prevZip);
-            const eMap = new Map();
-            zr.entries.forEach(e => { if (e && !e.dir) eMap.set(e.name, e); });
-            const idxEnt = eMap.get('index.json');
-            if (idxEnt) {
-              const prevIdx = JSON.parse(new TextDecoder().decode(await zr.readEntry(idxEnt)));
-              const liveScIds = new Set((appState.scenarios || []).filter(Boolean).map(s => String(s.id)));
-              for (const pi of (prevIdx && Array.isArray(prevIdx.thumbs) ? prevIdx.thumbs : [])) {
-                if (!pi || !pi.entry) continue;
-                if (pi.scenarioId && !liveScIds.has(String(pi.scenarioId))) continue;
-                if ((pi.imgHash && coveredImgHashes.has(pi.imgHash)) || (pi.refKey && coveredRefKeys.has(pi.refKey))) continue;
-                const ent = eMap.get(pi.entry);
-                if (!ent) continue;
-                const u8 = await zr.readEntry(ent);
-                let ep = pi.entry;
-                if (!shaEntryMap.has(pi.sha256) && !usedEntryPaths.has(ep.toLowerCase())) {
-                  usedEntryPaths.add(ep.toLowerCase());
-                  if (pi.sha256) shaEntryMap.set(pi.sha256, ep);
-                  zipEntries.push({ name: ep, data: u8, store: true });
-                } else if (pi.sha256 && shaEntryMap.has(pi.sha256)) {
-                  ep = shaEntryMap.get(pi.sha256);
-                } else {
-                  continue;
-                }
-                if (pi.imgHash) coveredImgHashes.add(pi.imgHash);
-                if (pi.refKey) coveredRefKeys.add(pi.refKey);
-                thumbsIndex.push(Object.assign({}, pi, { entry: ep }));
-              }
-            }
-          }
-        } catch (_) {}
-
         const indexJson = JSON.stringify({
-          schemaVersion: 1,
-          packType: 'thumbs',
+          schemaVersion: 2,
+          packType: packItem.packType,
+          packName: packItem.packName,
+          scenarioId: packItem.scenarioId || '',
           packHash: packItem.packHash || '',
           updatedAt: Date.now(),
-          thumbs: thumbsIndex
+          assets: assetsIndex
         });
         zipEntries.push({ name: 'index.json', data: indexJson, store: false });
         const bytes = await zipBytesFromEntries(zipEntries);
-        return { bytes, itemCount: thumbsIndex.length };
+        return { bytes, itemCount: assetsIndex.length };
+      } finally {
+        zipEntries.length = 0;
+        usedEntryPaths.clear();
+        shaEntryMap.clear();
       }
-
-      // シナリオ単位パック (assets/scenario_<id>.zip) または 共通マイライブラリ (assets/common_library.zip)
-      const assetsIndex = [];
-      const compressWebp = !!packItem.compressWebp;
-      for (const sub of (packItem.items || [])) {
-        let res = null;
-        try {
-          res = await resolveSourceBytes(sub, compressWebp);
-        } catch (readErr) {
-          console.warn('[CloudSync] ZIPパッキング読み取り/変換エラー（スキップ）:', sub.name, readErr);
-          continue;
-        }
-        if (!res || !res.bytes) continue;
-
-        const sha = res.sha256;
-        const mime = res.mime || sub.mime || 'application/octet-stream';
-        let entryPath = shaEntryMap.get(sha);
-        if (!entryPath) {
-          const ext = extFromMimeOrName(mime, sub.name);
-          entryPath = `files/${sha}${ext}`;
-          let n = 2;
-          while (usedEntryPaths.has(entryPath.toLowerCase())) {
-            entryPath = `files/${sha}_${n++}${ext}`;
-          }
-          usedEntryPaths.add(entryPath.toLowerCase());
-          shaEntryMap.set(sha, entryPath);
-          zipEntries.push({ name: entryPath, data: res.bytes, store: isAlreadyCompressedEntry(entryPath, mime) });
-        }
-
-        // remoteManifest / refToSha も最新MIME/SHAに同期
-        remoteManifest[sha] = {
-          name: sub.name || sha,
-          mime,
-          size: res.bytes.byteLength,
-          isThumb: false,
-          scenarioId: sub.scenarioId || packItem.scenarioId || '',
-          refKey: sub.refKey || '',
-          kind: sub.kind || ''
-        };
-        if (sub.refKey) {
-          const prev = refToSha[sub.refKey] || {};
-          prev.fullSha = sha;
-          prev.name = sub.name || prev.name || sha;
-          prev.mime = mime;
-          prev.size = res.bytes.byteLength;
-          prev.scenarioId = String(sub.scenarioId || packItem.scenarioId || prev.scenarioId || '');
-          refToSha[sub.refKey] = prev;
-        }
-
-        assetsIndex.push({
-          entry: entryPath,
-          sha256: sha,
-          name: sub.name || sha,
-          origName: sub.name || sha,
-          category: sub.kind || 'asset',
-          kind: sub.kind || 'asset',
-          mime,
-          origMime: res.origMime || sub.origMime || mime,
-          size: res.bytes.byteLength,
-          refKey: sub.refKey || '',
-          rel: sub.rel || '',
-          scenarioId: sub.scenarioId || packItem.scenarioId || ''
-        });
-      }
-
-      const indexJson = JSON.stringify({
-        schemaVersion: 2,
-        packType: packItem.packType,
-        packName: packItem.packName,
-        scenarioId: packItem.scenarioId || '',
-        packHash: packItem.packHash || '',
-        updatedAt: Date.now(),
-        assets: assetsIndex
-      });
-      zipEntries.push({ name: 'index.json', data: indexJson, store: false });
-      const bytes = await zipBytesFromEntries(zipEntries);
-      return { bytes, itemCount: assetsIndex.length };
     }
 
     async function drainQueue(usageMap, opts) {
@@ -3355,11 +4013,15 @@
                   const targetFid = isMeta ? activeFIds.meta : activeFIds.assets;
                   const targetMap = isMeta ? gdriveMetaSet : gdriveAssetSet;
                   const existing = targetMap ? targetMap.get(item.packName) : null;
-                  const uploaded = await uploadDriveResumable(targetFid, item.packName, zipBytes, 'application/zip', existing ? existing.id : null, {
+                  const uploadAppProps = {
                     packType: String(item.packType || ''),
                     packHash: String(item.packHash || ''),
                     scenarioId: String(item.scenarioId || '').slice(0, 80)
-                  }, { signal: ctl ? ctl.signal : undefined, timeoutMs: uploadTimeoutMs });
+                  };
+                  if (item.packType === 'thumbs') {
+                    uploadAppProps.localThumbsInputHash = String(item.packHash || '');
+                  }
+                  const uploaded = await uploadDriveResumable(targetFid, item.packName, zipBytes, 'application/zip', existing ? existing.id : null, uploadAppProps, { signal: ctl ? ctl.signal : undefined, timeoutMs: uploadTimeoutMs });
                   if (targetMap) targetMap.set(item.packName, uploaded);
                 }
                 if (needF) {
@@ -3377,10 +4039,13 @@
                   itemCount: built.itemCount,
                   totalSize: zipBytes.byteLength
                 };
+                manifestDirty = true;
                 if (item.packType === 'thumbs') {
                   remoteThumbsPackHash = item.packHash || '';
                   unpackedThumbsPackSig = remoteThumbsPackHash;
+                  localThumbsInputHash = item.packHash || '';
                   try { localStorage.setItem('taku_unpacked_thumbs_sig_v1', unpackedThumbsPackSig); } catch (_) {}
+                  try { localStorage.setItem(LOCAL_THUMBS_HASH_KEY, localThumbsInputHash); } catch (_) {}
                 } else {
                   extractedPackCache.set(item.packKey, item.packHash || '');
                 }
@@ -3443,11 +4108,11 @@
               processedSinceSave = 0;
               await savePersistedQueue();
             }
-            await new Promise(r => setTimeout(r, 0));
+            await new Promise(r => setTimeout(r, 50));
           }
 
           await savePersistedQueue();
-          if (!cloudUploadQueue.length && myGen === queueResetGen) {
+          if (!cloudUploadQueue.length && myGen === queueResetGen && !o.skipFinalMetaSync) {
             await syncMetadataToTargets(targets, usageMap || computeCommonAssetUsage());
           }
         } catch (e) {
@@ -3479,27 +4144,34 @@
       const isSyncing = !!(fbSt.syncing || draining || manualSyncRunning);
       const mail = fbSt.email || gdriveEmail || '';
 
-      if (!fbSt.loggedIn && !folderOn && !isSyncing && n === 0 && !mail) {
+      if (!fbSt.loggedIn && !folderOn && !isSyncing) {
         badge.textContent = '未ログイン';
         badge.className = 'cloud-status-pill';
+        badge.title = '';
       } else if (isSyncing) {
         badge.textContent = n > 0 ? `🔄 同期中 (残り${n}件)` : '🔄 同期中…';
         badge.className = 'cloud-status-pill syncing';
+        badge.title = '';
       } else if (fbSt.syncBlocked) {
         badge.textContent = n > 0 ? `⚠️ 未同期（他端末で更新あり・残り${n}件）` : '⚠️ 未同期（他端末で更新あり）';
         badge.className = 'cloud-status-pill err';
-      } else if (n > 0 || fbSt.dirty) {
-        badge.textContent = n > 0 ? `● 未同期 (残り${n}件)` : '● 未同期';
-        badge.className = 'cloud-status-pill dirty';
+        badge.title = fbSt.lastError || '';
       } else if (fbSt.syncError) {
         badge.textContent = '⚠️ 同期エラー';
         badge.className = 'cloud-status-pill err';
+        badge.title = fbSt.lastError || 'クラウド同期エラー';
+      } else if (n > 0 || fbSt.dirty) {
+        badge.textContent = n > 0 ? `● 未同期 (残り${n}件)` : '● 未同期';
+        badge.className = 'cloud-status-pill dirty';
+        badge.title = '';
       } else if (fileDirect && !hasUsableDrive) {
         badge.textContent = '● 同期完了（Firebase同期）';
         badge.className = 'cloud-status-pill ok';
+        badge.title = '';
       } else {
         badge.textContent = mail ? `● 同期完了 (${mail})` : '● 同期完了';
         badge.className = 'cloud-status-pill ok';
+        badge.title = '';
       }
       if (!isSyncActive() && syncIdleListeners.size) notifySyncIdleIfReady();
     }
@@ -3527,9 +4199,11 @@
         return prepareAndEnqueueSync({
           interactive: o.interactive !== undefined ? !!o.interactive : false,
           manual: !!o.manual,
-          forceVerify: true,
+          forceVerify: o.forceVerify !== undefined ? !!o.forceVerify : true,
+          prefetchedMetaFiles: o.prefetchedMetaFiles || null,
           reason,
-          skipAutoDrain: !!o.skipAutoDrain
+          skipAutoDrain: !!o.skipAutoDrain,
+          skipFinalMetaSync: !!o.skipFinalMetaSync
         });
       }
       syncScheduleTimer = setTimeout(async () => {
@@ -3606,17 +4280,28 @@
           return;
         }
 
+        let prefetchedMetaFiles = null;
         if (wantGDrive) {
-          // ② フォルダ実在確認＆強制作成（キャッシュクリア後に ensureDriveFolders(true)）
-          const resetAndEnsureFolders = async () => {
-            folderIds = null;
-            lastFolderVerifyAt = 0;
-            try { localStorage.removeItem(GDRIVE_FOLDERS_KEY); } catch (_) {}
-            return await ensureDriveFolders(true);
+          // ② フォルダ実在確認（直近5分以内に確認済みなら再利用し、404や初回時のみ再検索）
+          const ensureFoldersSmart = async (forceReset) => {
+            if (forceReset) {
+              folderIds = null;
+              lastFolderVerifyAt = 0;
+              try { localStorage.removeItem(GDRIVE_FOLDERS_KEY); } catch (_) {}
+              return await ensureDriveFolders(true);
+            }
+            const recentlyVerified = !!(folderIds && folderIds.root && DRIVE_SUBS.every(s => folderIds[s]) && lastFolderVerifyAt && (Date.now() - lastFolderVerifyAt < FOLDER_VERIFY_TTL_MS));
+            return await ensureDriveFolders(!recentlyVerified && !folderIds);
           };
-          let fIds = null;
+          const fetchFoldersAndMeta = async (forceReset) => {
+            const activeFIds = await ensureFoldersSmart(forceReset);
+            const mf = await listDriveFolderFiles(activeFIds.meta);
+            return { fIds: activeFIds, metaFiles: mf };
+          };
+          let metaFiles = null;
           try {
-            fIds = await resetAndEnsureFolders();
+            const pair = await fetchFoldersAndMeta(false);
+            metaFiles = pair.metaFiles;
           } catch (err) {
             if (err && err.name === 'DriveAuthError') {
               const refRes = await ensureValidGDriveToken({ interactive: true, skipSilent: true, force: true });
@@ -3625,54 +4310,89 @@
                 if (typeof toast === 'function') toast('❌ Googleドライブ認証に失敗しました: ' + reason);
                 return;
               }
-              fIds = await resetAndEnsureFolders();
+              const pair = await fetchFoldersAndMeta(false);
+              metaFiles = pair.metaFiles;
+            } else if (err && err.status === 404) {
+              const pair = await fetchFoldersAndMeta(true);
+              metaFiles = pair.metaFiles;
             } else {
               throw err;
             }
           }
 
           // ③ ドライブ上に meta/manifest.json.gz が無い場合はキャッシュをリセットして全サムネイル・対象素材を再キューイング
-          const metaFiles = await listDriveFolderFiles(fIds.meta);
+          prefetchedMetaFiles = metaFiles;
           gdriveMetaSet = metaFiles;
           if (!metaFiles.has('manifest.json.gz')) {
             resetDriveSyncCaches({ keepFolders: true });
             extractedPackCache.clear();
             gdriveMetaSet = metaFiles;
             lastCloudBackupAt = 0;
+            lastCloudBackupCount = -1;
             try { localStorage.removeItem('taku_last_cloud_backup_at'); } catch (_) {}
+            try { localStorage.removeItem('taku_last_cloud_backup_count'); } catch (_) {}
             await saveManifestCache();
           } else {
-            await pullManifestAndMeta({ includeState: true, silent: true, forceVerify: true });
+            await pullManifestAndMeta({ includeState: true, silent: true, forceVerify: false, prefetchedMetaFiles: metaFiles });
           }
         } else if (cs.folderSyncEnabled) {
-          await pullManifestAndMeta({ includeState: true, silent: true, forceVerify: true });
+          await pullManifestAndMeta({ includeState: true, silent: true, forceVerify: false });
         }
 
-        const res = await scheduleSync('manual_sync_force', { force: true, interactive: true, manual: true, skipAutoDrain: true });
+        const drivePulledState = !!lastPullMergedState;
+        const fbChanged = !!(fbRes && !fbRes.skipped && !fbRes.noChange);
+
+        const res = await scheduleSync('manual_sync_force', {
+          force: true,
+          interactive: true,
+          manual: true,
+          forceVerify: false,
+          prefetchedMetaFiles,
+          skipAutoDrain: true,
+          skipFinalMetaSync: true
+        });
         driveTargets = (res && res.targets) || driveTargets;
 
-        // ④ キュー排出とマニフェスト・スナップショットの強制アップロード（キュー0件でも実行）
+        const hadQueueUploads = !!((res && res.enqueued > 0) || cloudUploadQueue.length > 0);
+        // ④ キュー排出とマニフェスト・バックアップの1回アップロード（変更なし時は完全スキップ）
         if (cloudUploadQueue.length > 0) {
-          await drainQueue(null, { interactive: true });
+          await drainQueue(null, { interactive: true, skipFinalMetaSync: true });
         } else if (draining && drainPromise) {
           await drainPromise;
         }
 
         const finalTargets = await getActiveTargets(true);
+        let metaRes = null;
         if (finalTargets.gdrive || finalTargets.folder) {
-          await syncMetadataToTargets(finalTargets, computeCommonAssetUsage(), { forceBackup: true, forceSnapshot: true });
+          metaRes = await syncMetadataToTargets(finalTargets, computeCommonAssetUsage(), {
+            forceBackup: true,
+            allowNoOpSkip: true,
+            hadUploads: hadQueueUploads,
+            remoteStateChanged: drivePulledState || fbChanged,
+            reuseMetaSet: true
+          });
         }
 
         if (typeof window.deduplicateScenariosInPlace === 'function') window.deduplicateScenariosInPlace();
 
         if (typeof toast === 'function') {
           const hasAnySync = !!(finalTargets.gdrive || finalTargets.folder || (currentAuthUser && cs.syncFirestoreText !== false));
+          const isNoChange = !!(
+            !hadQueueUploads &&
+            !drivePulledState &&
+            !fbChanged &&
+            cloudUploadQueue.length === 0 &&
+            (!fbRes || fbRes.ok !== false) &&
+            ((finalTargets.gdrive || finalTargets.folder) ? (metaRes && metaRes.skipped) : !!(fbRes && fbRes.noChange))
+          );
           if (!hasAnySync) {
             toast('ℹ️ クラウド連携が有効になっていません。ログインまたは保存先フォルダを指定してください。');
           } else if (fbRes && fbRes.ok === false) {
             toast('❌ クラウド同期に失敗しました: ' + (fbRes.error && fbRes.error.message ? fbRes.error.message : '同期エラー'));
           } else if (cloudUploadQueue.length > 0) {
             toast(`⚠️ 同期が一部完了しませんでした（未送信 残り${cloudUploadQueue.length}件）`);
+          } else if (isNoChange) {
+            toast('✅ 最新の状態です（変更なし）');
           } else if (finalTargets.gdrive) {
             toast('✅ Googleドライブ（卓倉庫_クラウド同期）への同期・バックアップが完了しました');
           } else {
@@ -3733,38 +4453,101 @@
       return !!(window.WebBridge && typeof WebBridge.isAssetRef === 'function');
     }
 
-    const DOC_TEXT_MAX_CHARS = 250000;
-    const DOC_TEXT_EXT_RE = /\.(pdf|txt|md|markdown|html?)$/i;
+    const DOC_TEXT_MAX_CHARS = 600000;
+    const DOC_TEXT_EXT_RE = /\.(pdf|txt|md|markdown|html?|docx)$/i;
     const extractingDocTextIds = new Set();
     let knownDocTextScIds = null;
     let autoDocTextTimer = null;
     const pendingDocTextIds = new Set();
 
+    function isCorruptedDocText(text) {
+      const s = String(text || '');
+      if (!s.trim()) return true;
+      if (/^PK[\x03\x04\uFFFD]/.test(s)) return true;
+      if (/[\uFF61-\uFF9F]{3,}/.test(s)) return true;
+      if (window.CCFScan && typeof CCFScan.isMojibakeText === 'function') {
+        if (CCFScan.isMojibakeText(s, { checkHiragana: false })) return true;
+      } else if (/\uFFFD/.test(s) || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/.test(s)) {
+        return true;
+      }
+      return false;
+    }
+
     function collectLocalDocSources(sc) {
-      const out = [], seen = new Set();
+      const out = [], seenIdx = new Map();
       if (!sc || typeof sc !== 'object') return out;
       const key = String(sc.id || '');
       const norm = s => String(s || '').normalize('NFKC').trim().toLowerCase();
+      const isAccessible = p => {
+        if (!p) return false;
+        if (window.WebBridge && WebBridge.isAssetRef && WebBridge.isAssetRef(p)) return true;
+        return !!(IS_ELECTRON && fs && fs.existsSync && fs.existsSync(p));
+      };
+      const resolveLocalDoc = (hintName, hintPath) => {
+        if (!IS_ELECTRON || !fs || !fs.existsSync || !window.CCF || !CCF.assets || typeof CCF.assets.resolveScenarioLocalDocPath !== 'function') return '';
+        const fn = CCF.assets.resolveScenarioLocalDocPath;
+        const tries = [
+          () => fn(sc, hintName || hintPath),
+          () => fn(sc, hintPath || hintName),
+          () => fn(key, hintName || hintPath)
+        ];
+        for (const t of tries) {
+          try {
+            const res = t();
+            if (typeof res === 'string' && res && fs.existsSync(res)) return res;
+          } catch (_) {}
+        }
+        return '';
+      };
+      const _isOldDir = name => {
+        if (typeof isOldFolderName === 'function') { try { return !!isOldFolderName(name); } catch (_) {} }
+        if (window.CCF && CCF.dnd && typeof CCF.dnd.isOldFolderName === 'function') { try { return !!CCF.dnd.isOldFolderName(name); } catch (_) {} }
+        if (window.CCFScan && typeof CCFScan.isOldFolderName === 'function') { try { return !!CCFScan.isOldFolderName(name); } catch (_) {} }
+        return /^(?:old|旧|backup|bk|bak|過去|旧版|archive|_old|\.__)/i.test(String(name || '').trim()) || /(?:旧版|旧ver|old版|_old)$/i.test(String(name || '').trim());
+      };
+      const _filterLatest = entries => {
+        if (!Array.isArray(entries) || !entries.length) return entries || [];
+        if (typeof filterLatestVersionEntries === 'function') { try { const r = filterLatestVersionEntries(entries); if (Array.isArray(r)) return r; } catch (_) {} }
+        if (window.CCF && CCF.dnd && typeof CCF.dnd.filterLatestVersionEntries === 'function') { try { const r = CCF.dnd.filterLatestVersionEntries(entries); if (Array.isArray(r)) return r; } catch (_) {} }
+        if (window.CCFScan && typeof CCFScan.filterLatestVersionEntries === 'function') { try { const r = CCFScan.filterLatestVersionEntries(entries); if (Array.isArray(r)) return r; } catch (_) {} }
+        return entries;
+      };
       const add = (p, nm) => {
         if (!p || /^cloud-asset:|^doc-text:/i.test(String(p))) return;
-        const name = String(nm || String(p).split(/[\\/]/).pop() || '');
-        if (!DOC_TEXT_EXT_RE.test(name) && !DOC_TEXT_EXT_RE.test(String(p))) return;
+        const ps = String(p);
+        const name = String(nm || ps.split(/[\\/]/).pop() || '');
+        if (!DOC_TEXT_EXT_RE.test(name) && !DOC_TEXT_EXT_RE.test(ps)) return;
         const nk = norm(name);
-        if (!nk || seen.has(nk)) return;
-        seen.add(nk);
-        out.push({ path: String(p), name });
+        if (!nk) return;
+        if (seenIdx.has(nk)) {
+          const idx = seenIdx.get(nk);
+          if (isAccessible(ps) && !isAccessible(out[idx].path)) {
+            out[idx] = { path: ps, name };
+          }
+          return;
+        }
+        seenIdx.set(nk, out.length);
+        out.push({ path: ps, name });
       };
       (Array.isArray(sc.docs) ? sc.docs : []).forEach(d => {
         if (!d || typeof d !== 'object') return;
         const nm = d.origName || d.name || '';
+        let found = '';
         if (IS_ELECTRON && typeof path !== 'undefined' && typeof DATA_ROOT !== 'undefined' && DATA_ROOT && d.rel) {
           try {
             const abs = path.resolve(DATA_ROOT, d.rel);
-            if (fs && fs.existsSync && fs.existsSync(abs)) { add(abs, nm); return; }
+            if (fs && fs.existsSync && fs.existsSync(abs)) found = abs;
           } catch (_) {}
         }
-        if (d.path) add(d.path, nm);
-        if (d.ref) add(d.ref, nm);
+        if (!found && d.path && isAccessible(d.path)) found = d.path;
+        if (!found && d.ref && isAccessible(d.ref)) found = d.ref;
+        if (!found) {
+          const resolved = resolveLocalDoc(nm, d.path || d.rel || '');
+          if (resolved) found = resolved;
+        }
+        if (found) add(found, nm);
+        else if (d.path) add(d.path, nm);
+        else if (d.ref) add(d.ref, nm);
       });
       let proj = null;
       try {
@@ -3773,21 +4556,53 @@
       } catch (_) {}
       const addRefs = list => {
         (Array.isArray(list) ? list : []).forEach(r => {
-          if (!r || !r.path) return;
-          if (r.type === 'pdf' || r.type === 'doc' || DOC_TEXT_EXT_RE.test(r.name || r.path)) add(r.path, r.origName || r.name);
+          if (!r || (!r.path && !r.name && !r.origName)) return;
+          const nm = r.origName || r.name || '';
+          if (r.type !== 'pdf' && r.type !== 'doc' && !DOC_TEXT_EXT_RE.test(nm || r.path || '')) return;
+          if (r.path && isAccessible(r.path)) {
+            add(r.path, nm);
+          } else {
+            const resolved = resolveLocalDoc(nm, r.path || '');
+            if (resolved) add(resolved, nm);
+            else if (r.path) add(r.path, nm);
+          }
         });
       };
       if (proj) addRefs(proj.refs);
       (Array.isArray(sc.ccfRooms) ? sc.ccfRooms : []).forEach(rm => { if (rm && rm.project) addRefs(rm.project.refs); });
-      if (IS_ELECTRON && fs && path && (!Array.isArray(sc.docs) || !sc.docs.length) && sc.sourcePath) {
+      (Array.isArray(sc.assetCatalog) ? sc.assetCatalog : []).forEach(it => {
+        if (!it || typeof it !== 'object') return;
+        const nm = it.origName || it.name || '';
+        if (it.type !== 'pdf' && it.type !== 'doc' && !DOC_TEXT_EXT_RE.test(nm)) return;
+        const resolved = resolveLocalDoc(nm, it.path || '');
+        if (resolved) add(resolved, nm);
+      });
+      if (IS_ELECTRON && fs && path && sc.sourcePath) {
         try {
           if (fs.existsSync(sc.sourcePath)) {
             const st = fs.statSync(sc.sourcePath);
-            if (st.isFile()) add(sc.sourcePath, path.basename(sc.sourcePath));
-            else if (st.isDirectory()) {
-              fs.readdirSync(sc.sourcePath, { withFileTypes: true }).forEach(ent => {
-                if (ent.isFile() && DOC_TEXT_EXT_RE.test(ent.name)) add(path.join(sc.sourcePath, ent.name), ent.name);
-              });
+            if (st.isFile()) {
+              add(sc.sourcePath, path.basename(sc.sourcePath));
+            } else if (st.isDirectory()) {
+              const walkDir = (dir, depth) => {
+                if (depth > 6) return;
+                let ents;
+                try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+                const filtered = _filterLatest(ents);
+                const subDirs = [];
+                for (const ent of filtered) {
+                  if (!ent || !ent.name || ent.name.startsWith('.')) continue;
+                  const full = path.join(dir, ent.name);
+                  if (ent.isFile()) {
+                    if (DOC_TEXT_EXT_RE.test(ent.name)) add(full, ent.name);
+                  } else if (ent.isDirectory()) {
+                    if (_isOldDir(ent.name)) continue;
+                    subDirs.push(full);
+                  }
+                }
+                for (const sub of subDirs) walkDir(sub, depth + 1);
+              };
+              walkDir(sc.sourcePath, 0);
             }
           }
         } catch (_) {}
@@ -3797,12 +4612,13 @@
 
     function hasUnextractedLocalDocs(sc) {
       if (!sc || (!IS_ELECTRON && !window.WebBridge)) return false;
-      const existing = new Set((Array.isArray(sc.docTexts) ? sc.docTexts : []).filter(d => d && d.text).map(d => String(d.name || '').normalize('NFKC').trim().toLowerCase()));
-      const totalChars = (Array.isArray(sc.docTexts) ? sc.docTexts : []).reduce((s, d) => s + (d && d.text ? d.text.length : 0), 0);
+      const normDocNm = s => String(s || '').replace(/\.docx\.txt$/i, '.docx').normalize('NFKC').trim().toLowerCase();
+      const existing = new Set((Array.isArray(sc.docTexts) ? sc.docTexts : []).filter(d => d && d.text && !isCorruptedDocText(d.text)).map(d => normDocNm(d.name)));
+      const totalChars = (Array.isArray(sc.docTexts) ? sc.docTexts : []).reduce((s, d) => s + (d && d.text && !isCorruptedDocText(d.text) ? d.text.length : 0), 0);
       if (totalChars >= DOC_TEXT_MAX_CHARS) return false;
       const sources = collectLocalDocSources(sc);
       return sources.some(src => {
-        if (existing.has(src.name.normalize('NFKC').trim().toLowerCase())) return false;
+        if (existing.has(normDocNm(src.name))) return false;
         if (window.WebBridge && WebBridge.isAssetRef && WebBridge.isAssetRef(src.path)) return WebBridge.hasAssetSync ? WebBridge.hasAssetSync(src.path) : true;
         return !!(IS_ELECTRON && fs && fs.existsSync && fs.existsSync(src.path));
       });
@@ -3823,37 +4639,45 @@
       let extracted = 0, total = 0;
       try {
         if (!Array.isArray(sc.docTexts)) sc.docTexts = [];
+        const normDocNm = s => String(s || '').replace(/\.docx\.txt$/i, '.docx').normalize('NFKC').trim().toLowerCase();
         const byName = new Map();
         let curChars = 0;
         sc.docTexts.forEach(dt => {
           if (!dt || !dt.text) return;
-          byName.set(String(dt.name || '').normalize('NFKC').trim().toLowerCase(), dt);
+          if (!isCorruptedDocText(dt.text)) {
+            byName.set(normDocNm(dt.name), dt);
+          }
           curChars += dt.text.length;
         });
         const sources = collectLocalDocSources(sc);
         for (const src of sources) {
           total++;
-          if (curChars >= DOC_TEXT_MAX_CHARS) break;
-          const nk = src.name.normalize('NFKC').trim().toLowerCase();
+          const cleanName = String(src.name || '').replace(/\.docx\.txt$/i, '.docx');
+          const nk = normDocNm(cleanName);
           if (!o.force && byName.has(nk)) continue;
+          const prevIdx = sc.docTexts.findIndex(d => d && normDocNm(d.name) === nk);
+          const prevLen = (prevIdx >= 0 && sc.docTexts[prevIdx] && sc.docTexts[prevIdx].text) ? sc.docTexts[prevIdx].text.length : 0;
+          const remain = DOC_TEXT_MAX_CHARS - Math.max(0, curChars - prevLen);
+          if (remain < 500) break;
           const isWebAsset = !!(window.WebBridge && WebBridge.isAssetRef && WebBridge.isAssetRef(src.path));
           const accessible = isWebAsset ? (await WebBridge.hasAsset(src.path)) : !!(IS_ELECTRON && fs && fs.existsSync && fs.existsSync(src.path));
           if (!accessible) continue;
           try {
-            const remain = DOC_TEXT_MAX_CHARS - curChars;
-            if (remain < 500) break;
-            const res = await extractor(src.path, { name: src.name, maxPages: 150, maxChars: remain });
-            if (res && res.text && res.text.trim()) {
+            const res = await extractor(src.path, { name: cleanName, maxPages: 400, maxChars: remain });
+            if (res && !res.isBinaryError && res.text && res.text.trim()) {
               const entry = {
                 id: (window.CCFModel && typeof CCFModel.newId === 'function') ? CCFModel.newId() : uid(),
-                name: src.name,
+                name: cleanName,
                 text: res.text,
                 pageCount: Number(res.pageCount) || 1,
                 extractedAt: Date.now()
               };
-              const prevIdx = sc.docTexts.findIndex(d => d && String(d.name || '').normalize('NFKC').trim().toLowerCase() === nk);
-              if (prevIdx >= 0) sc.docTexts[prevIdx] = entry;
-              else sc.docTexts.push(entry);
+              if (prevIdx >= 0) {
+                curChars = Math.max(0, curChars - prevLen);
+                sc.docTexts[prevIdx] = entry;
+              } else {
+                sc.docTexts.push(entry);
+              }
               byName.set(nk, entry);
               curChars += entry.text.length;
               extracted++;
@@ -4049,36 +4873,52 @@
       }
 
       syncScenarioAssetCatalog(sc);
-      const textRes = await extractScenarioDocTexts(key, { silent: true, skipSave: true });
+      const textRes = await extractScenarioDocTexts(key, { silent: true, skipSave: true, force: !o.silent });
       const textExtracted = (textRes && textRes.extracted) || 0;
       if (!quotaReached) {
         sc.webAssetsSyncedAt = Date.now();
         sc.webAssetsSyncedCount = total;
       }
-      if (converted > 0 || textExtracted > 0) {
-        sc.detailEdited = true;
-        if (window.CCF && CCF.assets && typeof CCF.assets.invalidateUnified === 'function') {
-          CCF.assets.invalidateUnified(key, false);
+      const hasExistingData = (Array.isArray(sc.docTexts) && sc.docTexts.length > 0) || (Array.isArray(sc.images) && sc.images.length > 0);
+      const shouldPush = (converted > 0 || textExtracted > 0) || (!o.silent && hasExistingData);
+      let syncRes = null;
+      if (shouldPush) {
+        if (converted > 0 || textExtracted > 0) {
+          sc.detailEdited = true;
+          if (window.CCF && CCF.assets && typeof CCF.assets.invalidateUnified === 'function') {
+            CCF.assets.invalidateUnified(key, false);
+          }
         }
-        if (typeof saveState === 'function') saveState(false, { skipDetailEdited: false });
+        if (typeof saveState === 'function') saveState(false, { skipDetailEdited: !(converted > 0 || textExtracted > 0) });
         if (!o.silent && typeof window.cloudSyncNow === 'function' && currentAuthUser) {
-          await window.cloudSyncNow({ manual: true, silentToast: true });
+          syncRes = await window.cloudSyncNow({ manual: true, silentToast: true });
         }
         try { window.dispatchEvent(new CustomEvent('ccf-refs-changed')); } catch (_) {}
       } else if (!quotaReached && !sc._webSyncMarkSaved) {
         sc._webSyncMarkSaved = true;
       }
       if (!o.silent && typeof toast === 'function') {
-        if (converted > 0 || textExtracted > 0) {
+        if (syncRes && syncRes.ok === false) {
+          const errMsg = syncRes.blocked
+            ? '他端末での更新があるため同期がブロックされました'
+            : (syncRes.error && syncRes.error.message)
+              ? syncRes.error.message
+              : (syncRes.partial ? '一部データのアップロードに失敗しました' : '同期エラー');
+          toast(`❌ 「${sc.title || 'シナリオ'}」のクラウド同期に失敗しました: ${errMsg}`);
+        } else if (converted > 0 || textExtracted > 0) {
           const parts = [];
           if (converted > 0) parts.push(`登録素材画像 ${converted}件を軽量WebP化`);
           if (textExtracted > 0) parts.push(`資料テキスト ${textExtracted}件を抽出`);
           toast(`✅ 「${sc.title || 'シナリオ'}」の${parts.join('・')}しクラウド同期しました`);
+        } else if (shouldPush && syncRes && syncRes.ok) {
+          const docN = Array.isArray(sc.docTexts) ? sc.docTexts.length : 0;
+          const imgN = Array.isArray(sc.images) ? sc.images.length : 0;
+          toast(`✅ 「${sc.title || 'シナリオ'}」の最新データ（画像 ${imgN}件・資料テキスト ${docN}件）をクラウドへ同期しました`);
         } else {
           toast(total > 0 || (textRes && textRes.total > 0) ? 'ℹ️ 変換・同期できる新しいローカル画像や未抽出資料はありませんでした（既に同期済みです）' : 'ℹ️ このシナリオに登録されている画像・資料がありません');
         }
       }
-      return { converted, skipped, total, textExtracted, quotaReached };
+      return { converted, skipped, total, textExtracted, quotaReached, syncRes };
     }
     window.syncScenarioAssetsToWeb = syncScenarioAssetsToWeb;
 
@@ -4213,13 +5053,6 @@
       return { started: true, processedScenarios, totalConverted, stoppedByQuota };
     }
     window.startBackgroundWebAssetSync = startBackgroundWebAssetSync;
-    setTimeout(() => {
-      if (isSyncActive()) {
-        onSyncIdle(() => setTimeout(() => { void startBackgroundWebAssetSync({ manual: false }); }, 2000));
-        return;
-      }
-      void startBackgroundWebAssetSync({ manual: false });
-    }, 8000);
 
     // ---- 2段階オンデマンドダウンロード（第1段階: サムネ一括パック / 第2段階: シナリオZIP一括取得＋旧個別取得フォールバック） ----
     async function downloadRawAssetBytesFromCloud(sha256) {
@@ -4560,13 +5393,99 @@
     async function readByPathOrName(localPath, opts) {
       if (!localPath) return null;
       const o = opts || {};
+      const sid = o.scenarioId ? String(o.scenarioId) : '';
+      // 0. 該当シナリオの素材パック取得が進行中なら完了を待機してから照合する
+      if (sid && scenarioFetchInFlight.has(sid)) {
+        try { await scenarioFetchInFlight.get(sid); } catch (_) {}
+      }
+      // 1. lookupShaForRef(localPath) で完全一致検索
       const hit = lookupShaForRef(localPath);
-      if (hit && hit.sha256) return await readCloudAssetBytes(hit.sha256, { download: true, name: hit.name, mime: hit.mime, scenarioId: o.scenarioId });
-      const base = String(localPath).split(/[\\/]/).pop().toLowerCase();
-      for (const [sha, meta] of Object.entries(remoteManifest)) {
-        if (meta && !meta.isThumb && meta.name && meta.name.toLowerCase() === base) {
-          return await readCloudAssetBytes(sha, { download: true, name: meta.name, mime: meta.mime, scenarioId: o.scenarioId || meta.scenarioId });
+      if (hit && hit.sha256) {
+        const u8 = await readCloudAssetBytes(hit.sha256, { download: true, name: hit.name, mime: hit.mime, scenarioId: sid });
+        if (u8 && u8.byteLength) return u8;
+      }
+
+      const normName = s => String(s || '').split(/[\\/]/).pop().normalize('NFKC').trim().toLowerCase();
+      const stripExt = s => normName(s).replace(/\.[^.]+$/, '').trim();
+      const targetName = normName(localPath);
+      const targetStem = stripExt(localPath);
+      if (!targetName) return null;
+
+      const matchScore = candName => {
+        const cn = normName(candName);
+        if (!cn) return 0;
+        if (cn === targetName) return 2;
+        const cs = stripExt(cn);
+        if (targetStem && cs && cs === targetStem) return 1;
+        return 0;
+      };
+
+      const findInScenarioAssets = scKey => {
+        const list = scenarioAssets[scKey];
+        if (!Array.isArray(list) || !list.length) return null;
+        let best = null, bestScore = 0;
+        for (const ent of list) {
+          if (!ent || ent.isThumb || !ent.sha256) continue;
+          const sc = Math.max(matchScore(ent.name), matchScore(ent.rel), matchScore(ent.refKey));
+          if (sc > bestScore) {
+            bestScore = sc;
+            best = ent;
+            if (sc === 2) break;
+          }
         }
+        return best;
+      };
+
+      const findInRemoteManifest = () => {
+        let best = null, bestRank = 0;
+        for (const [sha, meta] of Object.entries(remoteManifest)) {
+          if (!meta || meta.isThumb) continue;
+          const mScore = Math.max(matchScore(meta.name), matchScore(meta.refKey));
+          if (!mScore) continue;
+          const sameSc = !!(sid && String(meta.scenarioId || '') === sid);
+          const rank = (sameSc ? 10 : 0) + mScore;
+          if (rank > bestRank) {
+            bestRank = rank;
+            best = { sha, meta };
+            if (rank === 12) break;
+          }
+        }
+        return best;
+      };
+
+      // 2. opts.scenarioId が指定されている場合、scenarioAssets[sid] 内を検索（未発見かつクラウド取得可能なら packManifest の有無にかかわらずパック取得を1回試行して再照合）
+      if (sid) {
+        let scHit = findInScenarioAssets(sid);
+        if (scHit && scHit.sha256) {
+          const u8 = await readCloudAssetBytes(scHit.sha256, { download: true, name: scHit.name, mime: scHit.mime, scenarioId: sid });
+          if (u8 && u8.byteLength) return u8;
+        }
+        if (canDownloadFromCloud()) {
+          const packKey = 'scenario:' + sid;
+          try { await downloadAndExtractPack(packKey); } catch (_) {}
+          const hitAfter = lookupShaForRef(localPath);
+          if (hitAfter && hitAfter.sha256) {
+            const u8 = await readCloudAssetBytes(hitAfter.sha256, { download: true, name: hitAfter.name, mime: hitAfter.mime, scenarioId: sid });
+            if (u8 && u8.byteLength) return u8;
+          }
+          scHit = findInScenarioAssets(sid);
+          if (scHit && scHit.sha256) {
+            const u8 = await readCloudAssetBytes(scHit.sha256, { download: true, name: scHit.name, mime: scHit.mime, scenarioId: sid });
+            if (u8 && u8.byteLength) return u8;
+          }
+        }
+      }
+
+      // 3. remoteManifest 全体で完全一致・ベース名一致（opts.scenarioId 一致優先）を照合して取得
+      const rmHit = findInRemoteManifest();
+      if (rmHit && rmHit.sha) {
+        const u8 = await readCloudAssetBytes(rmHit.sha, {
+          download: true,
+          name: rmHit.meta.name,
+          mime: rmHit.meta.mime,
+          scenarioId: sid || rmHit.meta.scenarioId
+        });
+        if (u8 && u8.byteLength) return u8;
       }
       return null;
     }
@@ -5294,7 +6213,7 @@
           try {
             const bytes = await item.readBytes();
             if (!bytes) throw new Error('バックアップファイルを読み込めませんでした');
-            const jsonStr = await window.CloudCodec.gzipDecompress(bytes);
+            const jsonStr = await window.CloudCodec.gzipDecompressText(bytes);
             const snap = JSON.parse(jsonStr);
             if (!snap || !snap.state) throw new Error('バックアップの形式が正しくありません');
             const scN = Array.isArray(snap.state.scenarios) ? snap.state.scenarios.length : 0;
@@ -5459,8 +6378,8 @@
               <div style="font-weight:bold;margin-bottom:4px;">🌐 登録素材画像のWeb同期範囲（Firebase軽量WebP）</div>
               <div class="cloud-sub-note" style="margin-bottom:6px;">自宅PCからNPC・背景・マップ等の登録素材画像を軽量WebP（長辺800px）化してFirebaseへ保存し、外出先やスマホから閲覧できるようにします。</div>
               <select class="form-select" data-cloud-cfg="webAssetSyncMode" style="width:100%;max-width:420px;margin-bottom:8px;">
-                <option value="auto_all"${(!cs.webAssetSyncMode || cs.webAssetSyncMode === 'auto_all') ? ' selected' : ''}>全シナリオをバックグラウンドで自動Web同期（おすすめ）</option>
-                <option value="edited_only"${cs.webAssetSyncMode === 'edited_only' ? ' selected' : ''}>編集・詳細を開いたシナリオのみ自動同期</option>
+                <option value="edited_only"${(!cs.webAssetSyncMode || cs.webAssetSyncMode === 'edited_only') ? ' selected' : ''}>編集・詳細を開いたシナリオのみ自動同期（おすすめ）</option>
+                <option value="auto_all"${cs.webAssetSyncMode === 'auto_all' ? ' selected' : ''}>全シナリオをバックグラウンドで自動Web同期</option>
                 <option value="manual"${cs.webAssetSyncMode === 'manual' ? ' selected' : ''}>手動ボタンのみ</option>
               </select>
               ${(() => {
@@ -5866,29 +6785,9 @@
       purgeUploadQueue,
       resetUploadQueue,
       isSyncing: isSyncActive,
+      isSyncActive,
       onSyncIdle,
       isAssetRefLocallyCachedSync,
       getQueueLength: () => cloudUploadQueue.length
     };
   })();
-
-  let _blobSaveQueued = false;
-  if (typeof serializeState === 'function' && !serializeState.__blobCleanedWrapped) {
-    const _origSerializeState = serializeState;
-    const _wrappedSerializeState = function (obj) {
-      if (typeof cleanStaleBlobUrls === 'function' && obj && typeof obj === 'object') {
-        const cleaned = cleanStaleBlobUrls(obj);
-        if (cleaned && typeof appState !== 'undefined' && obj === appState && !_blobSaveQueued && typeof saveState === 'function') {
-          _blobSaveQueued = true;
-          setTimeout(() => {
-            _blobSaveQueued = false;
-            try { saveState(false, { skipDetailEdited: true }); } catch (_) {}
-          }, 0);
-        }
-      }
-      return _origSerializeState.apply(this, arguments);
-    };
-    _wrappedSerializeState.__blobCleanedWrapped = true;
-    try { serializeState = _wrappedSerializeState; } catch (_) {}
-    if (typeof window !== 'undefined') window.serializeState = _wrappedSerializeState;
-  }

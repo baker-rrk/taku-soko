@@ -28,16 +28,98 @@
   // ======================================================================
   // 立ち絵サムネイル解決（images / portraits / 単一プロパティ両対応）
   // ======================================================================
+  const pendingNpcImgHashes = new Set();
+  let npcImgRefreshTimer = null;
+  function scheduleNpcImgRefresh() {
+    if (npcImgRefreshTimer) return;
+    npcImgRefreshTimer = setTimeout(() => {
+      npcImgRefreshTimer = null;
+      try {
+        if (R) {
+          renderReview();
+        } else if (S && S.view === 'npcs' && typeof CCF.renderCenter === 'function') {
+          CCF.renderCenter();
+        }
+      } catch (_) { }
+    }, 30);
+  }
+  function requestNpcImgHash(h) {
+    if (!h || pendingNpcImgHashes.has(h)) return;
+    if (typeof window === 'undefined' || typeof window.ensureLocalImageByHash !== 'function') return;
+    pendingNpcImgHashes.add(h);
+    try {
+      Promise.resolve(window.ensureLocalImageByHash(h))
+        .then(ok => {
+          const live = (typeof window.getLocalImageBlobUrl === 'function') ? window.getLocalImageBlobUrl(h) : '';
+          if (ok || live) {
+            if (typeof window.updateImageDom === 'function') window.updateImageDom(h);
+            scheduleNpcImgRefresh();
+          }
+        })
+        .catch(() => { })
+        .finally(() => { pendingNpcImgHashes.delete(h); });
+    } catch (_) {
+      pendingNpcImgHashes.delete(h);
+    }
+  }
+  function isNpcImgRefOrUrl(s) {
+    return /^(?:@img:[a-z0-9]+|cloud-asset:|data:image\/|file:\/\/|https?:\/\/|zipview:\/\/|blob:)/i.test(String(s || '').trim());
+  }
   function resolveImgSrc(item) {
     if (!item) return '';
     const raw = typeof item === 'string' ? item : (item.dataUrl || item.url || item.src || item.iconUrl || item.path || item.filePath || '');
     const s = String(raw || '').trim();
     if (!s || /^(?:javascript|vbscript|data:(?!image\/))/i.test(s)) return '';
-    if (/^(?:data:image\/|file:\/\/|https?:\/\/|zipview:\/\/|blob:)/i.test(s)) return s;
+    if (/^@img:[a-z0-9]+$/i.test(s)) {
+      const h = s.slice(5);
+      if (typeof window !== 'undefined' && typeof window.getLocalImageBlobUrl === 'function') {
+        try {
+          const live = window.getLocalImageBlobUrl(h);
+          if (live) return live;
+        } catch (_) { }
+      }
+      requestNpcImgHash(h);
+      return s;
+    }
+    if (/^cloud-asset:/i.test(s) || (window.CloudSync && CloudSync.isCloudAssetRef && CloudSync.isCloudAssetRef(s))) {
+      return s;
+    }
+    if (window.WebBridge && WebBridge.isAssetRef && WebBridge.isAssetRef(s)) {
+      return WebBridge.peekAssetUrl(s) || '';
+    }
+    if (/^blob:/i.test(s)) {
+      if (typeof window !== 'undefined' && typeof window.urlToRef === 'function') {
+        try {
+          const ref = window.urlToRef(s);
+          if (typeof ref === 'string' && /^@img:[a-z0-9]+$/i.test(ref)) {
+            const h = ref.slice(5);
+            const live = (typeof window.getLocalImageBlobUrl === 'function') ? window.getLocalImageBlobUrl(h) : '';
+            if (live) return live;
+            requestNpcImgHash(h);
+            return ref;
+          }
+        } catch (_) { }
+      }
+      return s;
+    }
+    if (/^(?:data:image\/|file:\/\/|https?:\/\/|zipview:\/\/)/i.test(s)) return s;
     if (IS_ELECTRON && typeof require === 'function') {
       try { return require('url').pathToFileURL(s).href; } catch (e) { /* noop */ }
     }
     return s;
+  }
+  function npcImgTag(src, cls, extra) {
+    const s = String(src || '').trim();
+    if (!s) return '';
+    const ex = extra || 'alt=""';
+    if (CCF.assets && typeof CCF.assets.assetImgTag === 'function') {
+      return CCF.assets.assetImgTag(s, cls || '', ex);
+    }
+    const c = cls ? ` class="${cls}"` : '';
+    if (s.startsWith('@img:') && typeof window.imgAttr === 'function') {
+      return `<img${c} ${window.imgAttr(s)} ${ex}>`;
+    }
+    return `<img${c} src="${esc(s)}" ${ex}>`;
   }
   function resolveNpcThumb(n) {
     if (!n) return '';
@@ -61,19 +143,25 @@
       <span class="ccf-muted">${S.proj.settings.statusPublic ? 'ステータス公開' : '非公開'}${S.proj.settings.secretDice ? ' / シークレット' : ''}</span>
     </div>` + (S.showNpcSettings && CCF.npcSettingsHtml ? CCF.npcSettingsHtml() : '');
     const bar = `<div class="ccf-list-bar"><button type="button" class="ccf-btn primary" data-n="blank">＋ 空のNPCを作成</button><button type="button" class="ccf-btn" data-n="import" title="いあきゃら出力テキスト／ココフォリア駒JSONを貼り付けて、NPCとして取り込みます">📥 外部データから取り込み</button><button type="button" class="ccf-btn accent" data-n="scan" title="表示中のPDF、または登録された全PDFを横断して、NPCのステータスブロックを自動検出します">🔍 PDFからNPCを一括検出</button><button type="button" class="ccf-btn" data-n="merge-dups" title="正規化名が一致する同名NPC（立ち絵のみの枠とステータスありの枠など）を1体に統合します"${ns.length >= 2 ? '' : ' disabled'}>🔗 同名NPCを統合</button>${CCF.bulkBarHtml('n', ns.length)}<span class="ccf-muted">${ns.length}体。⠿ をドラッグして並べ替え。「📋 コピー」→ ココフォリアの部屋で Ctrl+V で駒を作成できます</span></div>`;
-    return settingsBar + bar + (ns.map(n => {
+    let hasCloudRef = false;
+    const html = settingsBar + bar + (ns.map(n => {
       const st = n.status.map(s => `<span class="ccf-chip">${esc(s.label)} ${s.value}${s.max !== s.value ? '/' + s.max : ''}</span>`).join('');
       const pa = n.params.slice(0, 8).map(p => `<span class="ccf-chip dim">${esc(p.label)} ${esc(p.value)}</span>`).join('');
       const thumb = resolveNpcThumb(n);
+      if (/^cloud-asset:/i.test(thumb)) hasCloudRef = true;
       const imgCount = (Array.isArray(n.images) && n.images.length ? n.images : (Array.isArray(n.portraits) ? n.portraits : [])).length;
       const imgLabel = thumb ? (imgCount > 1 ? ` ／ 立ち絵あり（${imgCount}枚）` : ' ／ 立ち絵あり') : ' ／ 立ち絵なし';
       return `<div class="ccf-npc" data-id="${esc(n.id)}">
         <div class="ccf-npc-sel"><input type="checkbox" class="ccf-selchk" data-sel="${esc(n.id)}" aria-label="選択"${S.sel.has(n.id) ? ' checked' : ''}><span class="ccf-grip" draggable="true" title="ドラッグで並べ替え">⠿</span></div>
-        <div class="ccf-npc-icon">${thumb ? `<img src="${esc(thumb)}" alt="">` : '<span>👤</span>'}</div>
+        <div class="ccf-npc-icon">${thumb ? npcImgTag(thumb, '', 'alt=""') : '<span>👤</span>'}</div>
         <div class="ccf-npc-main"><div class="ccf-npc-name">${esc(n.name)}</div><div class="ccf-chips">${st}${pa}</div>
           <div class="ccf-muted">技能・コマンド ${n.commands ? n.commands.split('\n').length : 0}行${imgLabel}</div></div>
         <div class="ccf-actions">${n.srcs && n.srcs.length ? `<button type="button" class="ccf-btn" data-n="jump" title="抽出元のPDF（${esc(n.srcs[0].name)}）の該当ページへ移動します">📄 P.${n.srcs[0].page}へ移動</button>` : ''}<button type="button" class="ccf-btn" data-n="edit">✎ 確認・修正</button><button type="button" class="ccf-btn" data-n="copy">📋 コピー</button><button type="button" class="ccf-mini danger" data-n="del" title="削除">🗑</button></div></div>`;
     }).join('') || '<div class="ccf-empty">まだNPCがいません。PDFでステータスブロックを選択 →「👤 NPC生成」</div>');
+    if (hasCloudRef && CCF.assets && typeof CCF.assets.fillCloudAssetsIn === 'function') {
+      setTimeout(() => { const el = $('ccfList'); if (el) CCF.assets.fillCloudAssetsIn(el); }, 0);
+    }
+    return html;
   };
   /** 📥 外部データ取り込み：ココフォリア駒JSON（kind:character）／JSON配列／いあきゃら出力テキスト を自動判別して NPC 下書きへ逆変換 */
   function importFromText(raw) {
@@ -143,16 +231,35 @@
     const arr = a => Array.isArray(a) ? a : [];
     let list = arr(d.images).length ? d.images : arr(d.portraits);
     list = list.map(x => {
+      if (typeof x === 'string') {
+        const s = x.trim();
+        if (!s) return null;
+        const isRef = isNpcImgRefOrUrl(s);
+        return { id: M.newId(), path: isRef ? '' : s, filePath: isRef ? '' : s, dataUrl: isRef ? s : '', assetId: '', label: '', name: '' };
+      }
       if (!x || typeof x !== 'object') return null;
-      return { id: x.id || M.newId(), path: x.path || x.filePath || '', filePath: x.filePath || x.path || '', dataUrl: x.dataUrl || x.url || x.src || '', assetId: x.assetId || '', label: x.label || x.name || '', name: x.name || x.label || '' };
+      let du = String(x.dataUrl || x.url || x.src || '').trim();
+      let p = String(x.path || x.filePath || '').trim();
+      let fp = String(x.filePath || p || '').trim();
+      if (!du && isNpcImgRefOrUrl(p)) { du = p; p = ''; fp = ''; }
+      if (isNpcImgRefOrUrl(fp)) fp = '';
+      if (isNpcImgRefOrUrl(p)) p = '';
+      return { id: x.id || M.newId(), path: p, filePath: fp, dataUrl: du, assetId: x.assetId || '', label: x.label || x.name || '', name: x.name || x.label || '' };
     }).filter(x => x && (x.dataUrl || x.path || x.filePath || x.assetId));
     if (!list.length) {
       const single = [d.iconDataUrl, d.image, d.imagePath, d.iconUrl, d.portrait].find(v => v && String(v).trim());
       if (single) {
-        const s = String(single).trim(), isUrl = /^(?:data:image\/|file:\/\/|https?:\/\/|zipview:\/\/|blob:)/i.test(s);
+        const s = String(single).trim(), isUrl = isNpcImgRefOrUrl(s);
         list = [{ id: M.newId(), path: isUrl ? '' : s, filePath: isUrl ? '' : s, dataUrl: isUrl ? s : '', assetId: '', label: d.iconName || '通常', name: d.iconName || '通常' }];
       }
     }
+    list.forEach(it => {
+      if (it && it.dataUrl && /^@img:[a-z0-9]+$/i.test(it.dataUrl)) {
+        const h = it.dataUrl.slice(5);
+        const live = (typeof window !== 'undefined' && typeof window.getLocalImageBlobUrl === 'function') ? window.getLocalImageBlobUrl(h) : '';
+        if (!live) requestNpcImgHash(h);
+      }
+    });
     d.portraits = list;
     d.images = list.map(x => Object.assign({}, x));
     syncIcon(d);
@@ -230,7 +337,7 @@
     </div>
     <div class="ccf-r-form">
       <div class="ccf-r-top">
-        <div class="ccf-icon-drop" id="ccfIconDrop" title="メイン立ち絵（画像ファイルまたはマイライブラリの画像をドロップで先頭に追加）">${mainThumb ? `<img src="${esc(mainThumb)}" alt="立ち絵">` : '<span>立ち絵<br><small>ドロップ</small></span>'}</div>
+        <div class="ccf-icon-drop" id="ccfIconDrop" title="メイン立ち絵（画像ファイルまたはマイライブラリの画像をドロップで先頭に追加）">${mainThumb ? npcImgTag(mainThumb, '', 'alt="立ち絵"') : '<span>立ち絵<br><small>ドロップ</small></span>'}</div>
         <div class="ccf-r-top-fields">
           <label>名前 <input type="text" data-b="name" value="${esc(d.name)}"></label>
           <div class="ccf-row">${sysSelect}<label>イニシアティブ <input type="number" data-b="initiative" value="${esc(d.initiative)}" style="width:80px"></label>
@@ -241,7 +348,7 @@
       </div>
       <div class="ccf-sub">🖼️ 立ち絵・表情差分 <span class="ccf-muted">（先頭が駒のメイン立ち絵。追加・変更・削除・D&D、ラベル編集・並べ替えに対応）</span></div>
       <div class="ccf-pt-drop" id="ccfPtDrop">
-        ${d.portraits.map((p, i) => { const ps = resolveImgSrc(p); return `<div class="ccf-pt">${ps ? `<img class="ccf-pt-thumb" src="${esc(ps)}" alt="">` : '<div class="ccf-pt-thumb ccf-pt-empty">👤</div>'}<input type="text" data-pt="label" data-i="${i}" value="${esc(p.label)}" placeholder="表情ラベル" aria-label="表情ラベル"><div class="ccf-row" style="gap:3px"><button type="button" class="ccf-mini" data-r="pt-up" data-i="${i}" title="前へ"${i ? '' : ' disabled'}>◀</button><button type="button" class="ccf-mini" data-r="pt-down" data-i="${i}" title="後ろへ"${i < d.portraits.length - 1 ? '' : ' disabled'}>▶</button><button type="button" class="ccf-mini danger" data-r="pt-del" data-i="${i}" title="削除">✕</button></div></div>`; }).join('')}
+        ${d.portraits.map((p, i) => { const ps = resolveImgSrc(p); return `<div class="ccf-pt">${ps ? npcImgTag(ps, 'ccf-pt-thumb', 'alt=""') : '<div class="ccf-pt-thumb ccf-pt-empty">👤</div>'}<input type="text" data-pt="label" data-i="${i}" value="${esc(p.label)}" placeholder="表情ラベル" aria-label="表情ラベル"><div class="ccf-row" style="gap:3px"><button type="button" class="ccf-mini" data-r="pt-up" data-i="${i}" title="前へ"${i ? '' : ' disabled'}>◀</button><button type="button" class="ccf-mini" data-r="pt-down" data-i="${i}" title="後ろへ"${i < d.portraits.length - 1 ? '' : ' disabled'}>▶</button><button type="button" class="ccf-mini danger" data-r="pt-del" data-i="${i}" title="削除">✕</button></div></div>`; }).join('')}
         <div class="ccf-pt-actions"><button type="button" class="ccf-btn" data-r="pt-add">📁 ファイルから追加</button>${CCF.assets ? '<button type="button" class="ccf-btn" data-r="pt-reg" title="📌 登録素材のフォルダから選んで追加します">📌 登録素材から追加</button>' : ''}${typeof pickGalleryImage === 'function' ? '<button type="button" class="ccf-btn" data-r="pt-gallery">🖼️ 共通ギャラリーから追加</button>' : ''}<button type="button" class="ccf-btn danger" data-r="pt-clear"${d.portraits.length ? '' : ' disabled'}>🗑 すべて解除</button></div>
       </div>
       <div class="ccf-row" style="margin-top:8px"><button type="button" class="ccf-btn" data-r="autocalc" title="HP/MP/SAN/DB/アイデア/幸運/知識 が原文に無い（空欄）ときだけ、システム別の計算式で補完します。原文の数値は変更しません">🧮 空欄を自動計算</button><button type="button" class="ccf-btn" data-r="recalc" title="自動補完した項目（🧮自動）を、現在の能力値から計算し直します">↻ 再計算</button></div>
@@ -265,6 +372,9 @@
     <button type="button" class="ccf-btn primary" data-r="confirm">${R.mode === 'edit' ? '✅ 更新する' : '✅ 確定して追加' + (n > 1 ? '（' + n + '体すべて）' : '')}</button></div>
 </div>`;
     palInfo();
+    if (CCF.assets && typeof CCF.assets.fillCloudAssetsIn === 'function' && R && R.el) {
+      CCF.assets.fillCloudAssetsIn(R.el);
+    }
     if (!R.focused) { R.focused = true; const m = R.el.querySelector('.ccf-modal'); if (m) m.focus({ preventScroll: true }); }
   }
   const palInfo = () => { const el = $('ccfPalInfo'), d = cur(); if (el && d) el.textContent = d.commands ? d.commands.split('\n').filter(Boolean).length + '行' : '0行'; };
@@ -421,6 +531,42 @@
       if (!quiet) renderReview();
     } catch (e) { say('❌ 画像を読み込めませんでした：' + (e.message || e)); }
   }
+  async function fileToNpcDataUrl(f) {
+    const type = String((f && f.type) || '').toLowerCase();
+    const name = String((f && f.name) || '');
+    const isAlpha = /^image\/(?:png|webp|gif|svg\+xml)$/i.test(type) || /\.(?:png|webp|gif|svg)$/i.test(name);
+    const readAsDataUrl = blob => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result || '')); fr.onerror = () => rej(fr.error); fr.readAsDataURL(blob); });
+    if (isAlpha) {
+      const isAnimOrSvg = /gif|svg/i.test(type) || /\.(?:gif|svg)$/i.test(name);
+      if (isAnimOrSvg || !f.size || f.size <= 1.5 * 1024 * 1024 || typeof document === 'undefined') {
+        return await readAsDataUrl(f);
+      }
+      try {
+        const objUrl = URL.createObjectURL(f);
+        try {
+          const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = objUrl; });
+          const maxDim = 1600;
+          const sc = Math.min(1, maxDim / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+          const cw = Math.max(1, Math.round((img.naturalWidth || 1) * sc));
+          const ch = Math.max(1, Math.round((img.naturalHeight || 1) * sc));
+          const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+          const ctx = cv.getContext('2d', { alpha: true });
+          ctx.clearRect(0, 0, cw, ch);
+          ctx.drawImage(img, 0, 0, cw, ch);
+          let outBlob = await new Promise(r => cv.toBlob(r, 'image/webp', 0.9));
+          if (!outBlob) outBlob = await new Promise(r => cv.toBlob(r, 'image/png'));
+          if (outBlob && outBlob.size < f.size) return await readAsDataUrl(outBlob);
+        } finally {
+          URL.revokeObjectURL(objUrl);
+        }
+      } catch (_) { }
+      return await readAsDataUrl(f);
+    }
+    if (typeof imageFileToDataUrl === 'function') {
+      try { const u = await imageFileToDataUrl(f); if (u) return u; } catch (_) { }
+    }
+    return await readAsDataUrl(f);
+  }
   async function onPortraitDrop(e) {
     const z = e.target.closest('.ccf-pt-drop'); if (!z) return; e.preventDefault(); z.style.outline = '';
     const dt = e.dataTransfer, d = cur(); if (!d) return; d.portraits = d.portraits || [];
@@ -428,8 +574,8 @@
     const lp = dt.getData('text/ccf-path'); if (lp) { await addPortraitFromPath(lp, true, false); return renderReview(); }
     for (const f of [...(dt.files || [])]) {
       const p = IS_ELECTRON ? filePathOf(f) : ''; if (p) { await addPortraitFromPath(p, true, false); continue; }
-      if (/^image\//.test(f.type)) {
-        const u = typeof imageFileToDataUrl === 'function' ? await imageFileToDataUrl(f) : await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+      if (/^image\//.test(f.type) || /\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(f.name || '')) {
+        const u = await fileToNpcDataUrl(f);
         addPortraitItem(d, { dataUrl: u, label: f.name.replace(/\.[^.]+$/, ''), name: f.name }, false);
       }
     }
@@ -442,9 +588,9 @@
     const lp = dt.getData('text/ccf-path'); if (lp) return setIconFromPath(lp);
     const f = dt.files && dt.files[0]; if (!f) return;
     const p = IS_ELECTRON ? filePathOf(f) : ''; if (p) return setIconFromPath(p);
-    if (!/^image\//.test(f.type)) return say('⚠️ 画像ファイルをドロップしてください');
+    if (!/^image\//.test(f.type) && !/\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(f.name || '')) return say('⚠️ 画像ファイルをドロップしてください');
     const d = cur();
-    const u = typeof imageFileToDataUrl === 'function' ? await imageFileToDataUrl(f) : await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(f); });
+    const u = await fileToNpcDataUrl(f);
     addPortraitItem(d, { dataUrl: u, label: f.name.replace(/\.[^.]+$/, ''), name: f.name }, true);
     renderReview();
   }

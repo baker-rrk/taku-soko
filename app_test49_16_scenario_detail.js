@@ -1,11 +1,13 @@
 /* app_test49_16_scenario_detail.js — 📋 シナリオ詳細モーダル（ホームのカード・一覧クリックで開く）
  * 概要・スペック／同梱素材（画像・PDF・ZIP・BGM）／アクション4ボタン。モーダルへのD&D（フォルダ・ZIP・PDF・BGM・画像）で素材を追加できる。 */
 (function () {
-  let sdId = null, sdEl = null, sdPeek = false, sdThumbOpen = false, sdSelSlot = 0, sdEditNotes = false, sdEditTrailer = false, sdEditSynopsis = false, sdEditFreeText = false, sdEditBlockId = '', sdEditHoIdx = -1, sdRangeTimer = null;
+  let sdId = null, sdEl = null, sdDraft = null, sdTagPickerOpen = false, sdPeek = false, sdThumbOpen = false, sdSelSlot = 0, sdEditNotes = false, sdEditTrailer = false, sdEditSynopsis = false, sdEditFreeText = false, sdEditBlockId = '', sdEditHoIdx = -1, sdRangeTimer = null;
   let sdOpenHOs = new Set();
 let sdOpenSecs = new Set();   // 開いているアコーディオン（基本は全て閉）
   let sdHoverTimer = null, sdHoverIdx = 0, sdDragSlot = -1;
   let sdSpecSortMode = false, sdSpecAddOpen = false, sdDragSpecKey = '', sdFocusSpecKey = '', sdFocusSpecPart = '';
+  const isCreateMode = () => !!sdDraft;
+  const curSc = () => sdDraft || scOf(sdId);
   const E = s => escapeHTML(String(s == null ? '' : s));
   const specFirstLine = (sc, key, cs) => (typeof getScenarioSpecFirstLine === 'function')
     ? getScenarioSpecFirstLine(sc, key, cs)
@@ -190,8 +192,9 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
     return { blocks, summaryBlock, synopsisBlock, notesBlock, otherBlocks };
   }
   function renderBlockBodyHtml(b, fallbackVal) {
-    const mainVal = String(b ? (b.val != null ? b.val : (fallbackVal || '')) : (fallbackVal || ''));
     const subs = (b && Array.isArray(b.subItems)) ? b.subItems.filter(s => s && (String(s.title || '').trim() || String(s.val || '').trim())) : [];
+    const rawVal = b && b.val != null ? String(b.val) : '';
+    const mainVal = rawVal.trim() ? rawVal : (subs.length === 0 ? String(fallbackVal || '') : '');
     const parts = [];
     if (mainVal.trim()) {
       parts.push(`<div class="sd-story">${linkifyTextHtml(mainVal)}</div>`);
@@ -288,7 +291,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
     if (!wrap) return;
     const img = wrap.querySelector('img.sd-trailer');
     const ind = wrap.querySelector('.sd-hover-ind');
-    const sc = scOf(sdId);
+    const sc = curSc();
     if (img && img.dataset.origSrc !== undefined) {
       img.src = img.dataset.origSrc;
       delete img.dataset.origSrc;
@@ -298,14 +301,15 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
   }
 
   function bodyHtml(sc) {
+    const isCreate = isCreateMode();
     const { summaryBlock, synopsisBlock, notesBlock, otherBlocks } = classifyScenarioPublicBlocks(sc);
-    const imgs = Array.isArray(sc.images) ? sc.images : [];
-    const rawRefs = (() => {
+    const imgs = isCreate ? [] : (Array.isArray(sc.images) ? sc.images : []);
+    const rawRefs = isCreate ? [] : (() => {
       if (!window.CCF || !CCF.readProject) return [];
       try { return (CCF.readProject(String(sc.id)).refs || []).filter(Boolean); } catch (e) { logSoft('sdRefs', e); return []; }
     })();
-    const pdfDocs = (sc.docs || []);
-    const unified = (window.CCF && CCF.assets && typeof CCF.assets.getUnifiedItems === 'function')
+    const pdfDocs = isCreate ? [] : (sc.docs || []);
+    const unified = isCreate ? [] : ((window.CCF && CCF.assets && typeof CCF.assets.getUnifiedItems === 'function')
       ? CCF.assets.getUnifiedItems(sc.id)
       : (() => {
           const out = [], seen = new Set();
@@ -333,7 +337,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
             out.push({ type: tp, name: catIt.name, origName: catIt.origName || catIt.name, dataUrl: catIt.thumbRef || '', path: catIt.cloudSha ? ('cloud-asset://' + catIt.cloudSha + '/' + encodeURIComponent(catIt.name)) : '', cloudSha: catIt.cloudSha || '', category: c, missing: false });
           });
           return out;
-        })();
+        })());
     const unifiedImgs = unified.filter(it => it.type === 'image');
     const imgGroups = new Map();
     unifiedImgs.forEach(it => {
@@ -345,7 +349,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
     const zips = unified.filter(r => r.type === 'zip');
     const bgms = unified.filter(r => r.type === 'audio');
     const unifiedTotal = unified.length;
-    const rooms = roomsOf(sc);
+    const rooms = isCreate ? [] : roomsOf(sc);
     const roomListHtml = rooms.map(r => {
       const nStocks = (r.project && r.project.stocks) ? r.project.stocks.length : 0;
       const nNpcs = (r.project && r.project.npcs) ? r.project.npcs.length : 0;
@@ -417,8 +421,10 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       : { text: (sc.postedChannels || []).length ? '✅ ' + sc.postedChannels.length + 'チャンネルに投稿済み' : '未投稿', title: '' };
     const spec = specItemsHtml
       + `<div class="sd-spec-cell sd-spec-item is-fixed"><dt>プレイ状況</dt><dd><select data-sd-field="playStatus" class="sd-inline-select">${psOpts}</select></dd></div>`
-      + (safeUrl(sc.shopUrl) ? `<div class="sd-spec-cell sd-spec-item is-fixed"><dt>ショップ</dt><dd><a href="${E(safeUrl(sc.shopUrl))}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-text);">🔗 ショップを開く</a></dd></div>` : '')
-      + `<div class="sd-spec-cell sd-spec-item is-fixed"><dt>投稿状況</dt><dd${postDet.title ? ` title="${E(postDet.title)}"` : ''}>${E(postDet.text)}</dd></div>`;
+      + (isCreate
+        ? `<div class="sd-spec-cell sd-spec-item is-fixed sd-spec-shopurl"><dt>ショップURL</dt><dd><input type="url" class="sd-inline-input" data-sd-inline="shopUrl" data-orig-val="${E(sc.shopUrl || '')}" value="${E(sc.shopUrl || '')}" placeholder="https://booth.pm/..."></dd></div>`
+        : ((safeUrl(sc.shopUrl) ? `<div class="sd-spec-cell sd-spec-item is-fixed"><dt>ショップ</dt><dd><a href="${E(safeUrl(sc.shopUrl))}" target="_blank" rel="noopener noreferrer" style="color:var(--accent-text);">🔗 ショップを開く</a></dd></div>` : '')
+          + `<div class="sd-spec-cell sd-spec-item is-fixed"><dt>投稿状況</dt><dd${postDet.title ? ` title="${E(postDet.title)}"` : ''}>${E(postDet.text)}</dd></div>`));
     const sumFreeText = String((summaryBlock && summaryBlock.freeText) || '');
     const sumFreeTextHtml = (sumFreeText.trim() || sdEditFreeText)
       ? `<div class="sd-sum-freetext">
@@ -578,59 +584,91 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
     </details>`;
 
     const trailerText = String(sc.trailer || '');
-    const trailerSectionHtml = accWrap('trailer', 'sd-trailer-sec', '💬 トレーラー・キャッチコピー', accExcerpt(trailerText),
-      `<button type="button" class="btn-sort" data-sd="trailer-edit-toggle">${sdEditTrailer ? '閉じる' : '✏️ 編集'}</button>
-          <button type="button" class="btn-sort btn-danger" data-sd="trailer-clear"${!trailerText.trim() ? ' disabled' : ''}>🧹 クリア</button>`,
-      `${sdEditTrailer
-        ? `<div class="sd-notes-edit">
-            <textarea id="sdEditTrailerArea" rows="4" placeholder="例：その扉を開けた時、日常は静かに幕を閉じた。">${E(trailerText)}</textarea>
-            <div style="display:flex; gap:6px; justify-content:flex-end;">
-              <button type="button" class="btn-sort" data-sd="trailer-cancel">キャンセル</button>
-              <button type="button" class="btn-sort" style="background:var(--accent); color:#fff; border-color:var(--accent);" data-sd="trailer-save">💾 保存</button>
-            </div>
-          </div>`
-        : (trailerText.trim() ? `<div class="sd-story sd-catchcopy">${linkifyTextHtml(trailerText)}</div>` : '<div class="sd-empty">まだ設定されていません（「✏️ 編集」から入力できます）</div>')}`, sdEditTrailer);
+    const trailerSectionHtml = isCreate
+      ? accWrap('trailer', 'sd-trailer-sec', '💬 トレーラー・キャッチコピー', accExcerpt(trailerText), '',
+          `<textarea class="sd-draft-textarea" data-sd-draft="trailer" rows="4" placeholder="例：その扉を開けた時、日常は静かに幕を閉じた。">${E(trailerText)}</textarea>`, false)
+      : accWrap('trailer', 'sd-trailer-sec', '💬 トレーラー・キャッチコピー', accExcerpt(trailerText),
+          `<button type="button" class="btn-sort" data-sd="trailer-edit-toggle">${sdEditTrailer ? '閉じる' : '✏️ 編集'}</button>
+              <button type="button" class="btn-sort btn-danger" data-sd="trailer-clear"${!trailerText.trim() ? ' disabled' : ''}>🧹 クリア</button>`,
+          `${sdEditTrailer
+            ? `<div class="sd-notes-edit">
+                <textarea id="sdEditTrailerArea" rows="4" placeholder="例：その扉を開けた時、日常は静かに幕を閉じた。">${E(trailerText)}</textarea>
+                <div style="display:flex; gap:6px; justify-content:flex-end;">
+                  <button type="button" class="btn-sort" data-sd="trailer-cancel">キャンセル</button>
+                  <button type="button" class="btn-sort" style="background:var(--accent); color:#fff; border-color:var(--accent);" data-sd="trailer-save">💾 保存</button>
+                </div>
+              </div>`
+            : (trailerText.trim() ? `<div class="sd-story sd-catchcopy">${linkifyTextHtml(trailerText)}</div>` : '<div class="sd-empty">まだ設定されていません（「✏️ 編集」から入力できます）</div>')}`, sdEditTrailer);
 
     const synText = synopsisBlock ? String(synopsisBlock.val || '') : String(sc.synopsis || '');
     const synHeading = (synopsisBlock && blockHeadingOf(synopsisBlock)) || 'あらすじ';
     const hasSynContent = !!(synText.trim() || (synopsisBlock && blockHasContent(synopsisBlock)));
-    const synopsisSectionHtml = accWrap('synopsis', '', `📖 あらすじ${synHeading && synHeading !== 'あらすじ' ? ` <small>（${E(synHeading)}）</small>` : ''}`, accExcerpt(synText),
-      `<button type="button" class="btn-sort" data-sd="synopsis-edit-toggle">${sdEditSynopsis ? '閉じる' : '✏️ 編集'}</button>
-          <button type="button" class="btn-sort btn-danger" data-sd="synopsis-clear"${!hasSynContent ? ' disabled' : ''}>🧹 クリア</button>`,
-      `${sdEditSynopsis
-        ? `<div class="sd-notes-edit">
+    const synopsisSectionHtml = isCreate
+      ? accWrap('synopsis', '', `📖 あらすじ${synHeading && synHeading !== 'あらすじ' ? ` <small>（${E(synHeading)}）</small>` : ''}`, accExcerpt(synText), '',
+          `<div class="sd-notes-edit">
             <label style="font-size:0.74rem;">見出し名（例：あらすじ / ストーリー / 導入）</label>
-            <input type="text" id="sdEditSynopsisHeading" value="${E(synHeading)}" placeholder="あらすじ">
+            <input type="text" data-sd-draft="synopsisHeading" value="${E(synHeading)}" placeholder="あらすじ">
             <label style="font-size:0.74rem;">本文</label>
-            <textarea id="sdEditSynopsisArea" rows="6" placeholder="シナリオのあらすじ・導入ストーリーを入力...">${E(synText)}</textarea>
-            <div style="display:flex; gap:6px; justify-content:flex-end;">
-              <button type="button" class="btn-sort" data-sd="synopsis-cancel">キャンセル</button>
-              <button type="button" class="btn-sort" style="background:var(--accent); color:#fff; border-color:var(--accent);" data-sd="synopsis-save">💾 保存</button>
-            </div>
-          </div>`
-        : (hasSynContent ? renderBlockBodyHtml(synopsisBlock, synText) : '<div class="sd-empty">まだ設定されていません（「✏️ 編集」から入力できます）</div>')}`, sdEditSynopsis);
+            <textarea class="sd-draft-textarea" data-sd-draft="synopsis" rows="5" placeholder="シナリオのあらすじ・導入ストーリーを入力...">${E(synText)}</textarea>
+          </div>`, false)
+      : accWrap('synopsis', '', `📖 あらすじ${synHeading && synHeading !== 'あらすじ' ? ` <small>（${E(synHeading)}）</small>` : ''}`, accExcerpt(synText),
+          `<button type="button" class="btn-sort" data-sd="synopsis-edit-toggle">${sdEditSynopsis ? '閉じる' : '✏️ 編集'}</button>
+              <button type="button" class="btn-sort btn-danger" data-sd="synopsis-clear"${!hasSynContent ? ' disabled' : ''}>🧹 クリア</button>`,
+          `${sdEditSynopsis
+            ? `<div class="sd-notes-edit">
+                <label style="font-size:0.74rem;">見出し名（例：あらすじ / ストーリー / 導入）</label>
+                <input type="text" id="sdEditSynopsisHeading" value="${E(synHeading)}" placeholder="あらすじ">
+                <label style="font-size:0.74rem;">本文</label>
+                <textarea id="sdEditSynopsisArea" rows="6" placeholder="シナリオのあらすじ・導入ストーリーを入力...">${E(synText)}</textarea>
+                <div style="display:flex; gap:6px; justify-content:flex-end;">
+                  <button type="button" class="btn-sort" data-sd="synopsis-cancel">キャンセル</button>
+                  <button type="button" class="btn-sort" style="background:var(--accent); color:#fff; border-color:var(--accent);" data-sd="synopsis-save">💾 保存</button>
+                </div>
+              </div>`
+            : (hasSynContent ? renderBlockBodyHtml(synopsisBlock, synText) : '<div class="sd-empty">まだ設定されていません（「✏️ 編集」から入力できます）</div>')}`, sdEditSynopsis);
 
     const notesText = String(sc.notes || (notesBlock && notesBlock.val) || '');
+    const notesSubExcerpt = (notesBlock && Array.isArray(notesBlock.subItems))
+      ? notesBlock.subItems.filter(s => s && (String(s.title || '').trim() || String(s.val || '').trim())).map(s => (s.title ? '【' + s.title + '】' : '') + (s.val || '')).join(' ')
+      : '';
+    const notesExcerptSrc = notesText.trim() ? notesText : notesSubExcerpt;
     const hasNotesContent = !!(notesText.trim() || (notesBlock && blockHasContent(notesBlock)));
-    const notesSectionHtml = sdEditNotes
-      ? accWrap('notes', '', '⚠️ 注意事項・備考／リンク編集', accExcerpt(notesText), '', `
-          <div class="sd-notes-edit">
-            <label style="font-size:0.74rem;">ショップURL</label>
-            <input type="url" id="sdEditShopUrl" value="${E(sc.shopUrl || '')}" placeholder="https://booth.pm/...">
-            <label style="font-size:0.74rem;">注意事項・備考（URLを書くと自動でリンクボタン化されます）</label>
-            <textarea id="sdEditNotesArea" rows="5" placeholder="メモ・参考URL（BOOTH / TALTO / Pixiv等）">${E(notesText)}</textarea>
-            <div style="display:flex; gap:6px; justify-content:flex-end;">
-              <button type="button" class="btn-sort" data-sd="notes-cancel">キャンセル</button>
-              <button type="button" class="btn-sort" style="background:var(--accent); color:#fff; border-color:var(--accent);" data-sd="notes-save">💾 保存</button>
-            </div>
-          </div>`, true)
-      : accWrap('notes', '', '⚠️ 注意事項・備考', accExcerpt(notesText),
-          '<button type="button" class="btn-sort" data-sd="notes-edit-toggle">✏️ 編集</button>',
-          hasNotesContent ? renderBlockBodyHtml(notesBlock, notesText) : none);
+    const notesSectionHtml = isCreate
+      ? accWrap('notes', '', '⚠️ 注意事項・備考', accExcerpt(notesExcerptSrc), '',
+          `<textarea class="sd-draft-textarea" data-sd-draft="notes" rows="4" placeholder="注意事項・備考・参考URL（BOOTH / TALTO等）">${E(notesText)}</textarea>`, false)
+      : (sdEditNotes
+        ? accWrap('notes', '', '⚠️ 注意事項・備考／リンク編集', accExcerpt(notesExcerptSrc), '', `
+            <div class="sd-notes-edit">
+              <label style="font-size:0.74rem;">ショップURL</label>
+              <input type="url" id="sdEditShopUrl" value="${E(sc.shopUrl || '')}" placeholder="https://booth.pm/...">
+              <label style="font-size:0.74rem;">注意事項・備考（URLを書くと自動でリンクボタン化されます）</label>
+              <textarea id="sdEditNotesArea" rows="5" placeholder="メモ・参考URL（BOOTH / TALTO / Pixiv等）">${E(notesText)}</textarea>
+              <div style="display:flex; gap:6px; justify-content:flex-end;">
+                <button type="button" class="btn-sort" data-sd="notes-cancel">キャンセル</button>
+                <button type="button" class="btn-sort" style="background:var(--accent); color:#fff; border-color:var(--accent);" data-sd="notes-save">💾 保存</button>
+              </div>
+            </div>`, true)
+        : accWrap('notes', '', '⚠️ 注意事項・備考', accExcerpt(notesExcerptSrc),
+            '<button type="button" class="btn-sort" data-sd="notes-edit-toggle">✏️ 編集</button>',
+            hasNotesContent ? renderBlockBodyHtml(notesBlock, notesText) : none));
 
     const otherBlocksListHtml = otherBlocks.map(b => {
       const bid = String(b.id || '');
       const hTitle = blockHeadingOf(b) || '自由項目';
+      if (isCreate) {
+        return `<div class="sd-pubblock-card" data-pubblock-id="${E(bid)}">
+          <div class="sd-pubblock-head">
+            <div class="sd-pubblock-title">📑 ${E(hTitle)}</div>
+            <button type="button" class="btn-sort btn-danger" data-sd="pubblock-del" data-bid="${E(bid)}" title="この項目ブロックを削除">🗑️</button>
+          </div>
+          <div class="sd-notes-edit" style="margin-top:6px;">
+            <label style="font-size:0.74rem;">見出し名</label>
+            <input type="text" data-sd-draft-block-key="${E(bid)}" value="${E(hTitle)}" placeholder="項目名を入力...">
+            <label style="font-size:0.74rem;">内容</label>
+            <textarea class="sd-draft-textarea" data-sd-draft-block-val="${E(bid)}" rows="4" placeholder="内容を入力...">${E(b.val || '')}</textarea>
+          </div>
+        </div>`;
+      }
       const isEditing = sdEditBlockId === bid;
       const hasBody = blockHasContent(b);
       return `<div class="sd-pubblock-card" data-pubblock-id="${E(bid)}">
@@ -747,19 +785,40 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         <button type="button" class="btn-sort" data-sd="release-cache"${releaseDisabled ? ' disabled' : ''} title="${E(releaseTitle)}">💨 この端末の一時データを削除（クラウドには残ります）</button>
       </div>
     </div>`;
-    return `<div class="sd-top"><div>
+    const tagsSectionHtml = isCreate
+      ? `<div class="sd-create-tag-area">
+          <div class="sd-tags sd-tags-clickable" data-sd="draft-tag-toggle" title="クリックしてタグを選択・編集">
+            ${(sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>'}
+            <button type="button" class="btn-sort sd-tag-edit-btn" data-sd="draft-tag-toggle">${sdTagPickerOpen ? '▲ タグ選択を閉じる' : '🏷️ タグを選択'}</button>
+          </div>
+          ${sdTagPickerOpen ? `<div class="sd-create-tag-picker">
+            <div id="sdDraftTagPickerHost" class="tag-picker-wrap"></div>
+            <div class="sd-ht-addtag">
+              <input type="text" id="sdDraftNewTagInput" placeholder="新しいタグ名を追加...">
+              <button type="button" class="btn-sort" data-sd="draft-tag-add">＋ 追加</button>
+            </div>
+          </div>` : ''}
+        </div>`
+      : `<div class="sd-tags">${(sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>'}</div>`;
+    const topSectionHtml = `<div class="sd-top"><div>
         <div class="sd-trailer-wrap">${mainThumb ? `<img class="thumb-blur-bg" ${imgAttr(mainThumb)} alt="" aria-hidden="true" style="display:${selIdx === 0 && useBlurBg ? 'block' : 'none'};"><img class="sd-trailer${sc.spoilerBlur && !sdPeek ? ' is-spoiler-blurred' : ''}" ${imgAttr(mainThumb)} alt="トレーラー画像" style="${selIdx === 0 ? thumbStyleStr(sc) : ''}">` : '<div class="sd-trailer">🖼️</div>'}${sdHoverIndHtml}${sdPreloadHtml}${sc.spoilerBlur && mainThumb ? `<button type="button" class="sd-spoiler-peek" data-sd="toggle-peek">${sdPeek ? '🙈 隠す' : '👁️ 一時表示'}</button>` : ''}</div>
         ${thumbCfgHtml}
       </div>
       <div class="sd-main">
         <div class="sd-title-row">
           <button type="button" class="sd-fav-btn${sc.favorite ? ' on' : ''}" data-sd="toggle-fav" title="${sc.favorite ? 'お気に入りを解除' : 'お気に入りに追加'}">${sc.favorite ? '★' : '☆'}</button>
-          <input type="text" class="sd-title-input" data-sd-inline="title" data-orig-val="${E(sc.title || '')}" value="${E(sc.title || '')}" placeholder="シナリオタイトルを入力..." title="クリックしてタイトルを直接編集（Enterまたはフォーカスを外すと保存）">
+          <input type="text" class="sd-title-input" data-sd-inline="title" data-orig-val="${E(sc.title || '')}" value="${E(sc.title || '')}" placeholder="${isCreate ? 'シナリオタイトルを入力（必須）...' : 'シナリオタイトルを入力...'}" title="${isCreate ? 'シナリオタイトル（必須）' : 'クリックしてタイトルを直接編集（Enterまたはフォーカスを外すと保存）'}">
         </div>
-        <div class="sd-tags">${(sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>'}</div>${linksHtml}${cloudBarHtml}${trailerSectionHtml}${specBarHtml}${specAddPanelHtml}<dl class="sd-spec sd-spec-grid${sdSpecSortMode ? ' is-sort-mode' : ''}">${spec}</dl>${sumFreeTextHtml}</div></div>
+        ${(() => {
+          const authorList = [...new Set((typeof appState !== 'undefined' && Array.isArray(appState.scenarios) ? appState.scenarios : []).map(s => String((s && s.author) || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ja'));
+          return `<div class="sd-author-row"><span class="sd-author-lbl">✍️ 作者</span><input type="text" class="sd-author-input" data-sd-inline="author" list="sdAuthorSuggestList" data-orig-val="${E(sc.author || '')}" value="${E(sc.author || '')}" placeholder="作者名を入力（DB管理用・Discord投稿には反映されません）"><datalist id="sdAuthorSuggestList">${authorList.map(a => `<option value="${E(a)}">`).join('')}</datalist></div>`;
+        })()}
+        ${tagsSectionHtml}${isCreate ? '' : linksHtml + cloudBarHtml}${trailerSectionHtml}${specBarHtml}${specAddPanelHtml}<dl class="sd-spec sd-spec-grid${sdSpecSortMode ? ' is-sort-mode' : ''}">${spec}</dl>${isCreate ? '' : sumFreeTextHtml}</div></div>
       ${synopsisSectionHtml}
       ${notesSectionHtml}
-      ${otherBlocksSectionHtml}
+      ${otherBlocksSectionHtml}`;
+    if (isCreate) return topSectionHtml;
+    return `${topSectionHtml}
       ${hoSectionHtml}
       <div class="sd-sec"><h3>📄 登録資料ファイル（PDF・TXT等） <small>${totalPdfCount}件</small></h3><div class="sd-list">${pdfHtml || none}</div></div>
       <div class="sd-sec">
@@ -777,6 +836,46 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         ${folderHtml + zipHtml || none}
       </div>
       <div class="sd-sec"><h3>🎵 音声・BGM <small>${bgms.length}件</small></h3><div class="sd-list">${bgmHtml || none}</div></div>
+      ${(() => {
+        const commonUsed = (window.CCF && CCF.assets && typeof CCF.assets.commonAssetsUsedByScenario === 'function')
+          ? CCF.assets.commonAssetsUsedByScenario(sc.id)
+          : [];
+        const commonCardsHtml = commonUsed.map(rec => {
+          const it = rec.item || {};
+          const usages = Array.isArray(rec.usages) ? rec.usages : [];
+          const uniqDetails = [...new Set(usages.map(u => u.detail || u.room || u.place || '使用中').filter(Boolean))];
+          const refSrc = it.dataUrl || it.thumbRef || '';
+          let thumbHtml = '';
+          if (it.type === 'image') {
+            if (refSrc) thumbHtml = `<img class="sd-common-thumb" ${imgAttr(refSrc)} alt="${E(it.name || '')}" loading="lazy">`;
+            else if (it.path && window.CloudSync && CloudSync.isCloudAssetRef && CloudSync.isCloudAssetRef(it.path)) {
+              thumbHtml = `<img class="sd-common-thumb" src="${typeof PLACEHOLDER !== 'undefined' ? PLACEHOLDER : ''}" data-cloud-asset="${E(it.path)}" alt="${E(it.name || '')}" loading="lazy">`;
+            } else if (!it.missing && it.path) {
+              const u = fileUrl(it.path);
+              thumbHtml = u ? `<img class="sd-common-thumb" src="${E(u)}" alt="${E(it.name || '')}" loading="lazy">` : '<div class="sd-common-ico">🖼️</div>';
+            } else {
+              thumbHtml = '<div class="sd-common-ico">🖼️</div>';
+            }
+          } else {
+            const ico = it.type === 'audio' ? '🎵' : it.type === 'video' ? '🎬' : '📄';
+            thumbHtml = `<div class="sd-common-ico">${ico}</div>`;
+          }
+          const catLbl = normCat(it.category);
+          const badgesHtml = uniqDetails.slice(0, 6).map(d => `<span class="sd-common-badge">${E(d)}</span>`).join('')
+            + (uniqDetails.length > 6 ? `<span class="sd-common-badge more">+${uniqDetails.length - 6}</span>` : '');
+          return `<div class="sd-common-card" data-sd="open-common-asset" data-uid="${E(it.uid || '')}" title="${E((it.name || '') + (uniqDetails.length ? '\n' + uniqDetails.join('\n') : ''))}">
+            ${thumbHtml}
+            <div class="sd-common-meta">
+              <div class="sd-common-name">${E(it.name || '共通素材')}${catLbl ? ` <span class="sd-cat">${E(catLbl)}</span>` : ''}</div>
+              <div class="sd-common-badges">${badgesHtml}</div>
+            </div>
+          </div>`;
+        }).join('');
+        return `<div class="sd-sec">
+          <h3>🌐 使用中の共通素材（マイライブラリ連携） <small>${commonUsed.length}件</small></h3>
+          ${commonUsed.length ? `<div class="sd-common-grid">${commonCardsHtml}</div>` : '<div class="sd-empty">このシナリオで使用・参照されている共通素材（マイライブラリ）はまだありません</div>'}
+        </div>`;
+      })()}
       <div class="sd-empty" style="text-align:center;">📥 フォルダ・ZIP・PDF・BGM・画像を、このウィンドウへドラッグ＆ドロップすると素材を追加できます</div>`;
   }
   async function fillZipThumbs() {
@@ -805,13 +904,50 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       } catch (_) {}
     }
   }
+  function refreshDraftTagsUi() {
+    if (!sdEl || !sdDraft) return;
+    const sc = sdDraft;
+    const tagsBox = sdEl.querySelector('.sd-tags-clickable');
+    if (tagsBox) {
+      tagsBox.innerHTML = `${(sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>'}<button type="button" class="btn-sort sd-tag-edit-btn" data-sd="draft-tag-toggle">${sdTagPickerOpen ? '▲ タグ選択を閉じる' : '🏷️ タグを選択'}</button>`;
+    }
+    const pickerHost = sdEl.querySelector('#sdDraftTagPickerHost');
+    if (pickerHost && sdTagPickerOpen && typeof buildTagPicker === 'function') {
+      const tagSet = new Set(Array.isArray(sc.tags) ? sc.tags : []);
+      buildTagPicker(pickerHost, tagSet, () => {
+        sc.tags = [...tagSet];
+        const tb = sdEl && sdEl.querySelector('.sd-tags-clickable');
+        if (tb) {
+          tb.innerHTML = `${(sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>'}<button type="button" class="btn-sort sd-tag-edit-btn" data-sd="draft-tag-toggle">${sdTagPickerOpen ? '▲ タグ選択を閉じる' : '🏷️ タグを選択'}</button>`;
+        }
+      });
+    }
+  }
+  function updateDraftAccSummary(accKey, text) {
+    if (!sdEl) return;
+    const det = sdEl.querySelector(`details.sd-acc[data-acc="${accKey}"]`);
+    if (!det) return;
+    const sum = det.querySelector('summary.sd-acc-sum');
+    if (!sum) return;
+    sum.querySelectorAll('.sd-acc-prev,.sd-acc-badge').forEach(el => el.remove());
+    const acts = sum.querySelector('.sd-acc-acts');
+    const s = String(text || '').replace(/\s+/g, ' ').trim();
+    const frag = document.createRange().createContextualFragment(
+      s ? `<span class="sd-acc-prev">${E(s.length > 44 ? s.slice(0, 44) + '…' : s)}</span><span class="sd-acc-badge">${s.length}字</span>`
+        : '<span class="sd-acc-prev sd-acc-prev-empty">（未設定）</span>'
+    );
+    if (acts) sum.insertBefore(frag, acts);
+    else sum.appendChild(frag);
+  }
   function render(keepScroll) {
     stopTrailerHover();
-    const sc = scOf(sdId); if (!sc || !sdEl) return;
+    const sc = curSc(); if (!sc || !sdEl) return;
+    const isCreate = isCreateMode();
     const b = sdEl.querySelector('.sd-body'), top = b ? b.scrollTop : 0;
-    sdEl.querySelector('.sd-head h2').textContent = '📋 シナリオ詳細';
+    sdEl.querySelector('.sd-head h2').textContent = isCreate ? '📝 新規シナリオ手動追加' : '📋 シナリオ詳細';
     sdEl.querySelector('.sd-body').innerHTML = bodyHtml(sc);
     if (keepScroll) sdEl.querySelector('.sd-body').scrollTop = top;
+    if (isCreate && sdTagPickerOpen) refreshDraftTagsUi();
     if (sdFocusSpecKey) {
       const k = sdFocusSpecKey, part = sdFocusSpecPart;
       sdFocusSpecKey = ''; sdFocusSpecPart = '';
@@ -826,8 +962,10 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         try { target.focus(); if (part === 'label' && target.select) target.select(); } catch (_) {}
       }
     }
-    if (hasCcf()) fillZipThumbs();
-    void fillCloudAssets();
+    if (!isCreate) {
+      if (hasCcf()) fillZipThumbs();
+      void fillCloudAssets();
+    }
   }
   function buildOrderedSummaryItems(sc) {
     const order = getResolvedSpecOrder(sc);
@@ -867,8 +1005,9 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
     const cidLabel = inp.dataset.sdCustomLabel;
     const cidVal = inp.dataset.sdCustomVal;
     if (!cidLabel && !cidVal) return false;
-    const sc = scOf(sdId);
+    const sc = curSc();
     if (!sc) return true;
+    const isCreate = isCreateMode();
     const cid = cidLabel || cidVal;
     const cs = ensureCustomSpecs(sc).find(c => c && c.id === cid);
     if (!cs) return true;
@@ -879,7 +1018,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       inp.value = next;
     }
     if (next === orig) return true;
-    if (window.AppHistory) window.AppHistory.checkpoint('概要項目を編集');
+    if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('概要項目を編集');
     if (cidLabel) {
       cs.label = next;
     } else {
@@ -896,22 +1035,26 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
     }
     inp.dataset.origVal = next;
     syncScenarioBlocksAndPublic(sc);
-    sc.detailEdited = true;
-    if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
-    if (typeof saveState === 'function') saveState();
-    if (typeof renderDBView === 'function') renderDBView();
-    toast('✅ 保存しました');
+    if (!isCreate) {
+      sc.detailEdited = true;
+      if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
+      if (typeof saveState === 'function') saveState();
+      if (typeof window.patchScenarioDBCard === 'function') window.patchScenarioDBCard(sc.id);
+      else if (typeof renderDBView === 'function') renderDBView();
+      toast('✅ 保存しました');
+    }
     return true;
   }
   function commitInlineField(inp) {
     if (!inp || !sdEl) return;
     const field = inp.dataset.sdInline;
     if (!field) return;
-    const sc = scOf(sdId);
+    const sc = curSc();
     if (!sc) return;
+    const isCreate = isCreateMode();
     const orig = String(inp.dataset.origVal == null ? '' : inp.dataset.origVal);
     let next = String(inp.value == null ? '' : inp.value).trim();
-    if (field === 'title' && !next) {
+    if (field === 'title' && !next && !isCreate) {
       next = orig || '無題';
       inp.value = next;
     }
@@ -925,7 +1068,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       restoreSystemSelect();
       return;
     }
-    if (window.AppHistory) window.AppHistory.checkpoint('基本情報を編集');
+    if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('基本情報を編集');
     if (STD_SPEC_LABELS[field]) {
       const prevFull = specFullVal(sc, field);
       const nextFull = next ? mergeFirstLine(prevFull, next) : '';
@@ -939,6 +1082,14 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       });
     } else {
       sc[field] = next;
+      if (field === 'author' && next) {
+        const dl = sdEl.querySelector('#sdAuthorSuggestList');
+        if (dl && ![...dl.options].some(o => o.value === next)) {
+          const opt = document.createElement('option');
+          opt.value = next;
+          dl.appendChild(opt);
+        }
+      }
     }
     inp.dataset.origVal = next;
     syncScenarioBlocksAndPublic(sc);
@@ -947,21 +1098,28 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       tagsChanged = syncDerivedTagsFromFields(sc);
     }
     if (tagsChanged) {
-      const tagsBox = sdEl.querySelector('.sd-tags');
-      if (tagsBox) {
-        tagsBox.innerHTML = (sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>';
+      if (isCreate) {
+        refreshDraftTagsUi();
+      } else {
+        const tagsBox = sdEl.querySelector('.sd-tags');
+        if (tagsBox) {
+          tagsBox.innerHTML = (sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>';
+        }
       }
     }
     restoreSystemSelect();
-    sc.detailEdited = true;
-    if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
-    if (typeof saveState === 'function') saveState();
-    if (typeof renderDBView === 'function') renderDBView();
-    if (tagsChanged && typeof renderSidebarTags === 'function') renderSidebarTags();
-    if (typeof populateScenarioDBSelect === 'function') populateScenarioDBSelect();
-    toast('✅ 保存しました');
+    if (!isCreate) {
+      sc.detailEdited = true;
+      if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
+      if (typeof saveState === 'function') saveState();
+      if (typeof window.patchScenarioDBCard === 'function') window.patchScenarioDBCard(sc.id, { field });
+      else if (typeof renderDBView === 'function') renderDBView();
+      if (tagsChanged && typeof renderSidebarTags === 'function') renderSidebarTags();
+      if (typeof populateScenarioDBSelect === 'function') populateScenarioDBSelect();
+      toast('✅ 保存しました');
+    }
   }
-  function closeDetail() { stopTrailerHover(); if (!sdEl) return; document.removeEventListener('keydown', onKey, true); sdEl.remove(); sdEl = null; sdId = null; }
+  function closeDetail() { stopTrailerHover(); if (!sdEl) return; document.removeEventListener('keydown', onKey, true); sdEl.remove(); sdEl = null; sdId = null; sdDraft = null; sdTagPickerOpen = false; }
   function onKey(e) {
     if (e.key === 'Escape' && sdEl) {
       const act = document.activeElement;
@@ -1006,8 +1164,8 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       e.preventDefault(); e.stopImmediatePropagation(); closeDetail();
     }
   }
-  window.addEventListener('ccf-refs-changed', () => { if (sdEl) render(true); });   // 登録素材モーダルでの変更を反映
-  window.addEventListener('cloud-cache-changed', e => { if (sdEl && (!e.detail || !e.detail.scenarioId || String(e.detail.scenarioId) === String(sdId))) render(true); });
+  window.addEventListener('ccf-refs-changed', () => { if (sdEl && !sdDraft) render(true); });   // 登録素材モーダルでの変更を反映
+  window.addEventListener('cloud-cache-changed', e => { if (sdEl && !sdDraft && (!e.detail || !e.detail.scenarioId || String(e.detail.scenarioId) === String(sdId))) render(true); });
 
   function openScenarioHistoryTagModal(scId) {
     const sc = scOf(scId); if (!sc) return;
@@ -1210,63 +1368,141 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
     ov.addEventListener('mousedown', e => { if (e.target === ov) close(); });
   }
 
-  window.openScenarioDetail = function (id) {
-    if (!scOf(id)) return; closeDetail(); sdId = id; sdPeek = false; sdSelSlot = 0; sdEditNotes = false; sdEditTrailer = false; sdEditSynopsis = false; sdEditFreeText = false; sdEditBlockId = ''; sdEditHoIdx = -1; sdOpenHOs = new Set(); sdSpecSortMode = false; sdSpecAddOpen = false; sdDragSpecKey = '';
-    sdEl = document.createElement('div'); sdEl.className = 'sd-overlay'; sdEl.setAttribute('role', 'dialog'); sdEl.setAttribute('aria-modal', 'true');
-    sdEl.innerHTML = `<div class="sd-modal" tabindex="-1"><div class="sd-head"><h2></h2><button type="button" class="btn btn-secondary" data-sd="close" aria-label="閉じる">✕ 閉じる</button></div><div class="sd-body"></div>
-      <div class="sd-actions"><button type="button" class="sd-btn" data-sd="edit">📝 Discord投稿・編集画面で開く</button><button type="button" class="sd-btn" data-sd="ccf">♟️ ココフォリア準備で開く</button><button type="button" class="sd-btn" data-sd="assets">🗗 登録素材・ギャラリー整理</button><button type="button" class="sd-btn" data-sd="history">📜 投稿履歴・タグ管理</button></div></div>`;
-    document.body.appendChild(sdEl); render(false); document.addEventListener('keydown', onKey, true);
-    if (window.CloudSync && typeof CloudSync.ensureScenarioAssetsCached === 'function') {
-      void CloudSync.ensureScenarioAssetsCached(String(id), { showProgress: false });
+  function wireDetailModalEvents(el, opts) {
+    const o = opts || {};
+    const m = el.querySelector('.sd-modal');
+    if (m) m.focus();
+    el.addEventListener('mousedown', e => { if (e.target === el) closeDetail(); });
+    if (!o.createMode && m) {
+      const hasFiles = e => [...(e.dataTransfer && e.dataTransfer.types || [])].includes('Files');
+      m.addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); m.classList.add('sd-dropping'); });
+      m.addEventListener('dragleave', e => { if (!m.contains(e.relatedTarget)) m.classList.remove('sd-dropping'); });
+      m.addEventListener('drop', e => {
+        m.classList.remove('sd-dropping'); if (!hasFiles(e)) return; e.preventDefault();
+        const paths = [...e.dataTransfer.files].map(f => filePathOf(f)).filter(Boolean);
+        if (!paths.length) return toast('ファイルの場所を取得できませんでした（デスクトップアプリ版で使えます）');
+        addMaterials(sdId, paths).catch(er => { logSoft('sdDrop', er); toast('❌ 素材を追加できませんでした：' + (er.message || er)); });
+      });
     }
-    const m = sdEl.querySelector('.sd-modal'); m.focus();
-    sdEl.addEventListener('mousedown', e => { if (e.target === sdEl) closeDetail(); });
-    const hasFiles = e => [...(e.dataTransfer && e.dataTransfer.types || [])].includes('Files');
-    m.addEventListener('dragover', e => { if (!hasFiles(e)) return; e.preventDefault(); m.classList.add('sd-dropping'); });
-    m.addEventListener('dragleave', e => { if (!m.contains(e.relatedTarget)) m.classList.remove('sd-dropping'); });
-    m.addEventListener('drop', e => {
-      m.classList.remove('sd-dropping'); if (!hasFiles(e)) return; e.preventDefault();
-      const paths = [...e.dataTransfer.files].map(f => filePathOf(f)).filter(Boolean);
-      if (!paths.length) return toast('ファイルの場所を取得できませんでした（デスクトップアプリ版で使えます）');
-      addMaterials(id, paths).catch(er => { logSoft('sdDrop', er); toast('❌ 素材を追加できませんでした：' + (er.message || er)); });
-    });
     const scheduleThumbSave = () => {
+      if (isCreateMode()) return;
       clearTimeout(sdRangeTimer);
-      sdRangeTimer = setTimeout(() => { saveState(true); renderDBView(); }, 180);
+      sdRangeTimer = setTimeout(() => {
+        saveState(true);
+        const scNow = curSc();
+        if (scNow && typeof window.patchScenarioDBCard === 'function') window.patchScenarioDBCard(scNow.id, { field: 'thumb' });
+        else if (typeof renderDBView === 'function') renderDBView();
+      }, 180);
     };
-    sdEl.addEventListener('input', e => {
+    el.addEventListener('input', e => {
+      const sc = curSc(); if (!sc) return;
       const r = e.target.closest && e.target.closest('[data-sd-range]');
-      if (!r) return;
-      const sc = scOf(sdId); if (!sc) return;
-      stopTrailerHover();
-      const key = r.dataset.sdRange;
-      sc[key] = Number(r.value);
-      sc.thumbSettings = {
-        posX: clampThumbNum(sc.thumbPosX, 0, 100, 50),
-        posY: clampThumbNum(sc.thumbPosY, 0, 100, 50),
-        zoom: clampThumbNum(sc.thumbZoom, 25, 250, 100),
-        fit: sc.thumbFit === 'contain' ? 'contain' : 'cover',
-        spoilerBlur: !!sc.spoilerBlur
-      };
-      const valEl = sdEl.querySelector(`[data-sd-val="${key}"]`);
-      if (valEl) valEl.textContent = r.value + '%';
-      const img = sdEl.querySelector('.sd-trailer-wrap img.sd-trailer');
-      if (img) img.setAttribute('style', thumbStyleStr(sc));
-      const blurBg = sdEl.querySelector('.sd-trailer-wrap img.thumb-blur-bg');
-      if (blurBg) {
-        const useBlur = sdSelSlot === 0 && (sc.thumbFit === 'contain' || sc.thumbSettings.zoom < 100);
-        blurBg.style.display = useBlur ? 'block' : 'none';
+      if (r) {
+        stopTrailerHover();
+        const key = r.dataset.sdRange;
+        sc[key] = Number(r.value);
+        sc.thumbSettings = {
+          posX: clampThumbNum(sc.thumbPosX, 0, 100, 50),
+          posY: clampThumbNum(sc.thumbPosY, 0, 100, 50),
+          zoom: clampThumbNum(sc.thumbZoom, 25, 250, 100),
+          fit: sc.thumbFit === 'contain' ? 'contain' : 'cover',
+          spoilerBlur: !!sc.spoilerBlur
+        };
+        const valEl = el.querySelector(`[data-sd-val="${key}"]`);
+        if (valEl) valEl.textContent = r.value + '%';
+        const img = el.querySelector('.sd-trailer-wrap img.sd-trailer');
+        if (img) img.setAttribute('style', thumbStyleStr(sc));
+        const blurBg = el.querySelector('.sd-trailer-wrap img.thumb-blur-bg');
+        if (blurBg) {
+          const useBlur = sdSelSlot === 0 && (sc.thumbFit === 'contain' || sc.thumbSettings.zoom < 100);
+          blurBg.style.display = useBlur ? 'block' : 'none';
+        }
+        scheduleThumbSave();
+        return;
       }
-      scheduleThumbSave();
+      if (!isCreateMode()) return;
+      const df = e.target.closest && e.target.closest('[data-sd-draft]');
+      if (df) {
+        const dk = df.dataset.sdDraft;
+        if (dk === 'trailer') {
+          sc.trailer = df.value;
+          updateDraftAccSummary('trailer', sc.trailer);
+        } else if (dk === 'synopsis' || dk === 'synopsisHeading') {
+          const { blocks, synopsisBlock } = classifyScenarioPublicBlocks(sc);
+          const hInp = el.querySelector('[data-sd-draft="synopsisHeading"]');
+          const vInp = el.querySelector('[data-sd-draft="synopsis"]');
+          const nextH = (hInp && hInp.value.trim()) ? hInp.value.trim() : 'あらすじ';
+          const nextV = vInp ? vInp.value : '';
+          if (synopsisBlock) {
+            synopsisBlock.keyName = nextH;
+            synopsisBlock.label = nextH;
+            synopsisBlock.val = nextV;
+          } else {
+            const sumIdx = blocks.findIndex(x => x && x.type === 'summary_container');
+            const newBlk = { id: 'intro', type: 'textarea', label: nextH, keyName: nextH, val: nextV, sectionType: 'standalone', collapsed: true, isCustom: true, decorStyle: 'default' };
+            if (sumIdx >= 0) blocks.splice(sumIdx + 1, 0, newBlk);
+            else blocks.unshift(newBlk);
+          }
+          sc.synopsis = nextV;
+          updateDraftAccSummary('synopsis', nextV);
+        } else if (dk === 'notes') {
+          sc.notes = df.value;
+          updateDraftAccSummary('notes', sc.notes);
+        }
+        return;
+      }
+      const bkKey = e.target.closest && e.target.closest('[data-sd-draft-block-key]');
+      if (bkKey) {
+        const bid = String(bkKey.dataset.sdDraftBlockKey || '');
+        const blk = ensureDetailBlocksSynced(sc).find(x => x && String(x.id) === bid);
+        if (blk) {
+          const nextK = bkKey.value.trim() || '自由項目';
+          blk.keyName = nextK;
+          blk.label = nextK;
+          const card = bkKey.closest('.sd-pubblock-card');
+          const titleEl = card && card.querySelector('.sd-pubblock-title');
+          if (titleEl) titleEl.textContent = '📑 ' + nextK;
+        }
+        return;
+      }
+      const bkVal = e.target.closest && e.target.closest('[data-sd-draft-block-val]');
+      if (bkVal) {
+        const bid = String(bkVal.dataset.sdDraftBlockVal || '');
+        const blk = ensureDetailBlocksSynced(sc).find(x => x && String(x.id) === bid);
+        if (blk) blk.val = bkVal.value;
+        return;
+      }
+      const inl = e.target.closest && e.target.closest('[data-sd-inline]');
+      if (inl) {
+        const f = inl.dataset.sdInline;
+        if (f) {
+          sc[f] = inl.value;
+          if ((f === 'system' || f === 'playerCount') && typeof syncDerivedTagsFromFields === 'function') {
+            if (syncDerivedTagsFromFields(sc)) refreshDraftTagsUi();
+          }
+        }
+        return;
+      }
+      const custL = e.target.closest && e.target.closest('[data-sd-custom-label]');
+      if (custL) {
+        const cs = ensureCustomSpecs(sc).find(c => c && c.id === custL.dataset.sdCustomLabel);
+        if (cs) cs.label = custL.value;
+        return;
+      }
+      const custV = e.target.closest && e.target.closest('[data-sd-custom-val]');
+      if (custV) {
+        const cs = ensureCustomSpecs(sc).find(c => c && c.id === custV.dataset.sdCustomVal);
+        if (cs) cs.value = custV.value;
+      }
     });
-    sdEl.addEventListener('mouseover', e => {
+    el.addEventListener('mouseover', e => {
       const wrap = e.target.closest && e.target.closest('.sd-trailer-wrap');
       if (!wrap || sdHoverTimer) return;
       const preloadImgs = [...wrap.querySelectorAll('.thumb-preload img')];
       const img = wrap.querySelector('img.sd-trailer');
       if (!img || !preloadImgs.length) return;
       const origSrc = img.src;
-      const sc = scOf(sdId);
+      const sc = curSc();
       const origStyle = sc ? thumbStyleStr(sc) : (img.getAttribute('style') || '');
       img.dataset.origSrc = origSrc;
       const total = 1 + preloadImgs.length;
@@ -1293,13 +1529,13 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       };
       sdHoverTimer = setInterval(step, 900);
     });
-    sdEl.addEventListener('mouseout', e => {
+    el.addEventListener('mouseout', e => {
       const wrap = e.target.closest && e.target.closest('.sd-trailer-wrap');
       if (!wrap) return;
       const rel = e.relatedTarget;
       if (!rel || !wrap.contains(rel)) stopTrailerHover();
     });
-    sdEl.addEventListener('dragstart', e => {
+    el.addEventListener('dragstart', e => {
       const specItem = e.target.closest && e.target.closest('.sd-spec-item[data-spec-key]');
       if (specItem && sdSpecSortMode) {
         if (e.target.closest('input,select,button')) { e.preventDefault(); return; }
@@ -1314,17 +1550,17 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(sdDragSlot)); }
       slot.classList.add('is-dragging');
     });
-    sdEl.addEventListener('dragend', () => {
+    el.addEventListener('dragend', () => {
       sdDragSlot = -1;
       sdDragSpecKey = '';
       if (sdEl) sdEl.querySelectorAll('.sd-hover-slot.is-dragging,.sd-hover-slot.dragover,.sd-spec-item.is-dragging,.sd-spec-item.dragover').forEach(x => x.classList.remove('is-dragging', 'dragover'));
     });
-    sdEl.addEventListener('dragover', e => {
+    el.addEventListener('dragover', e => {
       if (sdDragSpecKey) {
         const specItem = e.target.closest && e.target.closest('.sd-spec-item[data-spec-key]');
         if (!specItem || specItem.classList.contains('is-fixed')) return;
         e.preventDefault(); e.stopPropagation();
-        sdEl.querySelectorAll('.sd-spec-item.dragover').forEach(x => { if (x !== specItem) x.classList.remove('dragover'); });
+        el.querySelectorAll('.sd-spec-item.dragover').forEach(x => { if (x !== specItem) x.classList.remove('dragover'); });
         specItem.classList.add('dragover');
         return;
       }
@@ -1332,10 +1568,10 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       const slot = e.target.closest && e.target.closest('.sd-hover-slot[data-sd-slot]');
       if (!slot) return;
       e.preventDefault(); e.stopPropagation();
-      sdEl.querySelectorAll('.sd-hover-slot.dragover').forEach(x => { if (x !== slot) x.classList.remove('dragover'); });
+      el.querySelectorAll('.sd-hover-slot.dragover').forEach(x => { if (x !== slot) x.classList.remove('dragover'); });
       slot.classList.add('dragover');
     });
-    sdEl.addEventListener('drop', e => {
+    el.addEventListener('drop', e => {
       if (sdDragSpecKey) {
         const specItem = e.target.closest && e.target.closest('.sd-spec-item[data-spec-key]');
         const fromKey = sdDragSpecKey;
@@ -1343,17 +1579,19 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         if (!specItem || specItem.classList.contains('is-fixed')) return;
         e.preventDefault(); e.stopPropagation();
         const toKey = String(specItem.dataset.specKey || '');
-        const sc = scOf(sdId);
+        const sc = curSc();
         if (sc && fromKey && toKey && fromKey !== toKey) {
           const order = ensureSpecOrder(sc);
           const fi = order.indexOf(fromKey), ti = order.indexOf(toKey);
           if (fi >= 0 && ti >= 0) {
-            if (window.AppHistory) window.AppHistory.checkpoint('概要項目の並び順を変更');
+            if (!isCreateMode() && window.AppHistory) window.AppHistory.checkpoint('概要項目の並び順を変更');
             const [mv] = order.splice(fi, 1);
             order.splice(ti, 0, mv);
             syncScenarioBlocksAndPublic(sc);
-            sc.detailEdited = true;
-            if (typeof saveState === 'function') saveState();
+            if (!isCreateMode()) {
+              sc.detailEdited = true;
+              if (typeof saveState === 'function') saveState();
+            }
             render(true);
           }
         }
@@ -1365,7 +1603,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       e.preventDefault(); e.stopPropagation();
       const from = sdDragSlot, to = Number(slot.dataset.sdSlot);
       sdDragSlot = -1;
-      const sc = scOf(sdId);
+      const sc = curSc();
       if (sc && from >= 0 && to >= 0 && from !== to) {
         const slots = getThumbSlots(sc);
         if (from < slots.length && to < slots.length) {
@@ -1373,18 +1611,19 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
           slots.splice(to, 0, moved);
           sdSelSlot = to;
           applyThumbSlots(sc, slots);
-          saveState(); render(true); renderDBView();
+          if (!isCreateMode()) { saveState(); renderDBView(); }
+          render(true);
         }
       }
     });
-    sdEl.addEventListener('click', e => {   // ヘッダー内ボタン押下で details が開閉しないようにし、編集系は自動展開
+    el.addEventListener('click', e => {   // ヘッダー内ボタン押下で details が開閉しないようにし、編集系は自動展開
       const ab = e.target.closest && e.target.closest('.sd-acc-acts [data-sd]');
       if (!ab) return;
       e.preventDefault();
       const det = ab.closest('details.sd-acc');
       if (det && /edit|add/.test(ab.dataset.sd || '')) { sdOpenSecs.add(det.dataset.acc); det.open = true; }
     }, true);
-    sdEl.addEventListener('toggle', e => {
+    el.addEventListener('toggle', e => {
       if (e.target && e.target.classList && e.target.classList.contains('sd-acc')) {
         if (e.target.open) sdOpenSecs.add(e.target.dataset.acc); else sdOpenSecs.delete(e.target.dataset.acc);
       }
@@ -1396,8 +1635,9 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         }
       }
     }, true);
-    sdEl.addEventListener('change', async e => {
-      const sc = scOf(sdId); if (!sc) return;
+    el.addEventListener('change', async e => {
+      const sc = curSc(); if (!sc) return;
+      const isCreate = isCreateMode();
       if (e.target.id === 'sdHoverFileInput' && e.target.files && e.target.files.length) {
         const slots = getThumbSlots(sc);
         for (const f of Array.from(e.target.files)) {
@@ -1409,7 +1649,8 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         e.target.value = '';
         if (slots.length) sdSelSlot = slots.length - 1;
         applyThumbSlots(sc, slots);
-        saveState(); render(true); renderDBView();
+        if (!isCreate) { saveState(); renderDBView(); }
+        render(true);
         return;
       }
       const chk = e.target.closest && e.target.closest('[data-sd-chk="spoilerBlur"]');
@@ -1417,7 +1658,8 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         sc.spoilerBlur = !!chk.checked;
         applyThumbSlots(sc, getThumbSlots(sc));
         if (!sc.spoilerBlur) sdPeek = false;
-        saveState(); render(true); renderDBView();
+        if (!isCreate) { saveState(); renderDBView(); }
+        render(true);
         return;
       }
       const sysSel = e.target.closest && e.target.closest('[data-sd-field="system"]');
@@ -1433,7 +1675,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         }
         const next = String(sysSel.value || '').trim();
         if (next !== specFirstLine(sc, 'system')) {
-          if (window.AppHistory) window.AppHistory.checkpoint('基本情報を編集');
+          if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('基本情報を編集');
           const prevFull = specFullVal(sc, 'system');
           const nextFull = next ? mergeFirstLine(prevFull, next) : '';
           sc.system = nextFull;
@@ -1450,25 +1692,33 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
             tagsChanged = syncDerivedTagsFromFields(sc);
           }
           if (tagsChanged) {
-            const tagsBox = sdEl.querySelector('.sd-tags');
-            if (tagsBox) {
-              tagsBox.innerHTML = (sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>';
+            if (isCreate) {
+              refreshDraftTagsUi();
+            } else {
+              const tagsBox = el.querySelector('.sd-tags');
+              if (tagsBox) {
+                tagsBox.innerHTML = (sc.tags || []).map(t => `<span class="sd-tag">#${E(t)}</span>`).join('') || '<span class="sd-empty">タグなし</span>';
+              }
             }
           }
-          if (typeof saveState === 'function') saveState();
-          if (typeof renderDBView === 'function') renderDBView();
-          if (typeof renderSidebarTags === 'function') renderSidebarTags();
-          if (typeof populateScenarioDBSelect === 'function') populateScenarioDBSelect();
-          toast(next ? `システムを「${next}」に変更しました` : 'システムを「未設定」に変更しました');
+          if (!isCreate) {
+            if (typeof saveState === 'function') saveState();
+            if (typeof renderDBView === 'function') renderDBView();
+            if (typeof renderSidebarTags === 'function') renderSidebarTags();
+            if (typeof populateScenarioDBSelect === 'function') populateScenarioDBSelect();
+            toast(next ? `システムを「${next}」に変更しました` : 'システムを「未設定」に変更しました');
+          }
         }
         return;
       }
       const pf = e.target.closest && e.target.closest('[data-sd-field="playStatus"]');
       if (pf) {
         sc.playStatus = normalizePlayStatus(pf.value);
-        saveState(); renderDBView();
-        const info = PLAY_STATUS_MAP[sc.playStatus];
-        toast(`プレイ状況を「${info ? info.label : '未設定'}」に変更しました`);
+        if (!isCreate) {
+          saveState(); renderDBView();
+          const info = PLAY_STATUS_MAP[sc.playStatus];
+          toast(`プレイ状況を「${info ? info.label : '未設定'}」に変更しました`);
+        }
         return;
       }
       const inl = e.target.closest && e.target.closest('[data-sd-inline]');
@@ -1476,13 +1726,18 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       const custInp = e.target.closest && e.target.closest('[data-sd-custom-label],[data-sd-custom-val]');
       if (custInp) commitCustomSpecInput(custInp);
     });
-    sdEl.addEventListener('focusout', e => {
+    el.addEventListener('focusout', e => {
       const inl = e.target.closest && e.target.closest('[data-sd-inline]');
       if (inl) commitInlineField(inl);
       const custInp = e.target.closest && e.target.closest('[data-sd-custom-label],[data-sd-custom-val]');
       if (custInp) commitCustomSpecInput(custInp);
     });
-    sdEl.addEventListener('keydown', e => {
+    el.addEventListener('keydown', e => {
+      if (e.target && e.target.id === 'sdDraftNewTagInput' && e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault();
+        el.querySelector('[data-sd="draft-tag-add"]')?.click();
+        return;
+      }
       const inl = e.target.closest && e.target.closest('[data-sd-inline],[data-sd-custom-label],[data-sd-custom-val]');
       if (inl && e.key === 'Enter' && !e.isComposing) {
         e.preventDefault();
@@ -1490,28 +1745,33 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        if (isCreateMode()) {
+          e.preventDefault();
+          el.querySelector('[data-sd="draft-register"]')?.click();
+          return;
+        }
         if (e.target && e.target.id === 'sdEditTrailerArea') {
           e.preventDefault();
-          sdEl.querySelector('[data-sd="trailer-save"]')?.click();
+          el.querySelector('[data-sd="trailer-save"]')?.click();
         } else if (e.target && (e.target.id === 'sdEditSynopsisArea' || e.target.id === 'sdEditSynopsisHeading')) {
           e.preventDefault();
-          sdEl.querySelector('[data-sd="synopsis-save"]')?.click();
+          el.querySelector('[data-sd="synopsis-save"]')?.click();
         } else if (e.target && e.target.id === 'sdEditFreeTextArea') {
           e.preventDefault();
-          sdEl.querySelector('[data-sd="freetext-save"]')?.click();
+          el.querySelector('[data-sd="freetext-save"]')?.click();
         } else if (e.target && (e.target.id === 'sdEditPubBlockKey' || e.target.id === 'sdEditPubBlockVal')) {
           e.preventDefault();
-          sdEl.querySelector('[data-sd="pubblock-save"]')?.click();
+          el.querySelector('[data-sd="pubblock-save"]')?.click();
         } else if (e.target && e.target.id && /^sdEditHo(?:Name|Body)_/.test(e.target.id)) {
           e.preventDefault();
-          sdEl.querySelector('[data-sd="ho-save"]')?.click();
+          el.querySelector('[data-sd="ho-save"]')?.click();
         } else if (e.target && (e.target.id === 'sdEditNotesArea' || e.target.id === 'sdEditShopUrl')) {
           e.preventDefault();
-          sdEl.querySelector('[data-sd="notes-save"]')?.click();
+          el.querySelector('[data-sd="notes-save"]')?.click();
         }
       }
     });
-    sdEl.addEventListener('click', async e => {
+    el.addEventListener('click', async e => {
       const slotEl = e.target.closest('.sd-hover-slot[data-sd-slot]');
       if (slotEl && !e.target.closest('[data-sd]')) {
         const idx = Number(slotEl.dataset.sdSlot);
@@ -1554,10 +1814,66 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         return;
       }
       const b = e.target.closest('[data-sd]'); if (!b) return; const k = b.dataset.sd;
-      const sc = scOf(sdId);
-      if (k === 'close') return closeDetail();
+      const sc = curSc();
+      const isCreate = isCreateMode();
+      if (k === 'close' || k === 'draft-cancel') return closeDetail();
+      if (k === 'draft-tag-toggle' && isCreate) {
+        sdTagPickerOpen = !sdTagPickerOpen;
+        render(true);
+        return;
+      }
+      if (k === 'draft-tag-add' && isCreate && sc) {
+        const inp = el.querySelector('#sdDraftNewTagInput');
+        const nm = String((inp && inp.value) || '').trim().replace(/^#+/, '').trim();
+        if (!nm) { if (inp) inp.focus(); return; }
+        if (!Array.isArray(sc.tags)) sc.tags = [];
+        if (!sc.tags.includes(nm)) sc.tags.push(nm);
+        if (!Array.isArray(appState.customTags)) appState.customTags = [];
+        if (!appState.customTags.includes(nm)) appState.customTags.push(nm);
+        if (inp) inp.value = '';
+        refreshDraftTagsUi();
+        return;
+      }
+      if (k === 'draft-register' && isCreate && sc) {
+        const titleInp = el.querySelector('.sd-title-input');
+        if (titleInp) sc.title = String(titleInp.value || '').trim();
+        else sc.title = String(sc.title || '').trim();
+        if (!sc.title) {
+          if (titleInp) titleInp.focus();
+          if (typeof toast === 'function') toast('⚠️ シナリオタイトルを入力してください');
+          return;
+        }
+        const active = document.activeElement;
+        if (active && el.contains(active)) {
+          if (active.dataset && active.dataset.sdInline) commitInlineField(active);
+          else if (active.dataset && (active.dataset.sdCustomLabel || active.dataset.sdCustomVal)) commitCustomSpecInput(active);
+        }
+        const finalSc = sc;
+        finalSc.id = (typeof uid === 'function') ? uid() : ('sc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+        finalSc.author = String(finalSc.author || '').trim();
+        finalSc.shopUrl = String(finalSc.shopUrl || '').trim();
+        finalSc.createdAt = Date.now();
+        finalSc.updatedAt = Date.now();
+        syncScenarioBlocksAndPublic(finalSc);
+        if (typeof syncDerivedTagsFromFields === 'function') syncDerivedTagsFromFields(finalSc);
+        appState.scenarios.push(finalSc);
+        if (typeof saveState === 'function') saveState();
+        if (typeof populateScenarioDBSelect === 'function') populateScenarioDBSelect();
+        if (typeof renderDBView === 'function') renderDBView();
+        if (typeof renderSidebarTags === 'function') renderSidebarTags();
+        closeDetail();
+        if (typeof toast === 'function') toast(`✅ 「${finalSc.title}」をデータベースに登録しました`);
+        return;
+      }
+      if (k === 'open-common-asset') {
+        const uid = b.dataset.uid || '';
+        if (uid && typeof window.openGalleryDetailModal === 'function') {
+          window.openGalleryDetailModal({ scope: 'common', uid });
+        }
+        return;
+      }
       if (k === 'toggle-peek') { sdPeek = !sdPeek; render(true); return; }
-      if (k === 'web-sync-assets' && sc) {
+      if (k === 'web-sync-assets' && sc && !isCreate) {
         if (typeof window.syncScenarioAssetsToWeb !== 'function') {
           if (typeof toast === 'function') toast('⚠️ Web同期機能が利用できません');
           return;
@@ -1568,14 +1884,14 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         finally { render(true); }
         return;
       }
-      if (k === 'toggle-pin' && sc) {
+      if (k === 'toggle-pin' && sc && !isCreate) {
         if (window.CloudSync && CloudSync.setScenarioPinned) {
           await CloudSync.setScenarioPinned(sc.id, !CloudSync.isScenarioPinned(sc.id));
           render(true);
         }
         return;
       }
-      if (k === 'fetch-assets' && sc) {
+      if (k === 'fetch-assets' && sc && !isCreate) {
         if (window.CloudSync && CloudSync.ensureScenarioAssetsCached) {
           b.disabled = true; b.textContent = '☁️ 取得中…';
           try { await CloudSync.ensureScenarioAssetsCached(sc.id, { showProgress: true, manual: true }); }
@@ -1583,7 +1899,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         }
         return;
       }
-      if (k === 'release-cache' && sc) {
+      if (k === 'release-cache' && sc && !isCreate) {
         if (window.CloudSync && CloudSync.releaseScenarioLocalCache) {
           const ok = typeof appConfirm === 'function'
             ? await appConfirm(
@@ -1601,12 +1917,22 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       if (k === 'thumb-fit' && sc) {
         sc.thumbFit = b.dataset.fit === 'contain' ? 'contain' : 'cover';
         applyThumbSlots(sc, getThumbSlots(sc));
-        saveState(); render(true); renderDBView(); return;
+        if (!isCreate) {
+          saveState();
+          if (typeof window.patchScenarioDBCard === 'function') window.patchScenarioDBCard(sc.id, { field: 'thumb' });
+          else if (typeof renderDBView === 'function') renderDBView();
+        }
+        render(true); return;
       }
       if (k === 'thumb-reset' && sc) {
         sc.thumbPosX = 50; sc.thumbPosY = 50; sc.thumbZoom = 100; sc.thumbFit = 'cover';
         applyThumbSlots(sc, getThumbSlots(sc));
-        saveState(); render(true); renderDBView(); return;
+        if (!isCreate) {
+          saveState();
+          if (typeof window.patchScenarioDBCard === 'function') window.patchScenarioDBCard(sc.id, { field: 'thumb' });
+          else if (typeof renderDBView === 'function') renderDBView();
+        }
+        render(true); return;
       }
       if (k === 'spec-add-toggle') {
         sdSpecAddOpen = !sdSpecAddOpen;
@@ -1620,7 +1946,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         const idx = Number(b.dataset.presetIdx);
         const preset = SPEC_PRESETS[idx];
         if (!preset) return;
-        if (window.AppHistory) window.AppHistory.checkpoint('概要項目を追加');
+        if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('概要項目を追加');
         const order = ensureSpecOrder(sc);
         if (preset.kind === 'std') {
           insertIntoOrderSmart(order, preset.key);
@@ -1636,9 +1962,11 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         }
         sdSpecAddOpen = false;
         syncScenarioBlocksAndPublic(sc);
-        sc.detailEdited = true;
-        if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
-        if (typeof saveState === 'function') saveState();
+        if (!isCreate) {
+          sc.detailEdited = true;
+          if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
+          if (typeof saveState === 'function') saveState();
+        }
         render(true);
         return;
       }
@@ -1649,12 +1977,14 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         const idx = order.indexOf(key);
         const targetIdx = k === 'spec-move-prev' ? idx - 1 : idx + 1;
         if (idx >= 0 && targetIdx >= 0 && targetIdx < order.length) {
-          if (window.AppHistory) window.AppHistory.checkpoint('概要項目の並び順を変更');
+          if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('概要項目の並び順を変更');
           [order[idx], order[targetIdx]] = [order[targetIdx], order[idx]];
           syncScenarioBlocksAndPublic(sc);
-          sc.detailEdited = true;
-          if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
-          if (typeof saveState === 'function') saveState();
+          if (!isCreate) {
+            sc.detailEdited = true;
+            if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
+            if (typeof saveState === 'function') saveState();
+          }
           render(true);
         }
         return;
@@ -1662,7 +1992,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       if (k === 'spec-del' && sc) {
         const key = b.dataset.specKey;
         if (!key || CORE_SPEC_KEYS.includes(key)) return;
-        if (window.AppHistory) window.AppHistory.checkpoint('概要項目を削除');
+        if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('概要項目を削除');
         const order = ensureSpecOrder(sc);
         sc.specOrder = order.filter(x => x !== key);
         if (key.startsWith('custom:')) {
@@ -1672,10 +2002,12 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
           sc[key] = '';
         }
         syncScenarioBlocksAndPublic(sc);
-        sc.detailEdited = true;
-        if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
-        if (typeof saveState === 'function') saveState();
-        if (typeof renderDBView === 'function') renderDBView();
+        if (!isCreate) {
+          sc.detailEdited = true;
+          if (window.CloudSync && typeof CloudSync.scheduleAutoWebSync === 'function') CloudSync.scheduleAutoWebSync(sc.id);
+          if (typeof saveState === 'function') saveState();
+          if (typeof renderDBView === 'function') renderDBView();
+        }
         render(true);
         return;
       }
@@ -1685,7 +2017,8 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         if (idx >= 0 && idx < slots.length) slots.splice(idx, 1);
         sdSelSlot = slots.length ? Math.max(0, Math.min(idx, slots.length - 1)) : 0;
         applyThumbSlots(sc, slots);
-        saveState(); render(true); renderDBView(); return;
+        if (!isCreate) { saveState(); renderDBView(); }
+        render(true); return;
       }
       if ((k === 'slot-left' || k === 'slot-right' || k === 'slot-main') && sc) {
         const idx = Number(b.dataset.idx);
@@ -1703,27 +2036,29 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
           sdSelSlot = 0;
         }
         applyThumbSlots(sc, slots);
-        saveState(); render(true); renderDBView(); return;
+        if (!isCreate) { saveState(); renderDBView(); }
+        render(true); return;
       }
       if (k === 'hover-pick-file') {
-        const fi = sdEl.querySelector('#sdHoverFileInput'); if (fi) fi.click(); return;
+        const fi = el.querySelector('#sdHoverFileInput'); if (fi) fi.click(); return;
       }
       if (k === 'hover-pick-gal' && sc) {
         if (typeof pickGalleryImage !== 'function') return toast('ギャラリーピッカーが利用できません');
-        const url = await pickGalleryImage({ scenarioId: sc.id });
+        const url = await pickGalleryImage({ scenarioId: isCreate ? '' : sc.id });
         if (url) {
           const slots = getThumbSlots(sc);
           if (slots.length < 4 && !slots.includes(url)) {
             slots.push(url);
             sdSelSlot = slots.length - 1;
             applyThumbSlots(sc, slots);
-            saveState(); render(true); renderDBView();
+            if (!isCreate) { saveState(); renderDBView(); }
+            render(true);
           }
         }
         return;
       }
       if (k === 'hover-add-url' && sc) {
-        const inp = sdEl.querySelector('#sdHoverUrlInput');
+        const inp = el.querySelector('#sdHoverUrlInput');
         const url = inp ? String(inp.value || '').trim() : '';
         if (!safeUrl(url)) return toast('有効な http(s):// 画像URLを入力してください');
         const slots = getThumbSlots(sc);
@@ -1731,23 +2066,25 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
           slots.push(url);
           sdSelSlot = slots.length - 1;
           applyThumbSlots(sc, slots);
-          saveState(); render(true); renderDBView();
+          if (!isCreate) { saveState(); renderDBView(); }
+          render(true);
         }
         return;
       }
       if (k === 'toggle-fav' && sc) {
         sc.favorite = !sc.favorite;
-        saveState(); render(true); renderDBView();
+        if (!isCreate) { saveState(); renderDBView(); }
+        render(true);
         return;
       }
       if (k === 'trailer-edit-toggle') {
         sdEditTrailer = !sdEditTrailer; render(true);
-        if (sdEditTrailer) { const ta = sdEl.querySelector('#sdEditTrailerArea'); if (ta) ta.focus(); }
+        if (sdEditTrailer) { const ta = el.querySelector('#sdEditTrailerArea'); if (ta) ta.focus(); }
         return;
       }
       if (k === 'trailer-cancel') { sdEditTrailer = false; render(true); return; }
       if (k === 'trailer-save' && sc) {
-        const ta = sdEl.querySelector('#sdEditTrailerArea');
+        const ta = el.querySelector('#sdEditTrailerArea');
         if (ta) {
           if (window.AppHistory) window.AppHistory.checkpoint('トレーラー・キャッチコピーを編集');
           sc.trailer = ta.value;
@@ -1775,13 +2112,13 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       }
       if (k === 'synopsis-edit-toggle') {
         sdEditSynopsis = !sdEditSynopsis; render(true);
-        if (sdEditSynopsis) { const ta = sdEl.querySelector('#sdEditSynopsisArea'); if (ta) ta.focus(); }
+        if (sdEditSynopsis) { const ta = el.querySelector('#sdEditSynopsisArea'); if (ta) ta.focus(); }
         return;
       }
       if (k === 'synopsis-cancel') { sdEditSynopsis = false; render(true); return; }
       if (k === 'synopsis-save' && sc) {
-        const hInp = sdEl.querySelector('#sdEditSynopsisHeading');
-        const ta = sdEl.querySelector('#sdEditSynopsisArea');
+        const hInp = el.querySelector('#sdEditSynopsisHeading');
+        const ta = el.querySelector('#sdEditSynopsisArea');
         const nextHeading = (hInp && hInp.value.trim()) ? hInp.value.trim() : 'あらすじ';
         const nextVal = ta ? ta.value : '';
         if (window.AppHistory) window.AppHistory.checkpoint('あらすじを編集');
@@ -1819,12 +2156,12 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       }
       if (k === 'freetext-edit-toggle') {
         sdEditFreeText = !sdEditFreeText; render(true);
-        if (sdEditFreeText) { const ta = sdEl.querySelector('#sdEditFreeTextArea'); if (ta) ta.focus(); }
+        if (sdEditFreeText) { const ta = el.querySelector('#sdEditFreeTextArea'); if (ta) ta.focus(); }
         return;
       }
       if (k === 'freetext-cancel') { sdEditFreeText = false; render(true); return; }
       if (k === 'freetext-save' && sc) {
-        const ta = sdEl.querySelector('#sdEditFreeTextArea');
+        const ta = el.querySelector('#sdEditFreeTextArea');
         if (window.AppHistory) window.AppHistory.checkpoint('概要自由記述を編集');
         const { summaryBlock } = classifyScenarioPublicBlocks(sc);
         if (summaryBlock && ta) summaryBlock.freeText = ta.value;
@@ -1835,30 +2172,37 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         return;
       }
       if (k === 'pubblock-add' && sc) {
-        if (window.AppHistory) window.AppHistory.checkpoint('公開ブロックを追加');
+        if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('公開ブロックを追加');
         const blocks = ensureDetailBlocksSynced(sc);
         const bid = 'custom_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5);
         blocks.push({ id: bid, type: 'textarea', label: '自由項目', keyName: '自由項目', val: '', sectionType: 'standalone', collapsed: true, isCustom: true, decorStyle: 'default' });
-        sdEditBlockId = bid;
-        sc.detailEdited = true;
+        sdOpenSecs.add('other');
         syncScenarioBlocksAndPublic(sc);
-        saveState(); render(true);
-        const inp = sdEl.querySelector('#sdEditPubBlockKey');
-        if (inp) { inp.focus(); if (inp.select) inp.select(); }
+        if (isCreate) {
+          render(true);
+          const inp = el.querySelector(`[data-sd-draft-block-key="${CSS.escape(bid)}"]`);
+          if (inp) { inp.focus(); if (inp.select) inp.select(); }
+        } else {
+          sdEditBlockId = bid;
+          sc.detailEdited = true;
+          saveState(); render(true);
+          const inp = el.querySelector('#sdEditPubBlockKey');
+          if (inp) { inp.focus(); if (inp.select) inp.select(); }
+        }
         return;
       }
       if (k === 'pubblock-edit') {
         const bid = String(b.dataset.bid || '');
         sdEditBlockId = (sdEditBlockId === bid) ? '' : bid;
         render(true);
-        if (sdEditBlockId) { const ta = sdEl.querySelector('#sdEditPubBlockVal'); if (ta) ta.focus(); }
+        if (sdEditBlockId) { const ta = el.querySelector('#sdEditPubBlockVal'); if (ta) ta.focus(); }
         return;
       }
       if (k === 'pubblock-cancel') { sdEditBlockId = ''; render(true); return; }
       if (k === 'pubblock-save' && sc) {
         const bid = String(b.dataset.bid || '');
-        const kInp = sdEl.querySelector('#sdEditPubBlockKey');
-        const vInp = sdEl.querySelector('#sdEditPubBlockVal');
+        const kInp = el.querySelector('#sdEditPubBlockKey');
+        const vInp = el.querySelector('#sdEditPubBlockVal');
         const blocks = ensureDetailBlocksSynced(sc);
         const blk = blocks.find(x => x && String(x.id) === bid);
         if (blk) {
@@ -1881,14 +2225,17 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         const blk = blocks.find(x => x && String(x.id) === bid);
         if (!blk) return;
         const hTitle = blockHeadingOf(blk) || '自由項目';
-        if (!(await appConfirm(`公開ブロック「${hTitle}」を削除しますか？`, { okText: '削除', danger: true }))) return;
-        if (window.AppHistory) window.AppHistory.checkpoint('公開ブロックを削除');
+        if (!isCreate && !(await appConfirm(`公開ブロック「${hTitle}」を削除しますか？`, { okText: '削除', danger: true }))) return;
+        if (!isCreate && window.AppHistory) window.AppHistory.checkpoint('公開ブロックを削除');
         sc.fullBlockData = blocks.filter(x => x && String(x.id) !== bid);
         if (sdEditBlockId === bid) sdEditBlockId = '';
-        sc.detailEdited = true;
         syncScenarioBlocksAndPublic(sc);
-        saveState(); render(true); renderDBView();
-        toast('🗑️ 公開ブロックを削除しました');
+        if (!isCreate) {
+          sc.detailEdited = true;
+          saveState(); renderDBView();
+          toast('🗑️ 公開ブロックを削除しました');
+        }
+        render(true);
         return;
       }
       if (k === 'ho-open-all' && sc) {
@@ -1910,7 +2257,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
           sdOpenHOs.add(hi);
         }
         render(true);
-        if (sdEditHoIdx >= 0) { const ta = sdEl.querySelector(`#sdEditHoBody_${sdEditHoIdx}`); if (ta) ta.focus(); }
+        if (sdEditHoIdx >= 0) { const ta = el.querySelector(`#sdEditHoBody_${sdEditHoIdx}`); if (ta) ta.focus(); }
         return;
       }
       if (k === 'ho-cancel') { sdEditHoIdx = -1; render(true); return; }
@@ -1919,8 +2266,8 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         const ho = sc.secretHOs && sc.secretHOs[hi];
         if (ho) {
           if (window.AppHistory) window.AppHistory.checkpoint('秘匿HOを編集');
-          const nmInp = sdEl.querySelector(`#sdEditHoName_${hi}`);
-          const bdInp = sdEl.querySelector(`#sdEditHoBody_${hi}`);
+          const nmInp = el.querySelector(`#sdEditHoName_${hi}`);
+          const bdInp = el.querySelector(`#sdEditHoBody_${hi}`);
           if (nmInp && nmInp.value.trim()) ho.name = nmInp.value.trim();
           if (bdInp) {
             if (Array.isArray(ho.blocks) && ho.blocks.length) {
@@ -1947,7 +2294,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
       if (k === 'notes-edit-toggle') { sdEditNotes = !sdEditNotes; render(true); return; }
       if (k === 'notes-cancel') { sdEditNotes = false; render(true); return; }
       if (k === 'notes-save' && sc) {
-        const su = sdEl.querySelector('#sdEditShopUrl'), na = sdEl.querySelector('#sdEditNotesArea');
+        const su = el.querySelector('#sdEditShopUrl'), na = el.querySelector('#sdEditNotesArea');
         if (su) sc.shopUrl = su.value.trim();
         if (na) sc.notes = na.value;
         syncScenarioBlocksAndPublic(sc);
@@ -1955,6 +2302,7 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         toast('✅ メモ・URLを保存しました');
         return;
       }
+      if (isCreate) return;
       if (k === 'pdf') { if (hasCcf()) { const sid = String(sdId), p = b.dataset.path; closeDetail(); await CCF.activateProject(sid); await CCF.openPdfPath(p); } return; }
       if (k === 'room-open') {
         const sid = b.dataset.sid, rid = b.dataset.rid;
@@ -2032,6 +2380,96 @@ let sdOpenSecs = new Set();   // 開いているアコーディオン（基本�
         openScenarioHistoryTagModal(id2);
       }
     });
+  }
+
+  window.openScenarioDetail = async function (id) {
+    const targetSc = scOf(id);
+    if (!targetSc) return; closeDetail(); sdDraft = null; sdTagPickerOpen = false; sdId = id; sdPeek = false; sdSelSlot = 0; sdEditNotes = false; sdEditTrailer = false; sdEditSynopsis = false; sdEditFreeText = false; sdEditBlockId = ''; sdEditHoIdx = -1; sdOpenHOs = new Set(); sdOpenSecs = new Set(); sdSpecSortMode = false; sdSpecAddOpen = false; sdDragSpecKey = '';
+    sdEl = document.createElement('div'); sdEl.className = 'sd-overlay'; sdEl.setAttribute('role', 'dialog'); sdEl.setAttribute('aria-modal', 'true');
+    sdEl.innerHTML = `<div class="sd-modal" tabindex="-1"><div class="sd-head"><h2></h2><button type="button" class="btn btn-secondary" data-sd="close" aria-label="閉じる">✕ 閉じる</button></div><div class="sd-body"></div>
+      <div class="sd-actions"><button type="button" class="sd-btn" data-sd="edit">📝 Discord投稿・編集画面で開く</button><button type="button" class="sd-btn" data-sd="ccf">🎲 セッション準備で開く</button><button type="button" class="sd-btn" data-sd="assets">🗗 登録素材・ギャラリー整理</button><button type="button" class="sd-btn" data-sd="history">📜 投稿履歴・タグ管理</button></div></div>`;
+    document.body.appendChild(sdEl); render(false); document.addEventListener('keydown', onKey, true);
+    if (window.CloudSync && typeof CloudSync.ensureScenarioAssetsCached === 'function') {
+      void CloudSync.ensureScenarioAssetsCached(String(id), { showProgress: false });
+    }
+    wireDetailModalEvents(sdEl, { createMode: false });
+    if (typeof window.ensureScenarioCloudBlobs === 'function' && (
+      (targetSc.docTexts && !Array.isArray(targetSc.docTexts) && targetSc.docTexts.__cloudBlob) ||
+      (targetSc.ccfRooms && !Array.isArray(targetSc.ccfRooms) && targetSc.ccfRooms.__cloudBlob)
+    )) {
+      try {
+        const hydrated = await window.ensureScenarioCloudBlobs(targetSc);
+        if (hydrated && sdEl && String(sdId) === String(id)) render(true);
+      } catch (_) {}
+    }
+  };
+
+  window.openNewScenarioDetailModal = function () {
+    closeDetail();
+    sdId = null;
+    sdDraft = {
+      id: '__draft__',
+      title: '',
+      author: '',
+      system: '',
+      shopUrl: '',
+      playerCount: '',
+      playTime: '',
+      reqSkills: '',
+      recSkills: '',
+      semiRecSkills: '',
+      lostRate: '',
+      aftereffect: '',
+      imageUrl: '',
+      hoverImages: [],
+      thumbPosX: 50,
+      thumbPosY: 50,
+      thumbZoom: 100,
+      thumbFit: 'cover',
+      spoilerBlur: false,
+      playStatus: '',
+      favorite: false,
+      trailer: '',
+      synopsis: '',
+      notes: '',
+      tags: [],
+      autoTags: [],
+      customSpecs: [],
+      specOrder: [],
+      postedChannels: [],
+      postedInfo: {},
+      imageCategories: (typeof DEFAULT_SCENARIO_CATS !== 'undefined' ? [...DEFAULT_SCENARIO_CATS] : []),
+      images: [],
+      docs: []
+    };
+    ensureDetailBlocksSynced(sdDraft);
+    sdTagPickerOpen = false;
+    sdPeek = false;
+    sdThumbOpen = false;
+    sdSelSlot = 0;
+    sdEditNotes = false;
+    sdEditTrailer = false;
+    sdEditSynopsis = false;
+    sdEditFreeText = false;
+    sdEditBlockId = '';
+    sdEditHoIdx = -1;
+    sdOpenHOs = new Set();
+    sdOpenSecs = new Set();
+    sdSpecSortMode = false;
+    sdSpecAddOpen = false;
+    sdDragSpecKey = '';
+    sdEl = document.createElement('div');
+    sdEl.className = 'sd-overlay';
+    sdEl.setAttribute('role', 'dialog');
+    sdEl.setAttribute('aria-modal', 'true');
+    sdEl.innerHTML = `<div class="sd-modal sd-modal-create" tabindex="-1"><div class="sd-head"><h2></h2><button type="button" class="btn btn-secondary" data-sd="draft-cancel" aria-label="閉じる">✕ 閉じる</button></div><div class="sd-body"></div>
+      <div class="sd-actions sd-actions-create"><button type="button" class="sd-btn" data-sd="draft-cancel">キャンセル</button><button type="button" class="sd-btn sd-btn-register" data-sd="draft-register">💾 データベースに登録</button></div></div>`;
+    document.body.appendChild(sdEl);
+    render(false);
+    document.addEventListener('keydown', onKey, true);
+    wireDetailModalEvents(sdEl, { createMode: true });
+    const titleInp = sdEl.querySelector('.sd-title-input');
+    if (titleInp) titleInp.focus();
   };
   /** ドロップされたパスを、このシナリオの素材として登録（画像→シナリオ登録素材／PDF・BGM・ZIP→絶対パス参照。フォルダは中身を振り分け） */
   async function addMaterials(id, paths) {

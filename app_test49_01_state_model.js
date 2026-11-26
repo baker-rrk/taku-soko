@@ -283,7 +283,7 @@ console.info('Discord forum tool', APP_VERSION);
     const inf = sc.postedInfo || {};
     const ps = PLAY_STATUS_MAP[normalizePlayStatus(sc.playStatus)];
     const customTxt = Array.isArray(sc.customSpecs) ? sc.customSpecs.map(c => c ? ((c.label || '') + ' ' + (c.value || '')) : '').join(' ') : '';
-    return normSearch([sc.title, sc.system, sc.playerCount, sc.playTime, sc.reqSkills, sc.recSkills, sc.semiRecSkills, sc.lostRate, sc.aftereffect, customTxt, sc.trailer, sc.notes, sc.shopUrl, ps ? ps.label : '',
+    return normSearch([sc.title, sc.author, sc.system, sc.playerCount, sc.playTime, sc.reqSkills, sc.recSkills, sc.semiRecSkills, sc.lostRate, sc.aftereffect, customTxt, sc.trailer, sc.notes, sc.shopUrl, ps ? ps.label : '',
       ...(sc.tags || []), ...(sc.postedChannels || []).map(id => postedLabel(sc, id)), ...Object.values(inf).flatMap(i => (i && i.tags) || [])].join('\n'));
   }
   function matchQuery(sc, terms) { if (!terms.length) return true; const h = scenarioHaystack(sc); return terms.every(t => h.includes(t)); }
@@ -321,9 +321,8 @@ console.info('Discord forum tool', APP_VERSION);
   const sanitizeBlocks = arr => (Array.isArray(arr) ? arr : []).map(sanitizeBlock).filter(Boolean);
   function resolveBlobUrlReplacement(v, opts) {
     if (typeof v !== 'string' || !/^blob:/i.test(v.trim())) return { changed: false, val: v };
-    if (!(opts && opts.forceClear) && typeof imgUrlToHash !== 'undefined' && imgUrlToHash && typeof imgUrlToHash.get === 'function') {
-      const h = imgUrlToHash.get(v);
-      if (h) return { changed: true, val: '@img:' + h };
+    if (!(opts && opts.forceClear) && typeof imgUrlToHash !== 'undefined' && imgUrlToHash && typeof imgUrlToHash.has === 'function' && imgUrlToHash.has(v)) {
+      return { changed: false, val: v };
     }
     return { changed: true, val: '' };
   }
@@ -443,7 +442,7 @@ console.info('Discord forum tool', APP_VERSION);
       tags: (Array.isArray(c.tags) ? c.tags : []).filter(t => t && typeof t === 'object').map(t => ({ name: _s(t.name), id: _s(t.id).trim() })) }));
     o.scenarios = o.scenarios.filter(x => x && typeof x === 'object').map(x => {
       const out = { ...x };
-      ['id', 'title', 'system', 'playerCount', 'playTime', 'shopUrl', 'imageUrl', 'reqSkills', 'recSkills', 'semiRecSkills', 'lostRate', 'aftereffect', 'trailer', 'notes', 'autoReply']
+      ['id', 'title', 'author', 'system', 'playerCount', 'playTime', 'shopUrl', 'imageUrl', 'reqSkills', 'recSkills', 'semiRecSkills', 'lostRate', 'aftereffect', 'trailer', 'notes', 'autoReply']
         .forEach(k => { if (k === 'title' || k in out) out[k] = _s(out[k]); });
       if (out.trailer) {
         if (isMojibakeText(out.trailer)) {
@@ -496,7 +495,11 @@ console.info('Discord forum tool', APP_VERSION);
       }
       if (Array.isArray(x.fullBlockData)) out.fullBlockData = sanitizeBlocks(x.fullBlockData);
       if (Array.isArray(x.publicBlocks)) out.publicBlocks = sanitizeBlocks(x.publicBlocks);
+      if (x.docTexts && typeof x.docTexts === 'object' && !Array.isArray(x.docTexts) && x.docTexts.__cloudBlob) {
+        out.docTexts = { __cloudBlob: _s(x.docTexts.__cloudBlob) };
+      }
       if (Array.isArray(x.ccfRooms)) { out.ccfRooms = x.ccfRooms; out.ccfActiveRoomId = x.ccfActiveRoomId || (x.ccfRooms[0] ? x.ccfRooms[0].id : null); }
+      else if (x.ccfRooms && typeof x.ccfRooms === 'object' && x.ccfRooms.__cloudBlob) { out.ccfRooms = { __cloudBlob: _s(x.ccfRooms.__cloudBlob) }; }
       return out;
     });
     o.history = (Array.isArray(o.history) ? o.history : []).filter(h => h && typeof h === 'object');
@@ -595,6 +598,134 @@ console.info('Discord forum tool', APP_VERSION);
   window.getScenarioSpecFullVal = getScenarioSpecFullVal;
   window.getScenarioSpecFirstLine = getScenarioSpecFirstLine;
   window.mergeSpecFirstLine = mergeSpecFirstLine;
+
+  // ===== DB一覧表示専用の人数・プレイ時間整形（元データは非破壊）＆ プレイ時間区分 =====
+  function formatPlayerCountForCard(raw) {
+    const line1 = firstLineText(raw);
+    if (!line1) return '';
+    const s = line1.normalize('NFKC').trim();
+    const stripParens = str => {
+      let cur = str;
+      for (let i = 0; i < 3; i++) {
+        const next = cur.replace(/\([^)]*\)|（[^）]*）|\[[^\]]*\]|【[^】]*】|「[^」]*」/g, ' ');
+        if (next === cur) break;
+        cur = next;
+      }
+      return cur;
+    };
+    const isFlexibleCount = str => /(?:KP|GM)が?(?:処置|処理|回せ|捌け|対応)?(?:できる|可能)?人数|人数可変|何(?:人|名)でも|制限なし|不問/i.test(str);
+    const cleanCore = str => {
+      let x = str.replace(/[、※].*$/, '').trim();
+      x = x.replace(/改変次第.*$/, '').replace(/改変(?:で|により|によって).*$/, '').trim();
+      x = x.replace(/\s*[\/／]\s*[^\/／]*?(?:も可能|も可|可)(?:\s|$).*$/, '').trim();
+      x = x.replace(/\s+\S*(?:も可能|も可).*$/, '').trim();
+      if (isFlexibleCount(x)) return '人数可変';
+      x = x.replace(/(?:推奨|想定|固定|限定|前後|程度|くらい|ぐらい|ほど|用)/g, ' ');
+      x = x.replace(/\s+/g, ' ').trim();
+      if (!x) return '';
+      if (isFlexibleCount(x)) return '人数可変';
+      x = x.replace(/(\d+)\s*(?:PL|pl|人|名)?\s*(?:〜|~|～|-|–|—|−|から)\s*(\d+)\s*(?:PL|pl|人|名)?/g, '$1〜$2PL');
+      x = x.replace(/(\d+)\s*(?:PL|pl|人|名)?\s*(?:〜|~|～|-|–|—|−|から|以上)\s*$/g, '$1PL〜');
+      x = x.replace(/(?:^|\s)(?:〜|~|～|-|–|—|−)\s*(\d+)\s*(?:PL|pl|人|名)?/g, '〜$1PL');
+      x = x.replace(/(\d+)\s*(?:PL|pl|人|名)/gi, '$1PL');
+      x = x.replace(/^(\d+)$/, '$1PL');
+      x = x.replace(/(?:^|\s)1PL(?!\s*[〜~\d])/g, m => m.replace(/1PL/, 'ソロ'));
+      x = x.replace(/\s+/g, ' ').trim();
+      return x;
+    };
+    let out = cleanCore(stripParens(s));
+    if (!out) out = cleanCore(s.replace(/[()（）\[\]【】「」]/g, ' '));
+    return out || line1;
+  }
+
+  function formatPlayTimeForCard(raw) {
+    const line1 = firstLineText(raw);
+    if (!line1) return '';
+    const s = line1.normalize('NFKC').trim();
+    const stripParens = str => {
+      let cur = str;
+      for (let i = 0; i < 3; i++) {
+        const next = cur.replace(/\([^)]*\)|（[^）]*）|\[[^\]]*\]|【[^】]*】/g, ' ');
+        if (next === cur) break;
+        cur = next;
+      }
+      return cur;
+    };
+    const cleanTimeCore = str => {
+      let x = str.replace(/[、※].*$/, '').trim();
+      x = x.replace(/\s*[\/／]\s*(?:ボイセ|ボイスセッション|テキセ|テキストセッション|半テキ|完テキ|オフセ).*$/, '').trim();
+      x = x.replace(/(?:ボイスセッション|テキストセッション|ボイセ|テキセ|半テキ|完テキ|オフセ)/g, ' ');
+      x = x.replace(/^[：:・\/／\s]+/, '').trim();
+      x = x.replace(/(?:前後|程度|ほど|くらい|ぐらい|おおよそ|約|目安|想定|平均|以内)/g, ' ');
+      x = x.replace(/(\d+)\s*時間半/g, '$1.5時間');
+      x = x.replace(/(\d+(?:\.\d+)?)\s*(?:hrs?|h)(?![a-z0-9])/gi, '$1時間');
+      x = x.replace(/(\d+(?:\.\d+)?)\s*(?:時間)?\s*(?:〜|~|～|-|–|—|−|から)\s*(\d+(?:\.\d+)?)\s*(時間|分)/g, '$1〜$2$3');
+      x = x.replace(/(\d+(?:\.\d+)?\s*(?:時間|分))\s*以上/g, '$1〜');
+      x = x.replace(/以上/g, ' ');
+      x = x.replace(/(?:^|\s)(?:〜|~|～|-|–|—|−)\s*(\d+(?:\.\d+)?\s*(?:時間|分))/g, '〜$1');
+      x = x.replace(/(\d+(?:\.\d+)?\s*(?:時間|分))\s*(?:〜|~|～|-|–|—|−|から)\s*$/g, '$1〜');
+      x = x.replace(/\s+/g, ' ').replace(/\s*([〜時間分])\s*/g, '$1').trim();
+      return x;
+    };
+    let out = cleanTimeCore(stripParens(s));
+    if (!out) out = cleanTimeCore(s.replace(/[()（）\[\]【】]/g, ' '));
+    return out || line1;
+  }
+
+  const PLAY_TIME_BUCKETS = [
+    { id: 'le3', label: '〜3時間', title: '最大3時間以下', match: h => h > 0 && h <= 3 },
+    { id: 'le6', label: '〜6時間', title: '最大3時間超〜6時間以下', match: h => h > 3 && h <= 6 },
+    { id: 'le9', label: '〜9時間', title: '最大6時間超〜9時間以下', match: h => h > 6 && h <= 9 },
+    { id: 'le12', label: '〜12時間', title: '最大9時間超〜12時間以下', match: h => h > 9 && h <= 12 },
+    { id: 'le30', label: '〜30時間', title: '最大12時間超〜30時間以下', match: h => h > 12 && h <= 30 },
+    { id: 'gt30', label: '31時間〜', title: '最大30時間超', match: h => h > 30 }
+  ];
+
+  function _extractHoursFromTimeText(text) {
+    let s = String(text || '').normalize('NFKC').trim();
+    if (!s) return null;
+    const vals = [];
+    const pushVal = v => { if (Number.isFinite(v) && v > 0) vals.push(v); };
+    s = s.replace(/(\d+(?:\.\d+)?)\s*時間\s*(\d+)\s*分/g, (_, h, m) => { pushVal(Number(h) + Number(m) / 60); return ' '; });
+    s = s.replace(/(\d+(?:\.\d+)?)\s*時間半/g, (_, h) => { pushVal(Number(h) + 0.5); return ' '; });
+    s = s.replace(/(\d+(?:\.\d+)?)\s*(?:〜|~|～|-|ー|–|—|−|から)\s*(\d+(?:\.\d+)?)\s*(?:時間前後|時間程度|時間|(?:hrs?|h)(?![a-z0-9]))/gi, (_, a, b) => { pushVal(Math.max(Number(a), Number(b))); return ' '; });
+    s = s.replace(/(?:〜|~)?\s*(\d+(?:\.\d+)?)\s*(?:時間|(?:hrs?|h)(?![a-z0-9]))/gi, (_, a) => { pushVal(Number(a)); return ' '; });
+    s = s.replace(/(\d+(?:\.\d+)?)\s*(?:〜|~|～|-|ー|–|—|−|から)\s*(\d+(?:\.\d+)?)\s*分/g, (_, a, b) => { pushVal(Math.max(Number(a), Number(b)) / 60); return ' '; });
+    s = s.replace(/(\d+(?:\.\d+)?)\s*分/g, (_, m) => { pushVal(Number(m) / 60); return ' '; });
+    return vals.length ? Math.max(...vals) : null;
+  }
+
+  function extractMaxPlayTimeHours(scOrText) {
+    let raw = '';
+    if (scOrText && typeof scOrText === 'object') {
+      raw = getScenarioSpecFirstLine(scOrText, 'playTime') || getScenarioSpecFullVal(scOrText, 'playTime');
+    } else {
+      raw = firstLineText(scOrText) || (scOrText != null ? String(scOrText) : '');
+    }
+    const norm = String(raw || '').normalize('NFKC').trim();
+    if (!norm) return null;
+    let mainBody = norm;
+    for (let i = 0; i < 3; i++) {
+      const next = mainBody.replace(/\([^)]*\)|（[^）]*）|\[[^\]]*\]|【[^】]*】|「[^」]*」/g, ' ');
+      if (next === mainBody) break;
+      mainBody = next;
+    }
+    const fromMain = _extractHoursFromTimeText(mainBody);
+    return fromMain !== null ? fromMain : _extractHoursFromTimeText(norm);
+  }
+
+  function getScenarioPlayTimeBucketId(sc) {
+    const h = extractMaxPlayTimeHours(sc);
+    if (h == null || !Number.isFinite(h) || h <= 0) return '';
+    const b = PLAY_TIME_BUCKETS.find(x => x.match(h));
+    return b ? b.id : '';
+  }
+
+  window.formatPlayerCountForCard = formatPlayerCountForCard;
+  window.formatPlayTimeForCard = formatPlayTimeForCard;
+  window.PLAY_TIME_BUCKETS = PLAY_TIME_BUCKETS;
+  window.extractMaxPlayTimeHours = extractMaxPlayTimeHours;
+  window.getScenarioPlayTimeBucketId = getScenarioPlayTimeBucketId;
 
   function tagSummaryFields(blocks) {   // 概要項目に、項目名の変更に影響されない固定キー(field)を付ける
     (blocks || []).forEach(b => {
@@ -746,6 +877,7 @@ console.info('Discord forum tool', APP_VERSION);
     webDirName: '',
     compressImagesWebp: true,
     uploadScope: 'edited_only',
+    webAssetSyncMode: 'edited_only',
     gdriveBridgeToken: '',
     gdriveBridgeExpiresAt: 0,
     gdriveBridgeEmail: ''
@@ -760,6 +892,7 @@ console.info('Discord forum tool', APP_VERSION);
       webDirName: _s(src.webDirName).trim(),
       compressImagesWebp: src.compressImagesWebp !== false,
       uploadScope: src.uploadScope === 'all' ? 'all' : 'edited_only',
+      webAssetSyncMode: (src.webAssetSyncMode === 'auto_all' || src.webAssetSyncMode === 'manual') ? src.webAssetSyncMode : 'edited_only',
       gdriveBridgeToken: _s(src.gdriveBridgeToken).trim(),
       gdriveBridgeExpiresAt: Number(src.gdriveBridgeExpiresAt) || 0,
       gdriveBridgeEmail: _s(src.gdriveBridgeEmail).trim()

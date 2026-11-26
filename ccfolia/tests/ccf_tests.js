@@ -16,8 +16,42 @@ eq(T.cleanText('a\nb\nc', { joinLines: 'none' }), 'a\nb\nc', 'none は改行維�
 eq(T.cleanText('文末で\n切れる。\n次の行', { joinLines: 'all' }), '文末で切れる。次の行', 'all は全連結');
 eq(T.cleanText('1.\u200B最初\n2. 二番目'), '1.最初\n2. 二番目', 'ゼロ幅文字除去・番号付きは改行維持');
 eq(T.cleanText('『文学』は生きる上で絶対に必要という訳\nではない。\n嗜好品。贅沢品。不用品。'), '『文学』は生きる上で絶対に必要という訳ではない。\n嗜好品。贅沢品。不用品。', '2段組の短め折り返し行も結合し、文末の改行は残す');
-eq(T.cleanText('彼は有名な作家で、\nHO1 の古くからの文学の師。\n普段は穏やかで、\nHO1 の代わりにメディアへの受け答えもしている。'), '彼は有名な作家で、HO1 の古くからの文学の師。\n普段は穏やかで、HO1 の代わりにメディアへの受け答えもしている。', '本文中の HO1 等を見出し誤認せず結合');
-eq(T.cleanText('幼馴染の\nHO2 の友人であり、\nHO1の親友。\nHO1：導入\nHO1【秘匿】\nKP情報\nHO1（秘密）'), '幼馴染のHO2 の友人であり、HO1の親友。\nHO1：導入\nHO1【秘匿】\nKP情報\nHO1（秘密）', '見出し記号・短いラベルのみの HO/KP は改行を維持');
+eq(T.cleanText('彼は有名な作家で、\nHO1 の古くからの文学の師。\n普段は穏やかで、\nHO1 の代わりにメディアへの受け答えもしている。'), '彼は有名な作家で、HO1の古くからの文学の師。\n普段は穏やかで、HO1の代わりにメディアへの受け答えもしている。', '本文中の HO1 等を見出し誤認せず結合');
+eq(T.cleanText('幼馴染の\nHO2 の友人であり、\nHO1の親友。\nHO1：導入\nHO1【秘匿】\nKP情報\nHO1（秘密）'), '幼馴染のHO2の友人であり、HO1の親友。\nHO1：導入\nHO1【秘匿】\nKP情報\nHO1（秘密）', '見出し記号・短いラベルのみの HO/KP は改行を維持');
+eq(T.cleanText('タイマ\nンシナリオ'), 'タイマンシナリオ', 'カタカナ途中折り返し（タイマ\\nンシナリオ）を連結');
+eq(T.cleanText('タイマー\nシナリオ'), 'タイマーシナリオ', 'カタカナ長音符「ー」を文末扱いせず連結');
+eq(T.cleanText('時間:\n3\n時間前後(\nRP\nで増減)\nロスト率:極低\nシステム:\n6'), '時間: 3時間前後(RPで増減)\nロスト率:極低\nシステム: 6', 'コロン末尾項目・未閉じ括弧・単位折り返しを正しく連結し別項目行は改行維持');
+eq(T.cleanText('時間: 3\n時間前後(\nRP\nで増減)'), '時間: 3時間前後(RPで増減)', 'コロン項目行の途中単位・未閉じ括弧を連結');
+eq(T.cleanSyncedDocText('=== P.1 ===\nタイマ\nンシナリオ'), '=== P.1 ===\nタイマンシナリオ', 'cleanSyncedDocText: ページ区切り見出しを保持しつつ各ページ本文を整形');
+{
+  const summerLines = [
+    '〇 物語の概要',
+    'PC(プレイヤーキャラクター/探',
+    '索者)たちは、破天荒な学校に通い、',
+    '同じ部活動に所属する仲間です。',
+    '夏のある日、友人であり、同じ部活',
+    '動のメンバーである少女が、謎の失踪',
+    'を遂げます。その1年後、PCたちは',
+    'ひょんなことから「タイムマシン」を',
+    '入手し、それを試してみることになり',
+    'ます。'
+  ];
+  const summerExpected = [
+    '〇物語の概要',
+    'PC(プレイヤーキャラクター/探索者)たちは、破天荒な学校に通い、同じ部活動に所属する仲間です。',
+    '夏のある日、友人であり、同じ部活動のメンバーである少女が、謎の失踪を遂げます。その1年後、PCたちはひょんなことから「タイムマシン」を入手し、それを試してみることになります。'
+  ].join('\n');
+  eq(T.cleanText(summerLines.join('\n')), summerExpected, '実文テスト(通常\\n): 2段組折り返しを結合しつつ見出しと文末改行を保持');
+  eq(T.cleanText(summerLines.map(l => '\u3000' + l).join('\n')), summerExpected, '実文テスト(全行全角空白インデント): 共通左マージンを字下げ誤認せず結合');
+  eq(T.cleanText(summerLines.map(l => '  ' + l).join('\n')), summerExpected, '実文テスト(全行半角2スペースインデント): 共通左マージンを字下げ誤認せず結合');
+  eq(T.cleanText(summerLines.join('\u2028')), summerExpected, '実文テスト(Line Separator \\u2028): 特殊改行文字を正規化して結合');
+  eq(T.cleanSyncedDocText('=== P.2 ===\u2028' + summerLines.join('\u2028')), '=== P.2 ===\n' + summerExpected, 'cleanSyncedDocText(\\u2028): ページ見出し保持＋本文結合');
+  eq(T.shouldBreak('PC(プレイヤーキャラクター/探', '索者)たちは', { nextIndented: true, nextYGapBreak: true }), false, 'shouldBreak: 未閉じ括弧は nextIndented/nextYGapBreak より優先して結合');
+  eq(T.shouldBreak('ひょんなことから「タイムマシン」を', '入手し、', { nextIndented: true, nextYGapBreak: true }), false, 'shouldBreak: MID_END2は nextIndented/nextYGapBreak より優先して結合');
+  eq(T.shouldBreak('入手し、それを試してみることになり', 'ます。', { nextIndented: true, nextYGapBreak: true }), false, 'shouldBreak: NEXT_CONTは nextIndented/nextYGapBreak より優先して結合');
+  const withLongToc = '目次 ........................................................ 12\n\n' + summerLines.join('\n');
+  eq(T.cleanText(withLongToc), '目次 ........................................................ 12\n\n' + summerExpected, 'cleanText: 別段落の長い目次行によって2段組本文が短行誤判定されない');
+}
 eq(T.cleanText(''), '', '空文字');
 eq(T.cleanText(null), '', 'null');
 
@@ -533,16 +567,25 @@ eq(T.toFullWidthAlnum(T.toHalfWidthAlnum('Ａ１ａ')), 'Ａ１ａ', '往復で�
     '狭ガター（約8px）2段組で左「劇団員」「織田」と右「津島」「HO1 秘匿」が同Y座標でも混ざらず完全分離'
   );
 
-  // 6) 部分狭ガター2段組（chunksToLines: twoColumn:false でも2行以上の狭ギャップ縦カラムを分離）
+  // 6) 部分2段組（chunksToLines: twoColumn:false でも2行以上の明確な縦空白帯は分離し、狭い行内空白では誤分割しない）
   const partialNarrowCols = [
     item('■ 登場人物と秘匿情報の一覧まとめ（全幅見出し）', 40, 80, 360, 12),
-    item('劇団員の説明文', 40, 100, 110, 12), item('津島の説明文', 161, 100, 110, 12),
-    item('織田の説明文', 40, 120, 110, 12), item('HO1 秘匿の案内', 161, 120, 110, 12)
+    item('劇団員の説明文', 40, 100, 110, 12), item('津島の説明文', 172, 100, 110, 12),
+    item('織田の説明文', 40, 120, 110, 12), item('HO1 秘匿の案内', 172, 120, 110, 12)
   ];
   eq(
     T.extractRectText(partialNarrowCols, VP, 1, { x: 30, y: 60, w: 390, h: 80 }, { pageW: 420, twoColumn: false }),
     '■ 登場人物と秘匿情報の一覧まとめ（全幅見出し）\n劇団員の説明文\n織田の説明文\n津島の説明文\nHO1 秘匿の案内',
-    'chunksToLines: 部分狭ガター2段組でも2行以上の縦空白帯を左ブロック→右ブロックへ分離'
+    'chunksToLines: 部分2段組でも2行以上の明確な縦空白帯を左ブロック→右ブロックへ分離'
+  );
+  const narrowInlineSpace = [
+    item('探索者は', 40, 100, 48, 12), item('(プレイヤー)として参加する', 99, 100, 150, 12),
+    item('4日後に', 40, 120, 48, 12), item('《目星》を振ることになる', 99, 120, 150, 12)
+  ];
+  eq(
+    T.extractRectText(narrowInlineSpace, VP, 1, { x: 30, y: 80, w: 300, h: 60 }, { pageW: 360, twoColumn: false }),
+    '探索者は (プレイヤー)として参加する\n4日後に 《目星》を振ることになる',
+    'chunksToLines: 11px程度の行内空白・幅不足の左要素を2段組誤認して分断しない'
   );
 
   // 7) 3列×3行の横並び能力値表の直下に「技能」見出しがあるレイアウトで縦分裂しないこと
@@ -778,4 +821,215 @@ eq(T.toFullWidthAlnum(T.toHalfWidthAlnum('Ａ１ａ')), 'Ａ１ａ', '往復で�
     pBlocks[0].text
   );
 }
-console.log(`\n${ok} passed, ${ng} failed`); process.exit(ng ? 1 : 0);
+
+// ===== getScenarioDedupKey（五十音頭文字＋スペース区切り除去） =====
+{
+  const fs = require('fs'), path = require('path'), vm = require('vm');
+  const commonSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'app_test49_00_block_common.js'), 'utf8');
+  const sandbox = { window: {} };
+  vm.runInNewContext(commonSrc, sandbox);
+  const getScenarioDedupKey = sandbox.window.getScenarioDedupKey;
+  eq(getScenarioDedupKey('に 人間失覚殺人癖'), getScenarioDedupKey('人間失覚殺人癖'), 'getScenarioDedupKey: ひらがな1文字＋スペース接頭辞を除去して一致');
+  eq(getScenarioDedupKey('あ アナデルタ'), getScenarioDedupKey('▽（アナデルタ）'), 'getScenarioDedupKey: ひらがな頭文字と先頭記号＋括弧タイトルが一致');
+  eq(getScenarioDedupKey('に　人間失覚殺人癖'), getScenarioDedupKey('人間失覚殺人癖'), 'getScenarioDedupKey: 全角スペース区切りの頭文字も除去して一致');
+  eq(getScenarioDedupKey('(あ)'), 'あ', 'getScenarioDedupKey: 除去結果が空になる場合は除去前の文字列を残す');
+}
+
+// ===== isCategoryFolderName（中間分類フォルダ：人数可変・KPレスシナリオ等） =====
+{
+  const fs = require('fs'), path = require('path'), vm = require('vm');
+  const dndSrc = fs.readFileSync(path.join(__dirname, '..', 'ccf_dnd.js'), 'utf8');
+  const sandbox = {
+    IS_ELECTRON: false,
+    window: { CCF: { say() {}, S: {} }, CCFModel: M },
+    document: { readyState: 'loading', addEventListener() {} },
+    console
+  };
+  vm.runInNewContext(dndSrc, sandbox);
+  const isCategoryFolderName = sandbox.window.CCF.dnd.isCategoryFolderName;
+  eq(isCategoryFolderName('人数可変'), true, 'isCategoryFolderName: 人数可変 は中間分類フォルダ');
+  eq(isCategoryFolderName('KPレスシナリオ'), true, 'isCategoryFolderName: KPレスシナリオ は中間分類フォルダ');
+  eq(isCategoryFolderName('人数固定'), true, 'isCategoryFolderName: 人数固定 は中間分類フォルダ');
+  eq(isCategoryFolderName('可変人数'), true, 'isCategoryFolderName: 可変人数 は中間分類フォルダ');
+  eq(isCategoryFolderName('KPレス'), true, 'isCategoryFolderName: KPレス は中間分類フォルダ');
+  eq(isCategoryFolderName('GMレス'), true, 'isCategoryFolderName: GMレス は中間分類フォルダ');
+  eq(isCategoryFolderName('GMレスシナリオ'), true, 'isCategoryFolderName: GMレスシナリオ は中間分類フォルダ');
+  eq(isCategoryFolderName('アナデルタ'), false, 'isCategoryFolderName: 通常のシナリオ名は誤判定しない');
+}
+// ===== 長音「ー」・文中かっこ・数字/英語＋半角空白の連結 & 文字コード自動判別 & .docx本文抽出 =====
+{
+  // 1) 長音符「ー」による途中改行防止
+  eq(
+    T.cleanText('「セミナ\nーや虚空教について伝えるかは自由」'),
+    '「セミナーや虚空教について伝えるかは自由」',
+    '長音符「ー」をオープナー誤認せず「セミナー」を連結'
+  );
+  eq(
+    T.cleanText('報告をするこ\nとになる。「セミナ\nーや虚空教について伝えるかは自由」'),
+    '報告をすることになる。「セミナーや虚空教について伝えるかは自由」',
+    '文途中＋開き括弧＋長音符「ー」の折り返しを自然に連結'
+  );
+
+  // 2) 文中かっこ・数字・英語・半角空白の連結と英単語間スペース維持
+  eq(
+    T.cleanText('依頼者である\n「愛美」に報告する'),
+    '依頼者である「愛美」に報告する',
+    '文途中の開き括弧「愛美」を改行せず連結'
+  );
+  eq(
+    T.cleanText('PC \n( プレイヤー ) は\n4 日後に\n《目星》\nを振る'),
+    'PC(プレイヤー)は4日後に《目星》を振る',
+    '数字・英語・かっこ＋半角空白を含む折り返しを不要な改行なしで自然に連結'
+  );
+  eq(
+    T.cleanText('結果は「白」\nである。\n6月3日(土)\nに開催。\n第 1 章\nBye-Bye Summer Days'),
+    '結果は「白」である。\n6月3日(土)に開催。\n第1章\nBye-Bye Summer Days',
+    '文中閉じ括弧の連結・数字前後の空白除去・英語単語間スペース維持'
+  );
+  eq(
+    T.cleanText('「 セミナー 」について愛美 (依頼者) と 6 月 3 日に話す。\n- Bye-Bye Summer Days'),
+    '「セミナー」について愛美(依頼者)と6月3日に話す。\n- Bye-Bye Summer Days',
+    '括弧・日付のゴーストスペース除去と箇条書き・英語スペース保持'
+  );
+
+  // 3) Shift_JIS（一部に機種依存文字・不正バイトを含む）自動判別
+  // 「これはテストの日本語文章です。愛美に報告する。」の Shift_JIS バイト列 + 不正バイト 0x80
+  const sjisValid = [
+    0x82, 0xB1, 0x82, 0xEA, 0x82, 0xCD, 0x83, 0x65, 0x83, 0x58, 0x83, 0x67,
+    0x82, 0xCC, 0x93, 0xFA, 0x96, 0x7B, 0x8C, 0xEA, 0x95, 0xB6, 0x8F, 0xCD,
+    0x82, 0xC5, 0x82, 0xB7, 0x81, 0x42, 0x80,
+    0x88, 0xA4, 0x94, 0xFC, 0x82, 0xC9, 0x95, 0xF1, 0x8D, 0x90, 0x82, 0xB7, 0x82, 0xE9, 0x81, 0x42
+  ];
+  const sjRes = T.decodeBytes(new Uint8Array(sjisValid));
+  eq(sjRes.enc, 'Shift_JIS', '一部に不正バイトを含む Shift_JIS が UTF-8 (不明) に落ちず Shift_JIS 判定される');
+  t(sjRes.text.includes('これはテストの日本語文章です。') && sjRes.text.includes('愛美に報告する。'), 'Shift_JIS 本文が文字化けせず復元される', sjRes);
+  const sjScan = S.decodeTextBytes(new Uint8Array(sjisValid));
+  t(sjScan.includes('これはテストの日本語文章です。') && sjScan.includes('愛美に報告する。'), 'CCFScan.decodeTextBytes でも不正バイト混在 Shift_JIS を正しく復元', sjScan);
+
+  // ISO-2022-JP 自動判別（「あいう」= ESC $ B 24 22 24 24 24 26 ESC ( B）
+  const isoBytes = new Uint8Array([0x1B, 0x24, 0x42, 0x24, 0x22, 0x24, 0x24, 0x24, 0x26, 0x1B, 0x28, 0x42]);
+  const isoRes = T.decodeBytes(isoBytes);
+  eq(isoRes.enc, 'ISO-2022-JP', 'ISO-2022-JP エスケープ列を検出');
+  eq(isoRes.text, 'あいう', 'ISO-2022-JP 本文を正しくデコード');
+
+  // 旧 .doc バイナリガード
+  const legacyDoc = new Uint8Array([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00, 0x00]);
+  const legRes = T.loadTextDoc('old.doc', legacyDoc);
+  eq(legRes.isBinaryError, true, '旧 .doc バイナリは生文字化けせず isBinaryError=true を返す');
+
+  // 最小 .docx（ZIP内に word/document.xml を格納：無圧縮 method=0 & Deflate method=8）
+  const zlib = require('zlib');
+  const buildMiniZip = (entries) => {
+    const locals = [], centrals = [];
+    let off = 0;
+    for (const ent of entries) {
+      const nameBuf = Buffer.from(ent.name, 'utf8');
+      const rawBuf = Buffer.from(ent.content, 'utf8');
+      const compBuf = ent.deflate ? zlib.deflateRawSync(rawBuf) : rawBuf;
+      const method = ent.deflate ? 8 : 0;
+      const lh = Buffer.alloc(30);
+      lh.writeUInt32LE(0x04034b50, 0);
+      lh.writeUInt16LE(20, 4);
+      lh.writeUInt16LE(0, 6);
+      lh.writeUInt16LE(method, 8);
+      lh.writeUInt32LE(compBuf.length, 18);
+      lh.writeUInt32LE(rawBuf.length, 22);
+      lh.writeUInt16LE(nameBuf.length, 26);
+      lh.writeUInt16LE(0, 28);
+      locals.push(lh, nameBuf, compBuf);
+
+      const ch = Buffer.alloc(46);
+      ch.writeUInt32LE(0x02014b50, 0);
+      ch.writeUInt16LE(20, 4);
+      ch.writeUInt16LE(20, 6);
+      ch.writeUInt16LE(0, 8);
+      ch.writeUInt16LE(method, 10);
+      ch.writeUInt32LE(compBuf.length, 20);
+      ch.writeUInt32LE(rawBuf.length, 24);
+      ch.writeUInt16LE(nameBuf.length, 28);
+      ch.writeUInt32LE(off, 42);
+      centrals.push(ch, nameBuf);
+      off += lh.length + nameBuf.length + compBuf.length;
+    }
+    const cdBuf = Buffer.concat(centrals);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0);
+    eocd.writeUInt16LE(entries.length, 8);
+    eocd.writeUInt16LE(entries.length, 10);
+    eocd.writeUInt32LE(cdBuf.length, 12);
+    eocd.writeUInt32LE(off, 16);
+    return new Uint8Array(Buffer.concat([...locals, cdBuf, eocd]));
+  };
+  const docXml = '<?xml version="1.0" encoding="UTF-8"?>'
+    + '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+    + '<w:p><w:r><w:t>第1章&amp;導入</w:t><w:tab/><w:t>探索者</w:t></w:r></w:p>'
+    + '<w:p><w:r><w:t>一行目</w:t><w:br/><w:t>二行目&lt;OK&gt;</w:t></w:r></w:p>'
+    + '</w:body></w:document>';
+  const docxStored = buildMiniZip([{ name: 'word/document.xml', content: docXml, deflate: false }]);
+  const docxDeflated = buildMiniZip([{ name: 'word/document.xml', content: docXml, deflate: true }]);
+  const dSync = T.loadTextDoc('scenario.docx', docxDeflated);
+  eq(dSync.enc, 'DOCX (Word)', 'deflate 圧縮 .docx を DOCX (Word) として認識');
+  eq(dSync.text, '第1章&導入\t探索者\n一行目\n二行目<OK>', '.docx の段落・タブ・改行・XML実体参照を正しく抽出');
+  const dSpoof = T.loadTextDoc('scenario.docx.txt', docxStored);
+  eq(dSpoof.enc, 'DOCX (Word)', '既存の偽装 .docx.txt 名称でも ZIP 判定で Word 本文を抽出');
+  eq(dSpoof.text, '第1章&導入\t探索者\n一行目\n二行目<OK>', '偽装 .docx.txt から生バイナリではなく本文を抽出');
+
+  // ===== リメイク識別・独立作品保護（getScenarioDedupKey / cleanseTitle / canAutoMergeScenarios） =====
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const vm = require('vm');
+    const commonCode = fs.readFileSync(path.join(__dirname, '..', '..', 'app_test49_00_block_common.js'), 'utf8');
+    const sandbox = { window: {}, console, Date, Math, Array, Object, String, Number, Set, Map, RegExp, JSON };
+    sandbox.window = sandbox;
+    vm.runInNewContext(commonCode, sandbox);
+    const { getScenarioDedupKey, canAutoMergeScenarios } = sandbox;
+
+    t(
+      getScenarioDedupKey('ドッペルゲンガーの証跡') !== getScenarioDedupKey('ドッペルゲンガーの証跡-Remake-'),
+      'getScenarioDedupKey: オリジナルと -Remake- が別キーになる'
+    );
+    t(
+      getScenarioDedupKey('ドッペルゲンガーの証跡') !== getScenarioDedupKey('ドッペルゲンガーの証跡（リメイク版）'),
+      'getScenarioDedupKey: オリジナルと （リメイク版） が別キーになる'
+    );
+    const cleansedRemake = M.cleanseTitle('ドッペルゲンガーの証跡-Remake-');
+    t(
+      cleansedRemake.includes('Remake'),
+      'CCFModel.cleanseTitle: -Remake- の Remake 表記を保持する',
+      cleansedRemake
+    );
+    eq(
+      canAutoMergeScenarios(
+        { title: 'テスト', shopUrl: 'https://booth.pm/ja/items/111111?utm=a' },
+        { title: 'テスト', shopUrl: 'https://booth.pm/ja/items/222222/' }
+      ),
+      false,
+      'canAutoMergeScenarios: 異なる shopUrl のペアには false を返す'
+    );
+    eq(
+      canAutoMergeScenarios(
+        { title: 'テスト', sourcePath: 'C:/TRPG/A' },
+        { title: 'テスト', sourcePath: 'C:/TRPG/B' }
+      ),
+      false,
+      'canAutoMergeScenarios: 独立した sourcePath のペアには false を返す'
+    );
+    eq(
+      canAutoMergeScenarios(
+        { title: 'テスト', shopUrl: 'https://booth.pm/ja/items/111111/?ref=x', sourcePath: 'C:/TRPG/A' },
+        { title: 'テスト', shopUrl: 'HTTPS://BOOTH.PM/ja/items/111111', sourcePath: 'C:/TRPG/A' }
+      ),
+      true,
+      'canAutoMergeScenarios: 同一 shopUrl かつ同一フォルダには true を返す'
+    );
+  }
+
+  (async () => {
+    const dAsync = await T.loadTextDocAsync('scenario.docx', docxDeflated);
+    eq(dAsync.enc, 'DOCX (Word)', 'loadTextDocAsync: .docx を DOCX (Word) として抽出');
+    eq(dAsync.text, '第1章&導入\t探索者\n一行目\n二行目<OK>', 'loadTextDocAsync: .docx 本文が一致');
+    console.log(`\n${ok} passed, ${ng} failed`);
+    process.exit(ng ? 1 : 0);
+  })();
+}

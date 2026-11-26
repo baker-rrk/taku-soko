@@ -45,17 +45,17 @@ const streamToBuf = s => new Promise((res, rej) => { const c = []; s.on('data', 
   const c1 = chs[1]; eq([c1.iconUrl, c1.faces, c1.x, c1.y, c1.invisible, c1.color, c1.commands], [null, [], 0, 0, true, '#d4a017', 'a\nb'], 'ダミー駒：画像なしは null／座標 0,0／改行は \\n');
   const sc = Object.values(d.entities.scenes);
   eq([sc[0].name, sc[0].backgroundUrl, sc[0].foregroundUrl, sc[0].fieldObjectFit, sc[0].fieldWidth, sc[0].fieldHeight, sc[0].displayGrid, sc[0].gridSize, sc[0].markers, sc[0].text, sc[0].mediaRef, sc[0].soundRef, sc[0].locked, sc[0].order],
-    ['S1', sha(PNG) + '.png', null, 'cover', 40, 30, false, 1, {}, '', null, null, false, 1], 'シーン：本家完全準拠スキーマ（sceneMessage未入力時はtext空欄）');
+    ['S1', sha(PNG) + '.png', null, 'contain', 40, 30, false, 1, {}, '', null, null, false, 1], 'シーン：本家完全準拠スキーマ（sceneMessage未入力時はtext空欄）');
   eq(sc[1].order, 2, 'シーン order は連番');
   t(['bgmUrl', 'bgmName', 'bgmVolume', 'roomId', 'createdAt', 'updatedAt'].every(k => !(k in sc[0])), 'シーンに独自キーが無い');
   t(res.warnings.length === 1 && /S2/.test(res.warnings[0]), '読めなかった素材は警告', res.warnings);
   const it = Object.values(d.entities.items)[0];
   eq([it.x, it.y, it.z, it.angle, it.width, it.height, it.deckId, it.locked, it.visible, it.closed, it.withoutOwner, it.freezed, it.type, it.active, it.memo, it.imageUrl, it.coverImageUrl, it.clickAction, it.order],
-    [2, 1, 30, 0, 4, 2, null, false, true, false, false, false, 'object', true, '', sha(PNG2) + '.png', null, null, 1], '盤面オブジェクト：本家完全準拠（type=object・nameのみ時はmemo空）');
+    [-18, -14, 30, 0, 4, 2, null, false, true, false, false, false, 'object', true, '', sha(PNG2) + '.png', null, null, 1], '盤面オブジェクト：本家完全準拠（中央原点変換・type=object・nameのみ時はmemo空）');
   t(['color', 'roomId', 'createdAt', 'updatedAt'].every(k => !(k in it)), 'item に独自キーが無い');
   const rm = d.entities.room;
   eq(Object.keys(rm), ['defaultAnonymousRole', 'backgroundUrl', 'foregroundUrl', 'embedUrl', 'thumbnailUrl', 'mapType', 'fieldWidth', 'fieldHeight', 'fieldObjectFit', 'alignWithGrid', 'messageChannels', 'messageGroups', 'markers', 'mediaRef', 'monitored', 'soundRef', 'sceneId', 'archived', 'backgroundColor', 'variables', 'underConstruction', 'hidden3dDice', 'initialSavedata', 'displayGrid', 'gridSize', 'enableCrossfade', 'crossfadeDuration', 'allowDuplicate'], 'room の全キーが本家と一致');
-  eq([rm.fieldWidth, rm.fieldHeight, rm.fieldObjectFit, rm.backgroundUrl, rm.foregroundUrl, rm.hidden3dDice, rm.markers, rm.gridSize], [40, 30, 'cover', sha(PNG) + '.png', null, true, {}, 1], 'room の各値（40×30マス・先頭シーン背景を初期継承）');
+  eq([rm.fieldWidth, rm.fieldHeight, rm.fieldObjectFit, rm.backgroundUrl, rm.foregroundUrl, rm.hidden3dDice, rm.markers, rm.gridSize], [40, 30, 'contain', sha(PNG) + '.png', null, true, {}, 1], 'room の各値（40×30マス・先頭シーン背景を初期継承）');
   // 差分選択：駒だけ → シーン・オブジェクト・notes は空、9キー維持＋room初期構造保持
   const only = await P.buildPackage({ npcs: [npc] }, resolve, { roomName: 'X' });
   const onlyRm = only.data.entities.room;
@@ -75,7 +75,7 @@ const streamToBuf = s => new Promise((res, rej) => { const c = []; s.on('data', 
   t(mSc.markers && !Array.isArray(mSc.markers) && typeof mSc.markers === 'object', 'scene.markers は辞書オブジェクト');
   const mVals = Object.values(mSc.markers);
   eq([mVals.length, mVals[0].x, mVals[0].y, mVals[0].z, mVals[0].width, mVals[0].height, mVals[0].locked, mVals[0].freezed, mVals[0].text, mVals[0].imageUrl, mVals[0].angle, mVals[0].clickAction, mVals[1].text, mVals[1].imageUrl],
-    [2, 1, 2, 5, 2, 1, true, false, '', jpegKey, 90, null, '画像なし', ''], 'scene.markers 各フィールドが本家準拠（nameのみ時はtext空・text明示時のみ出力）');
+    [2, -19, -13, 5, 2, 1, true, false, '', jpegKey, 90, null, '画像なし', ''], 'scene.markers 各フィールドが本家準拠（中央原点変換・nameのみ時はtext空・text明示時のみ出力）');
   const mItems = Object.values(mkRes.data.entities.items), mIt = mItems[0], mIt2 = mItems[1];
   eq([mIt.type, mIt.locked, mIt.imageUrl, mIt.memo, mIt2.memo], ['object', true, '', '', '表示テキスト'], '画像なし item の imageUrl は空文字・nameのみ時はmemo空・text明示時のみ出力');
   const pkObj = P.parsePackage(mkRes.data);
@@ -92,7 +92,7 @@ const streamToBuf = s => new Promise((res, rej) => { const c = []; s.on('data', 
     scenes: [M.sanitizeScene({ title: '継承シーン', text: '長文のシナリオ本文', sceneMessage: 'シーン開始！' })]
   }, resolve, { grid: 24 });
   const iChar = Object.values(inheritRes.data.entities.characters)[0];
-  eq([iChar.active, iChar.x, iChar.y, iChar.width, iChar.height], [true, 3, 2, 5, 4], 'onBoard=true の駒は active=true かつ盤面座標・サイズを反映');
+  eq([iChar.active, iChar.x, iChar.y, iChar.width, iChar.height], [true, -17, -13, 5, 4], 'onBoard=true の駒は active=true かつ中央原点変換した盤面座標・サイズを反映');
   const iSc = Object.values(inheritRes.data.entities.scenes)[0];
   eq([iSc.backgroundUrl, iSc.foregroundUrl, iSc.fieldObjectFit, iSc.text], [sha(PNG) + '.png', jpegKey, 'fill', 'シーン開始！'], '未設定シーンは共通盤面の背景・前景を継承し、textにはsceneMessageのみ出力');
   const iParsed = P.parsePackage(inheritRes.data);
@@ -151,6 +151,223 @@ const streamToBuf = s => new Promise((res, rej) => { const c = []; s.on('data', 
   t((pdfHtml.match(/<h1>/g) || []).length === 1 && (pdfHtml.match(/<h2>/g) || []).length === 3 && (pdfHtml.match(/<h3>/g) || []).length === 3, 'PDF用HTML：h1=タイトル／h2=シーン＋シーン外しおり／h3=しおり（アウトラインの元）');
   const txt = D.buildTxt({ title: 'テスト卓', scenes: docScenes });
   t(txt.startsWith('【テスト卓】\n\n■ 導入\n') && txt.includes('\n■ 調査 </script><b>\n') && !/\n{3,}/.test(txt), 'TXT：シーン区切りを「■」で統一');
+
+  // ===== entities.items の非表示フラグ往復変換・order ソート =====
+  const visPkgJson = {
+    meta: { version: '1.1.0' },
+    entities: {
+      room: { fieldWidth: 60, fieldHeight: 40, fieldObjectFit: 'fill' },
+      items: {
+        i_late: { type: 'object', x: 2, y: 1, width: 4, height: 2, z: 5, order: 3, active: false, visible: true, closed: false, memo: 'activeFalse' },
+        i_first: { type: 'plane', x: 4, y: 2, width: 6, height: 3, z: 1, order: 1, active: true, visible: false, closed: false, memo: 'visibleFalse' },
+        i_mid: { type: 'object', x: 6, y: 3, width: 2, height: 2, z: 2, order: 2, active: true, visible: true, closed: true, memo: 'closedTrue' },
+        i_vis: { type: 'plane', x: 1, y: 1, width: 4, height: 4, z: 3, active: true, visible: true, closed: false, memo: 'shownNoOrder' }
+      },
+      scenes: {
+        sc_b: { name: '後半', order: 2, text: '後半開始メッセージ', fieldWidth: 50, fieldHeight: 35, fieldObjectFit: 'fill', markers: {} },
+        sc_a: { name: '導入', order: 1, text: '導入メッセージ', fieldWidth: 40, fieldHeight: 30, fieldObjectFit: 'cover', markers: {} },
+        sc_c: { name: '末尾', text: 'order未設定', markers: {} }
+      },
+      characters: {}, decks: {}, notes: {}, effects: {}, savedatas: {}, snapshots: {}
+    },
+    resources: {}
+  };
+  const visParsed = P.parsePackage(visPkgJson);
+  eq(visParsed.items.map(x => x.memo), ['visibleFalse', 'closedTrue', 'activeFalse', 'shownNoOrder'], 'parsePackage: items を order 昇順（未設定は後ろ）にソート');
+  eq(visParsed.items.map(x => x.visible), [false, false, false, true], 'parsePackage: active:false / visible:false / closed:true は全て visible:false');
+  const rtItems = visParsed.items.map(it => M.sanitizeBoardItem({
+    kind: 'screen', text: it.memo, x: it.x * 24, y: it.y * 24, width: it.width * 24, height: it.height * 24, zIndex: it.z, visible: it.visible
+  }, 'screen'));
+  const rtBuilt = await P.buildPackage({
+    room: { name: 'RT', fieldWidth: visParsed.room.fieldWidth, fieldHeight: visParsed.room.fieldHeight },
+    scenes: visParsed.scenes.map(sc => M.sanitizeScene({
+      title: sc.name, text: '', sceneMessage: sc.sceneMessage,
+      boardWidth: sc.fieldWidth ? sc.fieldWidth * 24 : null,
+      boardHeight: sc.fieldHeight ? sc.fieldHeight * 24 : null,
+      fgFit: sc.fieldObjectFit
+    })),
+    items: rtItems
+  }, resolve, { grid: 24 });
+  const rtOutItems = P.parsePackage(rtBuilt.data).items;
+  eq(rtOutItems.map(x => [x.memo, x.active, x.visible]), [
+    ['visibleFalse', false, false],
+    ['closedTrue', false, false],
+    ['activeFalse', false, false],
+    ['shownNoOrder', true, true]
+  ], 'entities.items: 非表示フラグ（active / visible）がエクスポート→再読込で100%往復一致');
+
+  // ===== scenes order ソート・sceneMessage 保持・fieldWidth/fieldHeight =====
+  eq(visParsed.scenes.map(s => s.name), ['導入', '後半', '末尾'], 'parsePackage: scenes を order 昇順（未設定は出現順）にソート');
+  const rtOutScenes = P.parsePackage(rtBuilt.data).scenes;
+  eq(rtOutScenes.map(s => [s.name, s.sceneMessage, s.fieldWidth, s.fieldHeight, s.fieldObjectFit]), [
+    ['導入', '導入メッセージ', 40, 30, 'cover'],
+    ['後半', '後半開始メッセージ', 50, 35, 'fill'],
+    ['末尾', 'order未設定', 40, 30, 'contain']
+  ], 'scenes: order順・sceneMessage・fieldWidth/fieldHeight・fieldObjectFit を往復保持');
+  eq([rtBuilt.data.entities.room.fieldWidth, rtBuilt.data.entities.room.fieldHeight], [60, 40], 'room.fieldWidth / fieldHeight を保持');
+  eq(P.detectCoordScale([{ x: 960, y: 720 }, { x: 24, y: 24 }], { fieldWidth: 40, fieldHeight: 30, grid: 24 }), 1, 'detectCoordScale: ピクセル相当の巨大座標(>500)は scale=1（24倍しない）');
+  eq(P.detectCoordScale([{ x: -720, y: 0 }], { fieldWidth: 40, fieldHeight: 30, grid: 24 }), 1, 'detectCoordScale: 負の巨大ピクセル座標(<-500)も scale=1');
+  eq(P.detectCoordScale([{ x: 2, y: 1 }, { x: 10, y: 8 }], { fieldWidth: 40, fieldHeight: 30, grid: 24 }), 24, 'detectCoordScale: マス座標は scale=24');
+  const offboardRoomJson = {
+    meta: { version: '1.1.0' },
+    entities: {
+      room: { fieldWidth: 40, fieldHeight: 30 },
+      items: {
+        waitLeft: { type: 'object', x: -30, y: 10, width: 4, height: 4, memo: '左待機パネル' },
+        waitRight: { type: 'object', x: 65, y: 12, width: 6, height: 4, memo: '右待機パネル' },
+        boardCenter: { type: 'object', x: 10, y: 8, width: 4, height: 4, memo: '盤面内パネル' }
+      },
+      scenes: {
+        sc1: {
+          name: '待機付きシーン',
+          markers: {
+            mkWait: { x: -30, y: 10, width: 4, height: 4, text: '盤面外マーカー' }
+          }
+        }
+      },
+      characters: {}, decks: {}, notes: {}, effects: {}, savedatas: {}, snapshots: {}
+    },
+    resources: {}
+  };
+  const offboardPkg = P.parsePackage(offboardRoomJson);
+  const offboardScale = P.detectCoordScale(
+    [...offboardPkg.items, ...offboardPkg.scenes.flatMap(s => s.markers || [])],
+    { fieldWidth: offboardPkg.room.fieldWidth, fieldHeight: offboardPkg.room.fieldHeight, grid: 24 }
+  );
+  eq(offboardScale, 24, 'detectCoordScale: 盤面外待機パネル(-30,10 / 65,12)を含む部屋でも scale=24');
+  eq(
+    offboardPkg.items.map(it => [it.memo, it.x * offboardScale, it.y * offboardScale]),
+    [
+      ['左待機パネル', -720, 240],
+      ['右待機パネル', 1560, 288],
+      ['盤面内パネル', 240, 192]
+    ],
+    'parsePackage + detectCoordScale: 盤面外待機パネルを含む全アイテムの座標が ×24 で展開される'
+  );
+  eq(
+    offboardPkg.scenes[0].markers.map(mk => [mk.text, mk.x * offboardScale, mk.y * offboardScale]),
+    [['盤面外マーカー', -720, 240]],
+    'parsePackage + detectCoordScale: 盤面外マーカーの座標も ×24 で展開される'
+  );
+
+  // ===== CCFModel.fromCcfoliaCharacter: @img: 立ち絵保持・メインiconUrl先頭保持・max:"" で0に潰れない =====
+  const chFromRef = M.fromCcfoliaCharacter({
+    kind: 'character',
+    data: {
+      name: 'テストNPC',
+      iconUrl: '@img:mainhash01',
+      faces: [
+        { iconUrl: '@img:facehash02', label: '笑顔' },
+        { iconUrl: '@img:mainhash01', label: '通常' },
+        { iconUrl: 'file:///C:/images/angry.png', label: '怒り' },
+        { iconUrl: 'C:\\images\\local.png', label: 'ローカル' }
+      ],
+      status: [
+        { label: 'HP', value: 15, max: '' },
+        { label: 'MP', value: 12, max: '   ' },
+        { label: 'SAN', value: 60, max: 99 },
+        { label: 'ZERO', value: 5, max: 0 }
+      ],
+      params: [{ label: 'STR', value: '12' }],
+      commands: 'CCB<=60 【目星】'
+    }
+  });
+  t(chFromRef && chFromRef.iconDataUrl === '@img:mainhash01', 'fromCcfoliaCharacter: @img: 参照を iconDataUrl に保持', chFromRef && chFromRef.iconDataUrl);
+  eq(chFromRef.portraits.map(p => [p.dataUrl || p.path, p.label]), [
+    ['@img:mainhash01', '通常'],
+    ['@img:facehash02', '笑顔'],
+    ['file:///C:/images/angry.png', '怒り'],
+    ['C:\\images\\local.png', 'ローカル']
+  ], 'fromCcfoliaCharacter: メインiconUrlを先頭に重複除去して保持し @img:/file:///ローカルパスを受け入れ');
+  eq(chFromRef.status, [
+    { label: 'HP', value: 15, max: 15 },
+    { label: 'MP', value: 12, max: 12 },
+    { label: 'SAN', value: 60, max: 99 },
+    { label: 'ZERO', value: 5, max: 0 }
+  ], 'fromCcfoliaCharacter: status.max が空文字/空白のとき 0 に潰れず value にフォールバック（明示0は維持）');
+  const gdWithBgm = M.sanitizeGlobalDecor({ bgm: { name: '部屋曲', path: '/bgm/room.mp3', volume: 45 } });
+  eq(gdWithBgm.bgm && [gdWithBgm.bgm.name, gdWithBgm.bgm.path, gdWithBgm.bgm.volume], ['部屋曲', '/bgm/room.mp3', 45], 'sanitizeGlobalDecor: 部屋BGMを保持');
+
+  // ===== fitMode / fgFit の 'contain' 保持・sanitizeSceneParseConfig・visible:false マーカー除外 =====
+  const fgPngUrl = 'data:image/png;base64,' + PNG.toString('base64');
+  const fgDefault = M.sanitizeBoardItem({ dataUrl: fgPngUrl }, 'fg');
+  const fgContain = M.sanitizeBoardItem({ dataUrl: fgPngUrl, fitMode: 'contain' }, 'fg');
+  const fgCover = M.sanitizeBoardItem({ dataUrl: fgPngUrl, fitMode: 'cover' }, 'fg');
+  const fgFill = M.sanitizeBoardItem({ dataUrl: fgPngUrl, fitMode: 'fill' }, 'fg');
+  eq([fgDefault.fitMode, fgContain.fitMode, fgCover.fitMode, fgFill.fitMode], ['contain', 'contain', 'cover', 'fill'], 'sanitizeBoardItem: fitMode は contain/cover/fill の3値を保持し既定値は contain');
+  const scContain = M.sanitizeScene({ title: '全体収め', fgFit: 'contain', fg: { dataUrl: fgPngUrl, fitMode: 'contain' } });
+  const scFgDefault = M.sanitizeScene({ title: '未指定前景', fg: { dataUrl: fgPngUrl } });
+  const scInheritCover = M.sanitizeScene({ title: 'fgFit引き継ぎ', fgFit: 'cover', fg: { dataUrl: fgPngUrl } });
+  eq([scContain.fgFit, scContain.fg.fitMode, scFgDefault.fgFit, scFgDefault.fg.fitMode, scInheritCover.fgFit, scInheritCover.fg.fitMode],
+    ['contain', 'contain', 'contain', 'contain', 'cover', 'cover'], 'sanitizeScene: fgFit / fg.fitMode で contain を保持し未指定時は fgFit || contain を引き継ぐ');
+  eq([M.sanitizeSceneParseConfig(null).inheritMarkersOnNewScene, M.sanitizeSceneParseConfig({ inheritMarkersOnNewScene: false }).inheritMarkersOnNewScene],
+    [true, false], 'sanitizeSceneParseConfig: inheritMarkersOnNewScene は既定 true で false 指定も保持');
+  const visMkPkg = await P.buildPackage({
+    scenes: [M.sanitizeScene({
+      title: 'マーカー表示フィルタ',
+      fgFit: 'contain',
+      fg: { dataUrl: fgPngUrl, fitMode: 'contain' },
+      markers: [
+        { text: '表示マーカー1', x: 24, y: 24, width: 48, height: 24, visible: true },
+        { text: '非表示マーカー', x: 48, y: 48, width: 48, height: 24, visible: false, dataUrl: 'data:image/png;base64,' + PNG2.toString('base64') },
+        { text: '表示マーカー2', x: 72, y: 72, width: 48, height: 24 }
+      ]
+    })]
+  }, resolve, { grid: 24 });
+  const visMkScene = Object.values(visMkPkg.data.entities.scenes)[0];
+  const visMkTexts = Object.values(visMkScene.markers).map(mk => mk.text);
+  eq([visMkScene.fieldObjectFit, visMkTexts], ['contain', ['表示マーカー1', '表示マーカー2']], 'buildPackage: fieldObjectFit=contain を維持し visible:false のマーカーをシーン出力から除外');
+
+  // ===== ココフォリア中央原点 ⇔ 卓工房左上原点（40×30マス = 960×720px）往復変換テスト =====
+  {
+    const grid = 24, boardW = 960, boardH = 720;
+    const centerPkg = await P.buildPackage({
+      room: { name: 'OriginTest', fieldWidth: 40, fieldHeight: 30 },
+      npcs: [Object.assign({}, npc, { onBoard: true, x: 0, y: 0, width: 96, height: 96 })],
+      scenes: [M.sanitizeScene({
+        title: '原点シーン',
+        boardWidth: boardW,
+        boardHeight: boardH,
+        markers: [
+          { text: '全面マーカー', x: 0, y: 0, width: boardW, height: boardH },
+          { text: '半マスマーカー', x: 12, y: 36, width: 48, height: 24 }
+        ]
+      })],
+      items: [
+        { kind: 'screen', name: '全面パネル', x: 0, y: 0, width: boardW, height: boardH, zIndex: 0 },
+        { kind: 'screen', name: '半マスパネル', x: 12, y: 36, width: 48, height: 24, zIndex: 1 }
+      ]
+    }, resolve, { grid, boardWidth: boardW, boardHeight: boardH });
+
+    const outItems = Object.values(centerPkg.data.entities.items);
+    const outChars = Object.values(centerPkg.data.entities.characters);
+    const outMarkers = Object.values(Object.values(centerPkg.data.entities.scenes)[0].markers);
+    eq([outItems[0].x, outItems[0].y, outItems[0].width, outItems[0].height], [-20, -15, 40, 30], '中央原点出力: 40×30盤面で卓工房(0,0,960×720)のスクリーンパネルが (-20,-15,40×30) に出力される');
+    eq([outItems[1].x, outItems[1].y], [-19.5, -13.5], '中央原点出力: 0.5マス座標(12,36px)が丸め誤差なく (-19.5,-13.5) に出力される');
+    eq([outChars[0].x, outChars[0].y], [-20, -15], '中央原点出力: 初期盤面駒(0,0)が (-20,-15) に出力される');
+    eq([outMarkers[0].x, outMarkers[0].y, outMarkers[0].width, outMarkers[0].height], [-20, -15, 40, 30], '中央原点出力: マーカーパネル(0,0,960×720)が (-20,-15,40×30) に出力される');
+    eq([outMarkers[1].x, outMarkers[1].y], [-19.5, -13.5], '中央原点出力: 0.5マスマーカー(12,36px)が (-19.5,-13.5) に出力される');
+
+    // 本家形式 x:-20, y:-15 を卓工房インポート式で読み戻すと (0, 0) に戻る往復検証
+    const parsedCenter = P.parsePackage(centerPkg.data);
+    const scaleCenter = P.detectCoordScale(
+      [...parsedCenter.items, ...parsedCenter.characters.filter(c => c.active), ...parsedCenter.scenes.flatMap(s => s.markers || [])],
+      { fieldWidth: parsedCenter.room.fieldWidth, fieldHeight: parsedCenter.room.fieldHeight, grid }
+    );
+    eq(scaleCenter, 24, '中央原点往復: detectCoordScale はマス単位(24)');
+    const impW = parsedCenter.room.fieldWidth * grid;
+    const impH = parsedCenter.room.fieldHeight * grid;
+    const impItem0 = { x: Math.round(parsedCenter.items[0].x * scaleCenter + impW / 2), y: Math.round(parsedCenter.items[0].y * scaleCenter + impH / 2) };
+    const impItem1 = { x: Math.round(parsedCenter.items[1].x * scaleCenter + impW / 2), y: Math.round(parsedCenter.items[1].y * scaleCenter + impH / 2) };
+    const impChar0 = { x: Math.round(parsedCenter.characters[0].x * scaleCenter + impW / 2), y: Math.round(parsedCenter.characters[0].y * scaleCenter + impH / 2) };
+    const sc0 = parsedCenter.scenes[0], effW = (sc0.fieldWidth * grid) || impW, effH = (sc0.fieldHeight * grid) || impH;
+    const impMk0 = { x: Math.round(sc0.markers[0].x * scaleCenter + effW / 2), y: Math.round(sc0.markers[0].y * scaleCenter + effH / 2) };
+    const impMk1 = { x: Math.round(sc0.markers[1].x * scaleCenter + effW / 2), y: Math.round(sc0.markers[1].y * scaleCenter + effH / 2) };
+    eq([impItem0.x, impItem0.y, impItem1.x, impItem1.y], [0, 0, 12, 36], '中央原点往復: 本家(-20,-15 / -19.5,-13.5)を取り込むと卓工房(0,0 / 12,36)に完全復元');
+    eq([impChar0.x, impChar0.y, impMk0.x, impMk0.y, impMk1.x, impMk1.y], [0, 0, 0, 0, 12, 36], '中央原点往復: 駒・マーカーも卓工房座標へ完全復元');
+    eq(M.sanitizeBoard({ coordVersion: 2 }).coordVersion, 2, 'sanitizeBoard: coordVersion: 2 を保持');
+    eq(M.sanitizeBoard({}).coordVersion, 0, 'sanitizeBoard: 未指定時は coordVersion: 0');
+  }
 
   console.log(ng ? 'NG ' + ng + ' / OK ' + ok : 'ALL PASS (' + ok + ')'); process.exit(ng ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(2); });

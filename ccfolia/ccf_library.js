@@ -48,10 +48,35 @@
   const fileUrl = p => {
     if (!p) return '';
     if (window.WebBridge && WebBridge.isAssetRef(p)) return WebBridge.peekAssetUrl(p) || '';
-    if (/^(?:file:|data:|blob:|https?:)/i.test(p)) return p;
+    if (/^(?:file:|data:|blob:|https?:|cloud-asset:)/i.test(p)) return p;
     if (!IS_ELECTRON) return '';
     try { return require('url').pathToFileURL(p).href; } catch (_) { return ''; }
   };
+  function resolveAssetImgSrc(r) {
+    if (!r) return '';
+    let src = r.dataUrl || (r.path && !r.missing ? fileUrl(r.path) : '');
+    if (!src && r.raw) {
+      src = r.raw.thumbRef || r.raw.dataUrl || '';
+    }
+    if (!src && r.type === 'image' && typeof appState !== 'undefined' && Array.isArray(appState.scenarios) && S && S.key) {
+      const sc = appState.scenarios.find(s => s && String(s.id) === String(S.key));
+      if (sc && Array.isArray(sc.images)) {
+        const rawNames = new Set([r.origName, r.name, r.path ? baseOfPath(r.path) : ''].filter(Boolean).map(x => String(x).normalize('NFKC').trim().toLowerCase()));
+        const stripNames = new Set([r.origName, r.name, r.path ? baseOfPath(r.path) : ''].filter(Boolean).map(x => stripAssetExt(String(x)).normalize('NFKC').trim().toLowerCase()));
+        const hit = sc.images.find(im => {
+          if (!im || !(im.dataUrl || im.thumbRef)) return false;
+          const imRaw = String(im.origName || im.name || '').normalize('NFKC').trim().toLowerCase();
+          const imStrip = stripAssetExt(im.origName || im.name || '').normalize('NFKC').trim().toLowerCase();
+          return (imRaw && rawNames.has(imRaw)) || (imStrip && stripNames.has(imStrip));
+        });
+        if (hit) src = hit.dataUrl || hit.thumbRef || '';
+      }
+    }
+    if (!src && r.cloudSha) {
+      src = 'cloud-asset://' + r.cloudSha + '/' + encodeURIComponent(r.origName || r.name || 'asset');
+    }
+    return src;
+  }
   const isZipOpen = p => Lib.open.has('zip:' + p);
 
   // ================= 共通アセット統合（画像ストア + 監視フォルダ参照） =================
@@ -131,7 +156,16 @@
     }
     const seenPath = new Set();
     if (IS_ELECTRON && Lib.root) {
-      const scanned = scanFiles();
+      let scanned = Lib.scan;
+      if (!scanned) {
+        if (!scanAsyncPromise) {
+          const targetRoot = Lib.root;
+          void scanFilesAsync().then(() => {
+            if (Lib.root === targetRoot && Lib.scan) notifyCommon();
+          });
+        }
+        scanned = Array.isArray(Lib.lastScan) ? Lib.lastScan : [];
+      }
       scanned.forEach(f => {
         const key = A() ? A().norm(f.full) : f.full.toLowerCase();
         if (seenPath.has(key)) return; seenPath.add(key);
@@ -187,7 +221,7 @@
       }
       Lib.cache.clear(); Lib.scan = null; Lib.rootExists = false; Lib.tagsDone = false; invalidateCommonCache();
       if (A() && A().invalidateUnified) A().invalidateUnified(null, true);
-      if (Lib.root) scanFiles();
+      if (Lib.root) await scanFilesAsync();
       notifyCommon();
       if (manual) say('🔄 フォルダを再スキャンして共通ギャラリーを更新しました');
     },
@@ -685,7 +719,7 @@
         }
       };
       await walk(targetRoot, 0);
-      if (Lib.root === targetRoot) Lib.scan = files;
+      if (Lib.root === targetRoot) { Lib.scan = files; Lib.lastScan = files; }
       return files;
     })().finally(() => { scanAsyncPromise = null; });
     return scanAsyncPromise;
@@ -799,11 +833,11 @@
     if (r.type === 'zip' && r.path && (IS_ELECTRON || (window.WebBridge && WebBridge.isAssetRef(r.path)))) {
       return `<div class="ccf-asset-row is-zip"><div class="ccf-asset-main">${zipRowHtml(r.path, r.name, 0)}</div></div>`;
     }
-    const src = r.dataUrl || (r.path && !r.missing ? fileUrl(r.path) : '');
+    const src = resolveAssetImgSrc(r);
     const playKey = r.path || src;
     const play = r.type === 'audio' && playKey ? `<button type="button" class="ccf-mini${audioKey === playKey ? ' is-playing' : ''}" data-lib="play" data-path="${esc(playKey)}" title="試聴">${audioKey === playKey ? '■' : '▶'}</button>` : '';
     const thumb = r.type === 'image' && src
-      ? `<img class="ccf-asset-thumb" src="${esc(src)}" loading="lazy" decoding="async" alt="">`
+      ? (A() && A().assetImgTag ? A().assetImgTag(src, 'ccf-asset-thumb', 'loading="lazy" decoding="async" alt=""') : `<img class="ccf-asset-thumb" src="${esc(src)}" loading="lazy" decoding="async" alt="">`)
       : `<span class="ccf-asset-ico">${nameIcon(r.name)}</span>`;
     const tagsHtml = A() ? A().tagBadges(r.path, r.customTags, true) : '';
     const usageHtml = (r.type === 'audio' && r.path && A()) ? A().usageBadge(r.path) : '';
@@ -857,9 +891,9 @@
         const open = forceOpen || Lib.refOpen.has(fk);
         const catDrop = fk === NONE ? '' : fk;
         const thumbs = !open ? list.slice(0, 4).map(r => {
-          const src = r.dataUrl || (r.path && !r.missing ? fileUrl(r.path) : '');
+          const src = r.type === 'image' ? resolveAssetImgSrc(r) : '';
           return r.type === 'image' && src
-            ? `<img class="ccf-folder-miniimg" src="${esc(src)}" loading="lazy" decoding="async" alt="">`
+            ? (A() && A().assetImgTag ? A().assetImgTag(src, 'ccf-folder-miniimg', 'loading="lazy" decoding="async" alt=""') : `<img class="ccf-folder-miniimg" src="${esc(src)}" loading="lazy" decoding="async" alt="">`)
             : `<span class="ccf-folder-miniico">${nameIcon(r.name)}</span>`;
         }).join('') : '';
         let bodyHtml = '';
@@ -922,6 +956,7 @@
       const btn = wrap.querySelector('[data-lib="loadmore"]');
       if (btn) btn.textContent = `さらに${PAGE_SIZE}件を表示（残り${rem}件）`;
     }
+    if (A() && A().fillCloudAssetsIn) void A().fillCloudAssetsIn(body);
   }
 
   function appendFolderMore(fk) {
@@ -945,6 +980,7 @@
       const btn = wrap.querySelector('[data-lib="fmore"]');
       if (btn) btn.textContent = `さらに${PAGE_SIZE}件を表示（残り${rem}件）`;
     }
+    if (A() && A().fillCloudAssetsIn) void A().fillCloudAssetsIn(body);
   }
 
   function attachListPager(listEl) {
@@ -995,6 +1031,7 @@
     if (hitEl) hitEl.textContent = (vis.length === all.length ? `${all.length}件` : `${vis.length} / ${all.length}件`);
     syncBulkControls(vis);
     if (typeof CCF.updateAssetCount === 'function') CCF.updateAssetCount();
+    if (A() && A().fillCloudAssetsIn) void A().fillCloudAssetsIn(body);
   }
 
   function refreshTree() { renderAssetListOnly(); }
@@ -1067,6 +1104,7 @@
       }
     }
     if (typeof CCF.updateAssetCount === 'function') CCF.updateAssetCount();
+    if (A() && A().fillCloudAssetsIn) void A().fillCloudAssetsIn(body);
   }
 
   // ---- fs.watch（マイライブラリ監視） ----
@@ -1096,7 +1134,7 @@
             Lib.cache.clear(); Lib.scan = null; Lib.rootExists = false; Lib.tagsDone = false; invalidateCommonCache();
             if (A() && A().invalidateUnified) A().invalidateUnified(null, true);
             if ((CCF.S && CCF.S.view === 'assets') || document.querySelector('.ccf-am-ov') || (document.body && document.body.dataset.activeTab === 'galleryTab')) {
-              scanFiles(); notifyCommon();
+              void scanFilesAsync().then(() => notifyCommon());
             }
           } finally {
             isSyncingLib = false;
@@ -1328,14 +1366,25 @@
         ? window.getScenarioSourcePathKey(p)
         : String(p || '').trim().toLowerCase();
 
+      const areIndependentPaths = (pkA, pkB) => {
+        if (!pkA || !pkB || pkA === pkB) return false;
+        if (pkB.startsWith(pkA + '/') || pkA.startsWith(pkB + '/')) return false;
+        return true;
+      };
+
       const list = CCF.scenarioList();
       const byPath = new Map(), byTitle = new Map();
+      const addByTitle = (k, s) => {
+        if (!k || !s) return;
+        if (!byTitle.has(k)) byTitle.set(k, []);
+        const arr = byTitle.get(k);
+        if (!arr.includes(s)) arr.push(s);
+      };
       list.forEach(s => {
         if (!s) return;
         const pk = getPathKey(s.sourcePath);
         if (pk && !byPath.has(pk)) byPath.set(pk, s);
-        const k = getDedupKey(s);
-        if (k && !byTitle.has(k)) byTitle.set(k, s);
+        addByTitle(getDedupKey(s), s);
       });
 
       let updated = 0, created = 0;
@@ -1358,7 +1407,10 @@
         };
         const entPathKey = getPathKey(ent.p);
         const normKey = getDedupKey(title);
-        let sc = (entPathKey ? byPath.get(entPathKey) : null) || (normKey ? byTitle.get(normKey) : null);
+        const titleHits = normKey ? (byTitle.get(normKey) || []) : [];
+        let sc = (entPathKey ? byPath.get(entPathKey) : null)
+          || titleHits.find(cand => !areIndependentPaths(getPathKey(cand.sourcePath), entPathKey))
+          || null;
         const isNewSc = !sc;
         if (!sc && typeof appState !== 'undefined' && Array.isArray(appState.scenarios)) {
           sc = {
@@ -1375,7 +1427,7 @@
           };
           appState.scenarios.push(sc);
           if (entPathKey) byPath.set(entPathKey, sc);
-          if (normKey) byTitle.set(normKey, sc);
+          if (normKey) addByTitle(normKey, sc);
           created++;
         }
         if (!sc) continue;
@@ -1587,7 +1639,7 @@
     if (IS_ELECTRON) {
       try { if (!fs.statSync(p).isDirectory()) return say('フォルダを選んでください'); } catch (e) { if (typeof logSoft === 'function') logSoft('setRootStat', e); return say('⚠️ フォルダを開けません'); }
     }
-    Lib.root = p; Lib.cache.clear(); Lib.open = new Set([p]); Lib.scan = null; Lib.tagsDone = false;
+    Lib.root = p; Lib.cache.clear(); Lib.open = new Set([p]); Lib.scan = null; Lib.lastScan = null; Lib.tagsDone = false;
     saveWatchFoldersToState();
     if (IS_ELECTRON) {
       startWatch();
@@ -1651,7 +1703,7 @@
       else Lib.scnWatch = sp;
     }
     if (p && p !== Lib.root) {
-      Lib.root = p; Lib.cache.clear(); Lib.open = new Set([p]); Lib.scan = null; Lib.tagsDone = false;
+      Lib.root = p; Lib.cache.clear(); Lib.open = new Set([p]); Lib.scan = null; Lib.lastScan = null; Lib.tagsDone = false;
       if (IS_ELECTRON && !(opts && opts.deferWatch)) startWatch();
     }
     loadWebRefs();

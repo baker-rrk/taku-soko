@@ -49,10 +49,10 @@
   }
 
   // シナリオ追加/編集フォームの項目（フォームのID接頭辞 e / m ＋ キー名 ⇔ シナリオのプロパティ）
-  const SCENARIO_FIELDS = { Title: 'title', System: 'system', ShopUrl: 'shopUrl', PlayerCount: 'playerCount', PlayTime: 'playTime', ReqSkills: 'reqSkills', RecSkills: 'recSkills', SemiRecSkills: 'semiRecSkills', LostRate: 'lostRate', Aftereffect: 'aftereffect', ImageUrl: 'imageUrl', Trailer: 'trailer', Notes: 'notes' };
+  const SCENARIO_FIELDS = { Title: 'title', Author: 'author', System: 'system', ShopUrl: 'shopUrl', PlayerCount: 'playerCount', PlayTime: 'playTime', ReqSkills: 'reqSkills', RecSkills: 'recSkills', SemiRecSkills: 'semiRecSkills', LostRate: 'lostRate', Aftereffect: 'aftereffect', ImageUrl: 'imageUrl', Trailer: 'trailer', Notes: 'notes' };
   const DROP_DEFAULT = '📷 画像ファイルをここにドロップ または クリックして選択';
   function fillScenarioForm(p, sc) { Object.entries(SCENARIO_FIELDS).forEach(([k, f]) => { const el = document.getElementById(p + k); if (el) el.value = (sc && sc[f]) || ''; }); }
-  function readScenarioForm(p) { const o = {}; Object.entries(SCENARIO_FIELDS).forEach(([k, f]) => { const el = document.getElementById(p + k), v = el ? el.value : ''; o[f] = (f === 'shopUrl' || f === 'imageUrl') ? v.trim() : v; }); return o; }
+  function readScenarioForm(p) { const o = {}; Object.entries(SCENARIO_FIELDS).forEach(([k, f]) => { const el = document.getElementById(p + k), v = el ? el.value : ''; o[f] = (f === 'shopUrl' || f === 'imageUrl' || f === 'author') ? v.trim() : v; }); return o; }
   async function setScenarioImage(p, f) { if (!f || !f.type.startsWith('image/')) return; const iu = document.getElementById(p + 'ImageUrl'), dt = document.getElementById(p + 'DropText'); if (iu) iu.value = await compressImage(f); if (dt) dt.innerText = `📁 ${f.name}`; }
   function showModal(id) { const m = document.getElementById(id); if (!m) return; delete m.dataset.dirty; m.style.display = 'flex'; }
 
@@ -77,7 +77,10 @@
     if (typeof syncDerivedTagsFromFields === 'function') syncDerivedTagsFromFields(appState.scenarios[idx]);
     saveState(); renderDBView(); populateScenarioDBSelect(); closeEditScenarioModal(); toast("✅ シナリオ情報を更新しました！");
   }
-  function openAddScenarioModal() { fillScenarioForm('m', null); const dt = document.getElementById('mDropText'); if (dt) dt.innerText = DROP_DEFAULT; showModal('addScenarioModal'); }
+  function openAddScenarioModal() {
+    if (typeof window.openNewScenarioDetailModal === 'function') { window.openNewScenarioDetailModal(); return; }
+    fillScenarioForm('m', null); const dt = document.getElementById('mDropText'); if (dt) dt.innerText = DROP_DEFAULT; showModal('addScenarioModal');
+  }
   function closeAddScenarioModal() { const m = document.getElementById('addScenarioModal'); if (m) m.style.display = 'none'; }
   function handleManualAddScenario(e) {
     e.preventDefault();
@@ -367,6 +370,16 @@
     { const ar = document.getElementById('autoReplyText'); if (ar) ar.value = sc.autoReply || ''; const ni = document.getElementById('noImageMode'); if (ni) ni.checked = false; }   // シナリオに保存したタグを復元
     updateTagCheckboxes(); renderBlockUI(); checkDuplicateStatus(); renderPreview();
     if (typeof updateEditScenarioBanner === 'function') updateEditScenarioBanner();
+    if (typeof window.ensureScenarioCloudBlobs === 'function' && (
+      (sc.docTexts && !Array.isArray(sc.docTexts) && sc.docTexts.__cloudBlob) ||
+      (sc.ccfRooms && !Array.isArray(sc.ccfRooms) && sc.ccfRooms.__cloudBlob)
+    )) {
+      void window.ensureScenarioCloudBlobs(sc).then(hydrated => {
+        if (hydrated && String(currentScenarioId) === String(sc.id) && typeof refreshPostDocList === 'function') {
+          refreshPostDocList({ autoOpen: true });
+        }
+      }).catch(() => {});
+    }
     if (typeof refreshPostDocList === 'function') refreshPostDocList({ autoOpen: true });
     if (window.CCF && CCF.assets && CCF.assets.invalidateUnified && currentScenarioId) CCF.assets.invalidateUnified(String(currentScenarioId), false);
     if (typeof window.resetScenarioGalleryView === 'function') window.resetScenarioGalleryView();
@@ -595,8 +608,8 @@
     let chunkIdx = 0;
 
     let topTextParts = [];
-    const topShopUrl = document.getElementById('topShopUrl').value;
-    if (topShopUrl.trim()) {
+    const topShopUrl = safeUrl(document.getElementById('topShopUrl').value);
+    if (topShopUrl) {
       topTextParts.push(`:link: ${topShopUrl}`);
     }
 
@@ -822,8 +835,8 @@
   // 右ペイン 2段アコーディオン（プレビュー ＋ シナリオ資料ビューワ）＆ ワンクリック転記
   // =========================================================================
   (function () {
-    const SUPPORTED_DOC_RE = /\.(?:pdf|txt|md|markdown|html?)$/i;
-    const TEXT_DOC_EXT_RE = /\.(?:txt|md|markdown|html?)$/i;
+    const SUPPORTED_DOC_RE = /\.(?:pdf|txt|md|markdown|html?|docx)$/i;
+    const TEXT_DOC_EXT_RE = /\.(?:txt|md|markdown|html?|docx)$/i;
     const SYNOPSIS_BLOCK_RE = /^(?:[■◆●▸▹・]\s*)?(?:あらすじ|ストーリー|導入|イントロダクション|イントロ|背景|概略|背景ストーリー|synopsis|story|introduction|intro)$/i;
     const NOTES_BLOCK_RE = /^(?:[■◆●▸▹・]\s*)?(?:注意事項・備考|注意事項|備考|注意|メモ|特記事項|notes?)$/i;
 
@@ -886,6 +899,10 @@
       if (window.WebBridge && WebBridge.isAssetRef && WebBridge.isAssetRef(s)) {
         return WebBridge.assetBasename(s);
       }
+      if (/^missing-doc:\/\//i.test(s)) {
+        const tail = s.slice('missing-doc://'.length);
+        try { return decodeURIComponent(tail) || 'document'; } catch (_) { return tail || 'document'; }
+      }
       if (/^zip(?:view|mem):\/\//i.test(s)) {
         const tail = s.split('/').pop() || '';
         try { return decodeURIComponent(tail); } catch (_) { return tail; }
@@ -903,7 +920,7 @@
     function normDocKey(v) {
       const s = String(v || '').trim();
       if (!s) return '';
-      if (/^(?:idb-asset|cloud-asset|zipview|zipmem|mem-doc):\/\//i.test(s)) return s;
+      if (/^(?:idb-asset|cloud-asset|zipview|zipmem|mem-doc|doc-text|missing-doc):\/\//i.test(s)) return s;
       return s.replace(/\//g, '\\').toLowerCase();
     }
 
@@ -983,6 +1000,22 @@
       const seenKeys = new Set();
       const seenNames = new Set();
       const manualNames = new Set();
+      const isOfficeTempName = n => /^~\$/.test(String(n || '').trim());
+      const docTextByName = new Map();
+      if (sc && Array.isArray(sc.docTexts)) {
+        sc.docTexts.forEach(dt => {
+          if (!dt || !dt.text || !dt.name || isOfficeTempName(dt.name)) return;
+          const nk = String(dt.name).normalize('NFKC').trim().toLowerCase();
+          if (nk && !docTextByName.has(nk)) docTextByName.set(nk, dt);
+        });
+      }
+      const findDocText = (...names) => {
+        for (const n of names) {
+          const nk = String(n || '').normalize('NFKC').trim().toLowerCase();
+          if (nk && docTextByName.has(nk)) return docTextByName.get(nk);
+        }
+        return null;
+      };
       const ignoredSet = new Set(
         (sc && Array.isArray(sc.ignoredDocNames) ? sc.ignoredDocNames : [])
           .map(x => String(x || '').normalize('NFKC').trim().toLowerCase())
@@ -990,31 +1023,75 @@
       );
       const zipPaths = [];
       const seenZips = new Set();
+      const canCloudDownload = !!(window.CloudSync && typeof CloudSync.canDownloadFromCloud === 'function' && CloudSync.canDownloadFromCloud());
+      const computeEntryRank = (val, isManual, extraOpts) => {
+        if (extraOpts && typeof extraOpts.rank === 'number') return extraOpts.rank;
+        const s = String(val || '');
+        if (isManual || /^mem-doc:\/\//i.test(s) || /^zip(?:view|mem):\/\//i.test(s) || /^idb-asset:\/\//i.test(s)) return 4;
+        if (/^doc-text:\/\//i.test(s)) return 2;
+        if (/^missing-doc:\/\//i.test(s)) return (extraOpts && extraOpts.isMissingRemote === false) ? 3 : 1;
+        if (/^cloud-asset:\/\//i.test(s)) return 3;
+        if (extraOpts && extraOpts.isMissingRemote) return 1;
+        if (IS_ELECTRON && (!fs || !fs.existsSync || fs.existsSync(s))) return 4;
+        return canCloudDownload ? 3 : 1;
+      };
 
-      const addEntry = (val, rawName, badgePrefix, isManual) => {
+      const addEntry = (val, rawName, badgePrefix, isManual, extraOpts) => {
         if (!val) return;
         const k = normDocKey(val);
-        if (!k || seenKeys.has(k)) return;
-        const fileName = String(rawName || baseNameOf(val) || '').trim();
+        if (!k) return;
+        const rawFileName = String(rawName || baseNameOf(val) || '').trim();
+        const fileName = rawFileName.replace(/\.docx\.txt$/i, '.docx');
+        if (isOfficeTempName(fileName) || isOfficeTempName(baseNameOf(val))) return;
+        if (/\.doc(?:\.txt)?$/i.test(rawFileName) || /\.doc(?:\.txt)?$/i.test(baseNameOf(val))) return;
         if (!SUPPORTED_DOC_RE.test(fileName) && !SUPPORTED_DOC_RE.test(baseNameOf(val))) return;
         const ext = (extOf(fileName) || extOf(val) || 'doc').toUpperCase();
         const nameKey = fileName.normalize('NFKC').trim().toLowerCase();
         if (!isManual && nameKey && ignoredSet.has(nameKey) && !manualNames.has(nameKey)) return;
-        if (nameKey && seenNames.has(nameKey) && !/^mem-doc:\/\//i.test(val)) return;
+        const isMissingRemote = !!(extraOpts && extraOpts.isMissingRemote);
+        const isDocText = /^doc-text:\/\//i.test(String(val || '')) || !!(extraOpts && extraOpts.isDocText);
+        const rank = computeEntryRank(val, isManual, extraOpts);
+        const suffix = (extraOpts && extraOpts.suffix) ? String(extraOpts.suffix) : '';
+        const icon = ext === 'PDF' ? '📕' : ext === 'DOCX' ? '📘' : (ext === 'HTML' || ext === 'HTM') ? '🌐' : '📃';
+        const prefix = badgePrefix ? `${badgePrefix} ` : `${icon} `;
+        const nextEntry = {
+          value: val,
+          name: fileName || baseNameOf(val),
+          ext: ext.toLowerCase(),
+          isManual: !!isManual,
+          isMissingRemote,
+          isDocText,
+          rank,
+          label: `${prefix}${fileName || baseNameOf(val)} [${ext}]${suffix}`
+        };
+        if (seenKeys.has(k)) {
+          const exByKey = entries.findIndex(e => normDocKey(e.value) === k);
+          if (exByKey >= 0 && (rank > (entries[exByKey].rank || 0) || (!isMissingRemote && entries[exByKey].isMissingRemote))) {
+            entries[exByKey] = nextEntry;
+            if (nameKey) {
+              seenNames.add(nameKey);
+              if (isManual) manualNames.add(nameKey);
+            }
+          }
+          return;
+        }
+        if (nameKey && seenNames.has(nameKey) && !/^mem-doc:\/\//i.test(val)) {
+          const exIdx = entries.findIndex(e => !/^mem-doc:\/\//i.test(e.value) && String(e.name || '').normalize('NFKC').trim().toLowerCase() === nameKey);
+          if (exIdx >= 0 && rank > (entries[exIdx].rank || 0)) {
+            const oldKey = normDocKey(entries[exIdx].value);
+            if (oldKey) seenKeys.delete(oldKey);
+            seenKeys.add(k);
+            entries[exIdx] = nextEntry;
+            if (isManual) manualNames.add(nameKey);
+          }
+          return;
+        }
         seenKeys.add(k);
         if (nameKey) {
           seenNames.add(nameKey);
           if (isManual) manualNames.add(nameKey);
         }
-        const icon = ext === 'PDF' ? '📕' : (ext === 'HTML' || ext === 'HTM') ? '🌐' : '📃';
-        const prefix = badgePrefix ? `${badgePrefix} ` : `${icon} `;
-        entries.push({
-          value: val,
-          name: fileName || baseNameOf(val),
-          ext: ext.toLowerCase(),
-          isManual: !!isManual,
-          label: `${prefix}${fileName || baseNameOf(val)} [${ext}]`
-        });
+        entries.push(nextEntry);
       };
 
       const addZipCandidate = zp => {
@@ -1031,10 +1108,85 @@
       }
 
       if (sc) {
+        const isCloudOrMemUrl = p => /^(?:https?:|idb-asset:|cloud-asset:|zip(?:view|mem):)/i.test(String(p || ''));
+        const isLocalReadablePath = p => {
+          if (!p) return false;
+          if (isCloudOrMemUrl(p)) return true;
+          return IS_ELECTRON && (!fs || !fs.existsSync || fs.existsSync(p));
+        };
+
+        // 0) 現在のPCの _TRPG_Data/scenarios/<id> と sc.sourcePath 配下の実ファイルを先行インデックス化（別PCパス補正用）
+        const localDocByName = new Map();
+        const regLocalDoc = (fp, fileName) => {
+          if (!fp || !fileName || isOfficeTempName(fileName) || !SUPPORTED_DOC_RE.test(fileName)) return;
+          const k1 = String(fileName).normalize('NFKC').trim().toLowerCase();
+          const k2 = String(fileName).trim().toLowerCase();
+          if (k1 && !localDocByName.has(k1)) localDocByName.set(k1, fp);
+          if (k2 && !localDocByName.has(k2)) localDocByName.set(k2, fp);
+        };
+        const walkLocalDocDir = (dir, depth, maxDepth, skipOld) => {
+          if (!dir || depth > maxDepth) return;
+          let list = [];
+          try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+          for (const ent of list) {
+            const n = ent.name || '';
+            if (!n || n.startsWith('.') || isOfficeTempName(n) || n === 'node_modules' || n === '__MACOSX' || n === '_TRPG_Data') continue;
+            const fp = path.join(dir, n);
+            if (ent.isDirectory()) {
+              if (skipOld && window.CCFModel && CCFModel.isOldFolderName && CCFModel.isOldFolderName(n)) continue;
+              walkLocalDocDir(fp, depth + 1, maxDepth, skipOld);
+            } else if (ent.isFile()) {
+              regLocalDoc(fp, n);
+            }
+          }
+        };
+        if (IS_ELECTRON && fs && path) {
+          if (DATA_ROOT && sc.id) {
+            const scDir = path.join(DATA_ROOT, 'scenarios', String(sc.id).replace(/[^\w-]/g, '_'));
+            try { if (fs.existsSync(scDir)) walkLocalDocDir(scDir, 0, 4, false); } catch (_) { }
+          }
+          if (sc.sourcePath) {
+            try {
+              if (fs.existsSync(sc.sourcePath)) {
+                const st = fs.statSync(sc.sourcePath);
+                if (st.isFile()) regLocalDoc(sc.sourcePath, path.basename(sc.sourcePath));
+                else if (st.isDirectory()) walkLocalDocDir(sc.sourcePath, 0, 4, true);
+              }
+            } catch (_) { }
+          }
+        }
+        const findLocalDocPath = (...names) => {
+          if (localDocByName.size) {
+            for (const cand of names) {
+              const b = baseNameOf(cand);
+              if (!b) continue;
+              const hit = localDocByName.get(String(b).normalize('NFKC').trim().toLowerCase())
+                || localDocByName.get(String(b).trim().toLowerCase());
+              if (hit && (!fs || !fs.existsSync || fs.existsSync(hit))) return hit;
+            }
+          }
+          if (IS_ELECTRON && sc && sc.id && window.CCF && CCF.assets && typeof CCF.assets.resolveScenarioLocalDocPath === 'function') {
+            for (const cand of names) {
+              if (!cand) continue;
+              const hit = CCF.assets.resolveScenarioLocalDocPath(sc.id, cand);
+              if (hit && (!fs || !fs.existsSync || fs.existsSync(hit))) return hit;
+            }
+          }
+          return '';
+        };
+
         // 1) sc.docs (_TRPG_Data 内の複製保存ファイルや登録資料)
         (Array.isArray(sc.docs) ? sc.docs : []).forEach(d => {
           if (!d) return;
           const nm = d.origName || d.name || baseNameOf(d.path || d.ref || d.rel || '');
+          if (isOfficeTempName(nm) || isOfficeTempName(baseNameOf(d.path || d.ref || d.rel || ''))) return;
+          const rawExt = String(d.ext || '').replace(/^\./, '').toLowerCase();
+          const hasAnyExt = /\.[a-z0-9]{1,8}$/i.test(nm);
+          const dispNm = SUPPORTED_DOC_RE.test(nm)
+            ? nm.replace(/\.docx\.txt$/i, '.docx')
+            : (SUPPORTED_DOC_RE.test(baseNameOf(d.path || d.ref || d.rel || ''))
+              ? baseNameOf(d.path || d.ref || d.rel || '').replace(/\.docx\.txt$/i, '.docx')
+              : (nm && !hasAnyExt && /^(?:pdf|txt|md|markdown|html?|docx)$/i.test(rawExt) ? `${nm}.${rawExt}` : nm));
           let fp = '';
           if (IS_ELECTRON && path && DATA_ROOT && d.rel) {
             try {
@@ -1042,16 +1194,30 @@
               if (!fs || !fs.existsSync || fs.existsSync(abs)) fp = abs;
             } catch (_) { }
           }
-          if (!fp && d.path) {
-            if (!IS_ELECTRON || !fs || /^https?:|^idb-asset:|^cloud-asset:|^zip(?:view|mem):/i.test(d.path) || fs.existsSync(d.path)) {
-              fp = d.path;
-            }
+          if (!fp && isLocalReadablePath(d.path)) fp = d.path;
+          if (!fp && isLocalReadablePath(d.ref)) fp = d.ref;
+          if (!fp) fp = findLocalDocPath(dispNm, nm, d.origName, d.name, baseNameOf(d.path || d.ref || d.rel || ''));
+          if (/\.zip$/i.test(nm || fp || d.path || d.ref || '')) {
+            const zp = fp || (d.cloudSha ? `cloud-asset://${d.cloudSha}/${encodeURIComponent(nm || 'archive.zip')}` : '');
+            if (zp) addZipCandidate(zp);
+            return;
           }
-          if (!fp && d.ref) fp = d.ref;
-          if (!fp && d.cloudSha) fp = `cloud-asset://${d.cloudSha}/${encodeURIComponent(nm || 'doc.pdf')}`;
           if (fp) {
-            if (/\.zip$/i.test(nm || fp)) addZipCandidate(fp);
-            else addEntry(fp, nm && SUPPORTED_DOC_RE.test(nm) ? nm : baseNameOf(fp));
+            addEntry(fp, dispNm && SUPPORTED_DOC_RE.test(dispNm) ? dispNm : baseNameOf(fp));
+          } else if (d.cloudSha) {
+            const cNm = dispNm || 'doc.pdf';
+            addEntry(`cloud-asset://${d.cloudSha}/${encodeURIComponent(cNm)}`, cNm, '', false, { rank: 3 });
+          } else if (canCloudDownload) {
+            const cloudCand = d.path || d.ref || d.rel || ('missing-doc://' + encodeURIComponent(dispNm || nm || 'doc'));
+            addEntry(cloudCand, dispNm || nm, '', false, { rank: 3, isMissingRemote: false });
+          } else {
+            const dt = findDocText(dispNm, nm, baseNameOf(d.path || d.ref || d.rel || ''));
+            if (dt) {
+              addEntry('doc-text://' + String(dt.id || dt.name), dispNm || dt.name, '📄', false, { suffix: '（同期テキスト）', isDocText: true, rank: 2 });
+            } else {
+              const fallbackVal = d.path || d.ref || d.rel || ('missing-doc://' + encodeURIComponent(dispNm || String(d.id || 'doc')));
+              addEntry(fallbackVal, dispNm, '', false, { suffix: '（別PC保存）', isMissingRemote: true, rank: 1 });
+            }
           }
         });
 
@@ -1062,7 +1228,7 @@
             if (fs.existsSync(scDir)) {
               const dirFiles = fs.readdirSync(scDir, { withFileTypes: true });
               dirFiles.forEach(ent => {
-                if (!ent.isFile()) return;
+                if (!ent.isFile() || isOfficeTempName(ent.name)) return;
                 const full = path.join(scDir, ent.name);
                 if (SUPPORTED_DOC_RE.test(ent.name)) addEntry(full, ent.name);
                 else if (/\.zip$/i.test(ent.name)) addZipCandidate(full);
@@ -1076,14 +1242,38 @@
           try {
             const unified = CCF.assets.getUnifiedItems(sc.id) || [];
             unified.forEach(it => {
-              if (!it || it.missing) return;
+              if (!it) return;
               const nm = it.origName || it.name || baseNameOf(it.path || '');
-              const fp = it.path || (it.cloudSha ? `cloud-asset://${it.cloudSha}/${encodeURIComponent(nm || 'doc')}` : '');
-              if (!fp) return;
-              if (it.type === 'zip' || /\.zip$/i.test(nm || fp)) {
-                addZipCandidate(fp);
-              } else if (it.type === 'pdf' || it.type === 'doc' || SUPPORTED_DOC_RE.test(nm) || SUPPORTED_DOC_RE.test(fp)) {
-                addEntry(fp, SUPPORTED_DOC_RE.test(nm) ? nm : baseNameOf(fp));
+              if (isOfficeTempName(nm) || isOfficeTempName(baseNameOf(it.path || ''))) return;
+              if (it.type === 'zip' || /\.zip$/i.test(nm || it.path || '')) {
+                const zp = (!it.missing && it.path) ? it.path : (it.cloudSha ? `cloud-asset://${it.cloudSha}/${encodeURIComponent(nm || 'archive.zip')}` : '');
+                if (zp) addZipCandidate(zp);
+              } else if (it.type === 'pdf' || it.type === 'doc' || SUPPORTED_DOC_RE.test(nm) || SUPPORTED_DOC_RE.test(it.path || '')) {
+                const nmClean = String(nm || '').replace(/\.docx\.txt$/i, '.docx');
+                const pathBase = baseNameOf(it.path || '').replace(/\.docx\.txt$/i, '.docx');
+                const dispNm = SUPPORTED_DOC_RE.test(nmClean)
+                  ? nmClean
+                  : (SUPPORTED_DOC_RE.test(pathBase)
+                    ? pathBase
+                    : (nmClean && !/\.[a-z0-9]{1,8}$/i.test(nmClean) ? `${nmClean}.${it.type === 'pdf' ? 'pdf' : 'txt'}` : nmClean));
+                if (!dispNm || !SUPPORTED_DOC_RE.test(dispNm)) return;
+                let resolvedPath = (!it.missing && isLocalReadablePath(it.path)) ? it.path : '';
+                if (!resolvedPath) resolvedPath = findLocalDocPath(dispNm, nm, it.origName, it.name, baseNameOf(it.path || ''));
+                if (resolvedPath) {
+                  addEntry(resolvedPath, dispNm);
+                } else if (it.cloudSha) {
+                  addEntry(`cloud-asset://${it.cloudSha}/${encodeURIComponent(dispNm)}`, dispNm, '', false, { rank: 3 });
+                } else if (canCloudDownload) {
+                  const cloudCand = it.path || ('missing-doc://' + encodeURIComponent(dispNm));
+                  addEntry(cloudCand, dispNm, '', false, { rank: 3, isMissingRemote: false });
+                } else {
+                  const dt = findDocText(dispNm, nm, baseNameOf(it.path || ''));
+                  if (dt) {
+                    addEntry('doc-text://' + String(dt.id || dt.name), dispNm, '📄', false, { suffix: '（同期テキスト）', isDocText: true, rank: 2 });
+                  } else {
+                    addEntry(it.path || ('missing-doc://' + encodeURIComponent(dispNm || String(it.uid || 'doc'))), dispNm, '', false, { suffix: '（別PC保存）', isMissingRemote: true, rank: 1 });
+                  }
+                }
               }
             });
           } catch (_) { }
@@ -1096,6 +1286,7 @@
           (Array.isArray(proj.refs) ? proj.refs : []).forEach(r => {
             if (!r) return;
             const nm = r.origName || r.name || baseNameOf(r.path || '');
+            if (isOfficeTempName(nm) || isOfficeTempName(baseNameOf(r.path || ''))) return;
             const fp = r.path || (r.cloudSha ? `cloud-asset://${r.cloudSha}/${encodeURIComponent(nm || 'doc')}` : '');
             if (!fp) return;
             if (r.type === 'zip' || /\.zip$/i.test(nm || fp)) addZipCandidate(fp);
@@ -1125,7 +1316,7 @@
                   try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
                   for (const ent of list) {
                     const n = ent.name || '';
-                    if (!n || n.startsWith('.') || n === 'node_modules' || n === '__MACOSX' || n === '_TRPG_Data') continue;
+                    if (!n || n.startsWith('.') || isOfficeTempName(n) || n === 'node_modules' || n === '__MACOSX' || n === '_TRPG_Data') continue;
                     const fp = path.join(dir, n);
                     if (ent.isDirectory()) {
                       if (window.CCFModel && CCFModel.isOldFolderName && CCFModel.isOldFolderName(n)) continue;
@@ -1153,7 +1344,7 @@
               for (const ent of z.entries) {
                 if (!ent || ent.dir || /__MACOSX/i.test(ent.name)) continue;
                 const base = ent.name.split('/').pop() || ent.name;
-                if (! base || base.startsWith('.')) continue;
+                if (!base || base.startsWith('.') || isOfficeTempName(base)) continue;
                 if (SUPPORTED_DOC_RE.test(base)) {
                   const zUrl = CCF.zip.url(z.id, ent.name);
                   addEntry(zUrl, base, '📦');
@@ -1162,21 +1353,33 @@
             } catch (_) { }
           }
         }
-        // 7) sc.docTexts（同期テキスト）
+        // 7) sc.docTexts（同期テキスト：rank = 2）
         if (Array.isArray(sc.docTexts) && sc.docTexts.length) {
-          const seenDocTextNames = new Set(entries.map(e => String(e.name || '').normalize('NFKC').trim().toLowerCase()));
           sc.docTexts.forEach(dt => {
-            if (!dt || !dt.text || !dt.name) return;
+            if (!dt || !dt.text || !dt.name || isOfficeTempName(dt.name)) return;
             const nk = String(dt.name).normalize('NFKC').trim().toLowerCase();
-            if ((ignoredSet.has(nk) && !manualNames.has(nk)) || seenDocTextNames.has(nk)) return;
-            seenDocTextNames.add(nk);
-            entries.push({
+            if (ignoredSet.has(nk) && !manualNames.has(nk)) return;
+            const exIdx = entries.findIndex(e => !/^mem-doc:\/\//i.test(e.value) && String(e.name || '').normalize('NFKC').trim().toLowerCase() === nk);
+            if (exIdx >= 0 && (entries[exIdx].rank || 0) >= 2) return;
+            const dtEntry = {
               value: 'doc-text://' + String(dt.id || dt.name),
               name: dt.name,
               label: `📄 ${dt.name}（同期テキスト）`,
               ext: 'txt',
-              isDocText: true
-            });
+              isDocText: true,
+              isMissingRemote: false,
+              rank: 2
+            };
+            if (exIdx >= 0) {
+              const oldKey = normDocKey(entries[exIdx].value);
+              if (oldKey) seenKeys.delete(oldKey);
+              seenKeys.add(normDocKey(dtEntry.value));
+              entries[exIdx] = dtEntry;
+            } else {
+              seenKeys.add(normDocKey(dtEntry.value));
+              seenNames.add(nk);
+              entries.push(dtEntry);
+            }
           });
         }
       }
@@ -1206,9 +1409,11 @@
         const scoreEntry = it => {
           let s = 0;
           const nm = String(it.name || '').normalize('NFKC').toLowerCase();
+          if (it.isMissingRemote) s -= 200;
           if (/^mem-doc:\/\//i.test(it.value)) s += 500;
           if (it.ext === 'pdf') s += 50;
-          else if (it.ext === 'txt' || it.ext === 'md') s += 40;
+          else if (it.ext === 'docx') s += 45;
+          else if (it.ext === 'txt' || it.ext === 'md' || it.ext === 'markdown') s += 40;
           if (/本編|本文|シナリオブック|scenario|main|kp用|gm用/i.test(nm)) s += 30;
           if (scTitleNorm && nm.includes(scTitleNorm)) s += 25;
           if (/readme|利用規約|規約|クレジット|credit|おまけ|差分/i.test(nm)) s -= 40;
@@ -1235,6 +1440,12 @@
       }
 
       const sc = currentScenarioId ? (appState.scenarios || []).find(s => s && s.id === currentScenarioId) : null;
+      if (sc && typeof window.ensureScenarioCloudBlobs === 'function' && (
+        (sc.docTexts && !Array.isArray(sc.docTexts) && sc.docTexts.__cloudBlob) ||
+        (sc.ccfRooms && !Array.isArray(sc.ccfRooms) && sc.ccfRooms.__cloudBlob)
+      )) {
+        try { await window.ensureScenarioCloudBlobs(sc); } catch (_) {}
+      }
       const scChanged = (sc ? sc.id : null) !== viewerState.scenarioId;
       if (scChanged && !o.keepManual) {
         viewerState.manualDocs.clear();
@@ -1255,13 +1466,16 @@
         + list.map(it => `<option value="${escapeHTML(it.value)}">${escapeHTML(it.label)}</option>`).join('');
 
       const stillExists = prevKey ? list.find(it => normDocKey(it.value) === prevKey) : null;
-      if (stillExists && !scChanged) {
+      if (stillExists && !scChanged && !o.forceReopen) {
         sel.value = stillExists.value;
-      } else if (o.autoOpen || scChanged) {
-        const first = list[0];
-        if (first) {
-          sel.value = first.value;
-          await openPostDoc(first.value);
+      } else if (o.autoOpen || scChanged || o.forceReopen) {
+        const curNameKey = viewerState.activeName ? String(viewerState.activeName).normalize('NFKC').trim().toLowerCase() : '';
+        const target = stillExists
+          || (curNameKey ? list.find(it => String(it.name || '').normalize('NFKC').trim().toLowerCase() === curNameKey) : null)
+          || list[0];
+        if (target) {
+          sel.value = target.value;
+          await openPostDoc(target.value);
         }
       } else if (stillExists) {
         sel.value = stillExists.value;
@@ -1286,7 +1500,8 @@
         return new Uint8Array(await res.arrayBuffer());
       }
       if (window.CCFPdfViewer && typeof CCFPdfViewer.readFileBytes === 'function') {
-        return await CCFPdfViewer.readFileBytes(src);
+        const scenarioId = viewerState.scenarioId || (typeof currentScenarioId !== 'undefined' && currentScenarioId ? currentScenarioId : '');
+        return await CCFPdfViewer.readFileBytes(src, { scenarioId });
       }
       if (IS_ELECTRON && fs && fs.existsSync(src)) {
         const buf = await fs.promises.readFile(src);
@@ -1362,6 +1577,7 @@
       viewerState.openToken++;
       teardownViewerDoc();
       viewerState.mode = 'empty';
+      viewerState.isSyncedText = false;
       viewerState.activeKey = '';
       viewerState.activeName = '';
       const emptyEl = $('postDocEmpty');
@@ -1418,7 +1634,12 @@
         if (byId) return byId;
       }
       const nm = String(dispName || baseNameOf(sp) || '').normalize('NFKC').trim().toLowerCase();
-      return nm ? (list.find(d => d && d.text && String(d.name || '').normalize('NFKC').trim().toLowerCase() === nm) || null) : null;
+      if (!nm) return null;
+      const exact = list.find(d => d && d.text && String(d.name || '').normalize('NFKC').trim().toLowerCase() === nm);
+      if (exact) return exact;
+      const stripDocExt = s => String(s || '').normalize('NFKC').trim().toLowerCase().replace(/\.[^.]+$/, '').trim();
+      const stem = stripDocExt(nm);
+      return stem ? (list.find(d => d && d.text && stripDocExt(d.name) === stem) || null) : null;
     }
 
     // ---- 5. PDF / TXT / MD / HTML を開く ----
@@ -1456,7 +1677,8 @@
         }
         if (tok !== viewerState.openToken) return false;
 
-        const isText = !!syncedDt || TEXT_DOC_EXT_RE.test(dispName) || TEXT_DOC_EXT_RE.test(baseNameOf(src));
+        const isZipDoc = !!(u8 && window.CCFText && typeof CCFText.isZipBytes === 'function' && CCFText.isZipBytes(u8));
+        const isText = !!syncedDt || TEXT_DOC_EXT_RE.test(dispName) || TEXT_DOC_EXT_RE.test(baseNameOf(src)) || isZipDoc;
         teardownViewerDoc();
         viewerState.activeKey = src;
         viewerState.activeName = dispName;
@@ -1473,7 +1695,16 @@
         if (isText) {
           let decoded = { text: '', enc: 'UTF-8' };
           if (syncedDt) {
-            decoded = { text: syncedDt.text || '', enc: '同期テキスト' };
+            const rawSynced = syncedDt.text || '';
+            const dispSynced = (window.CCFText && typeof CCFText.cleanSyncedDocText === 'function')
+              ? CCFText.cleanSyncedDocText(rawSynced)
+              : ((window.CCFText && typeof CCFText.cleanText === 'function')
+                ? CCFText.cleanText(rawSynced, { joinLines: 'smart', stripSpaces: true })
+                : rawSynced);
+            decoded = { text: dispSynced, enc: '同期テキスト' };
+          } else if (window.CCFText && typeof CCFText.loadTextDocAsync === 'function') {
+            decoded = await CCFText.loadTextDocAsync(dispName, u8);
+            if (tok !== viewerState.openToken) return false;
           } else if (window.CCFText && typeof CCFText.loadTextDoc === 'function') {
             decoded = CCFText.loadTextDoc(dispName, u8);
           } else if (typeof window.decodeTextBytes === 'function') {
@@ -1482,6 +1713,7 @@
             decoded = { text: new TextDecoder('utf-8').decode(u8), enc: 'UTF-8' };
           }
           viewerState.mode = 'text';
+          viewerState.isSyncedText = !!syncedDt;
           viewerState.textContent = decoded.text || '';
           viewerState.textEnc = decoded.enc || 'UTF-8';
           viewerState.textZoom = 1.0;
@@ -1511,12 +1743,15 @@
             const pg = await doc.getPage(i);
             const vp = pg.getViewport({ scale: 1 });
             sizes.push({ w: vp.width, h: vp.height });
+            try { if (typeof pg.cleanup === 'function') pg.cleanup(); } catch (_) { }
             if (tok !== viewerState.openToken) {
               try { doc.destroy(); } catch (_) { }
               return false;
             }
+            if (i % 25 === 0) await new Promise(r => setTimeout(r, 0));
           }
           viewerState.mode = 'pdf';
+          viewerState.isSyncedText = false;
           viewerState.pdfDoc = doc;
           viewerState.pdfSizes = sizes;
           viewerState.pdfPage = 1;
@@ -1539,9 +1774,94 @@
       } catch (err) {
         console.error('[postDocViewer] open error', err);
         if (badge) badge.textContent = '読込失敗';
-        toast('⚠️ 資料を開けませんでした: ' + (err && err.message ? err.message : err));
+        let msg = String(err && err.message ? err.message : err);
+        if (msg.includes('ブラウザ版では')) {
+          msg = 'この端末に元ファイルが見つかりません。「📂 ファイルを開く」またはD&Dで資料を再登録してください';
+        }
+        toast('⚠️ 資料を開けませんでした: ' + msg);
         return false;
       }
+    }
+
+    async function persistOpenedDocToScenario(diskPath, browserFile, rawBytes) {
+      if (!currentScenarioId) return '';
+      const sc = (appState.scenarios || []).find(s => s && s.id === currentScenarioId);
+      if (!sc) return '';
+      const registerElectronDocPath = (destPath, origPath, relPath) => {
+        if (window.CCF && CCF.assets && typeof CCF.assets.addPaths === 'function') {
+          try { CCF.assets.addPaths(currentScenarioId, [destPath], '資料'); } catch (_) { }
+        }
+        sc.docs = Array.isArray(sc.docs) ? sc.docs : [];
+        const normDest = String(destPath || '').replace(/\//g, '\\').toLowerCase();
+        const normOrig = String(origPath || '').replace(/\//g, '\\').toLowerCase();
+        const targetKey = baseNameOf(destPath).normalize('NFKC').trim().toLowerCase();
+        const hit = sc.docs.find(d => d && (
+          (d.path && (String(d.path).replace(/\//g, '\\').toLowerCase() === normDest || (normOrig && String(d.path).replace(/\//g, '\\').toLowerCase() === normOrig)))
+          || String(d.origName || d.name || '').normalize('NFKC').trim().toLowerCase() === targetKey
+        ));
+        if (hit) {
+          hit.path = destPath;
+          if (relPath) hit.rel = relPath;
+        } else {
+          const nm = baseNameOf(destPath);
+          sc.docs.push({
+            id: (typeof uid === 'function' ? uid() : ('doc_' + Date.now())),
+            name: nm,
+            origName: nm,
+            ext: extOf(nm),
+            path: destPath,
+            rel: relPath || ''
+          });
+        }
+        if (typeof saveState === 'function') saveState(true);
+        return destPath;
+      };
+      if (IS_ELECTRON && diskPath && fs && fs.existsSync(diskPath)) {
+        let destPath = diskPath;
+        let relPath = '';
+        if (path && DATA_ROOT) {
+          try {
+            const scDirName = String(sc.id).replace(/[^\w-]/g, '_');
+            const scDir = path.join(DATA_ROOT, 'scenarios', scDirName);
+            const baseNm = path.basename(diskPath);
+            const copiedPath = path.join(scDir, baseNm);
+            if (!fs.existsSync(scDir)) fs.mkdirSync(scDir, { recursive: true });
+            if (path.resolve(diskPath).toLowerCase() !== path.resolve(copiedPath).toLowerCase()) {
+              fs.copyFileSync(diskPath, copiedPath);
+            }
+            destPath = copiedPath;
+            relPath = 'scenarios/' + scDirName + '/' + baseNm;
+          } catch (_) { }
+        }
+        return registerElectronDocPath(destPath, diskPath, relPath);
+      }
+      if (IS_ELECTRON && fs && path && DATA_ROOT && !diskPath && (rawBytes || browserFile)) {
+        try {
+          let u8 = null;
+          if (rawBytes) {
+            u8 = rawBytes instanceof Uint8Array ? rawBytes : new Uint8Array(rawBytes);
+          } else if (browserFile && typeof browserFile.arrayBuffer === 'function') {
+            u8 = new Uint8Array(await browserFile.arrayBuffer());
+          }
+          if (u8 && u8.byteLength > 0) {
+            const scDirName = String(sc.id).replace(/[^\w-]/g, '_');
+            const scDir = path.join(DATA_ROOT, 'scenarios', scDirName);
+            const rawNm = (browserFile && browserFile.name) ? browserFile.name : 'document.pdf';
+            const fileName = String(rawNm).replace(/[\\/:*?"<>|]/g, '_').trim() || 'document.pdf';
+            const destPath = path.join(scDir, fileName);
+            if (!fs.existsSync(scDir)) fs.mkdirSync(scDir, { recursive: true });
+            fs.writeFileSync(destPath, u8);
+            const relPath = 'scenarios/' + scDirName + '/' + fileName;
+            return registerElectronDocPath(destPath, '', relPath);
+          }
+        } catch (err) {
+          console.warn('[postDocViewer] electron bytes persist failed', err);
+        }
+      }
+      if (browserFile && window.CCF && CCF.assets && typeof CCF.assets.addBrowserFiles === 'function') {
+        try { await CCF.assets.addBrowserFiles(currentScenarioId, [browserFile], '資料'); } catch (_) { }
+      }
+      return '';
     }
 
     async function openPostDocFromFile(file) {
@@ -1579,13 +1899,21 @@
 
       unignoreScenarioDocName(nm);
       if (IS_ELECTRON && diskPath && fs && fs.existsSync(diskPath)) {
-        viewerState.manualDocs.set(diskPath, { value: diskPath, name: nm, ext: extOf(nm) });
+        const savedPath = (await persistOpenedDocToScenario(diskPath, null)) || diskPath;
+        viewerState.manualDocs.set(savedPath, { value: savedPath, name: nm, ext: extOf(nm) });
         await refreshPostDocList({ keepManual: true, autoOpen: false });
-        await openPostDoc(diskPath);
+        await openPostDoc(savedPath);
         return;
       }
 
       const bytes = new Uint8Array(await file.arrayBuffer());
+      const savedPath = await persistOpenedDocToScenario('', file, bytes);
+      if (savedPath) {
+        viewerState.manualDocs.set(savedPath, { value: savedPath, name: nm, ext: extOf(nm) });
+        await refreshPostDocList({ keepManual: true, autoOpen: false });
+        await openPostDoc(savedPath);
+        return;
+      }
       const memKey = `mem-doc://${Date.now()}_${encodeURIComponent(nm)}`;
       viewerState.manualDocs.set(memKey, { value: memKey, name: nm, bytes, ext: extOf(nm) });
       await refreshPostDocList({ keepManual: true, autoOpen: false });
@@ -2178,7 +2506,7 @@
       if (window.CCFText && typeof CCFText.cleanText === 'function') {
         s = CCFText.cleanText(s, { joinLines: 'smart', stripSpaces: true });
       } else {
-        s = s.replace(/\r\n?/g, '\n')
+        s = s.replace(/\r\n?|[\u2028\u2029\u0085]/g, '\n')
           .replace(/[\u00AD\u200B-\u200D\u2060\uFEFF\f\v]/g, '')
           .replace(/\u00A0/g, ' ')
           .replace(/\t/g, ' ');
@@ -2388,7 +2716,52 @@
       });
 
       // 📂 ファイルを開くボタン
-      $('postDocOpenBtn')?.addEventListener('click', () => {
+      $('postDocOpenBtn')?.addEventListener('click', async () => {
+        if (IS_ELECTRON && window.CCF && CCF.electron && CCF.electron.ipcRenderer) {
+          try {
+            const picked = await CCF.electron.ipcRenderer.invoke('ccf:pick', {
+              title: 'シナリオ資料を選択',
+              properties: ['openFile'],
+              filters: [{ name: 'シナリオ資料', extensions: ['pdf', 'txt', 'md', 'markdown', 'html', 'htm', 'docx', 'zip'] }]
+            });
+            const diskPath = Array.isArray(picked) ? picked[0] : (typeof picked === 'string' ? picked : '');
+            if (!diskPath) return;
+            const nm = baseNameOf(diskPath);
+            if (/\.zip$/i.test(nm)) {
+              if (window.CCF && CCF.zip && typeof CCF.zip.open === 'function') {
+                try {
+                  const z = await CCF.zip.open(diskPath);
+                  const docEnts = (z && z.entries || []).filter(e => !e.dir && !/__MACOSX/i.test(e.name) && SUPPORTED_DOC_RE.test(e.name));
+                  if (!docEnts.length) return toast('⚠️ ZIP内にPDF / TXT / MD / HTMLファイルが見つかりませんでした');
+                  let firstUrl = '';
+                  docEnts.forEach(e => {
+                    const base = e.name.split('/').pop() || e.name;
+                    const zUrl = CCF.zip.url(z.id, e.name);
+                    if (!firstUrl) firstUrl = zUrl;
+                    unignoreScenarioDocName(base);
+                    viewerState.manualDocs.set(zUrl, { value: zUrl, name: base, ext: extOf(base) });
+                  });
+                  await refreshPostDocList({ keepManual: true, autoOpen: false });
+                  if (firstUrl) await openPostDoc(firstUrl);
+                } catch (err) {
+                  toast('⚠️ ZIPファイルを読み込めませんでした: ' + (err && err.message || err));
+                }
+              }
+              return;
+            }
+            if (!SUPPORTED_DOC_RE.test(nm)) {
+              return toast('⚠️ PDF / TXT / MD / HTML / ZIP ファイルを選択してください');
+            }
+            unignoreScenarioDocName(nm);
+            const savedPath = (await persistOpenedDocToScenario(diskPath, null)) || diskPath;
+            viewerState.manualDocs.set(savedPath, { value: savedPath, name: nm, ext: extOf(nm) });
+            await refreshPostDocList({ keepManual: true, autoOpen: false });
+            await openPostDoc(savedPath);
+            return;
+          } catch (err) {
+            console.warn('[postDocViewer] native picker failed, falling back to input', err);
+          }
+        }
         const fi = $('postDocFileInput');
         if (fi) { fi.value = ''; fi.click(); }
       });
@@ -2582,9 +2955,13 @@
           e.preventDefault();
           e.stopPropagation();
           unignoreScenarioDocName(baseNameOf(ccfPath));
-          viewerState.manualDocs.set(ccfPath, { value: ccfPath, name: baseNameOf(ccfPath), ext: extOf(ccfPath) });
+          let openTarget = ccfPath;
+          if (SUPPORTED_DOC_RE.test(ccfPath)) {
+            openTarget = (await persistOpenedDocToScenario(ccfPath, null)) || ccfPath;
+          }
+          viewerState.manualDocs.set(openTarget, { value: openTarget, name: baseNameOf(openTarget), ext: extOf(openTarget) });
           await refreshPostDocList({ keepManual: true, autoOpen: false });
-          await openPostDoc(ccfPath);
+          await openPostDoc(openTarget);
           return;
         }
         const files = [...(dt.files || [])];
@@ -2596,9 +2973,55 @@
         }
       });
 
+      // ビューポート可視化・リサイズ検知（非表示タブ中に開いたPDFの白紙防止）
+      if (typeof ResizeObserver === 'function') {
+        let prevVpW = vpEl.clientWidth || 0;
+        let prevVpH = vpEl.clientHeight || 0;
+        let vpResizeTimer = null;
+        const vpRo = new ResizeObserver(() => {
+          const w = vpEl.clientWidth || 0;
+          const h = vpEl.clientHeight || 0;
+          const becameVisible = (prevVpW <= 0 || prevVpH <= 0) && w > 0 && h > 0;
+          const widthChanged = w > 0 && h > 0 && Math.abs(w - prevVpW) >= 4;
+          prevVpW = w;
+          prevVpH = h;
+          if (!becameVisible && !widthChanged) return;
+          if (viewerState.mode !== 'pdf' || !viewerState.pdfDoc) return;
+          clearTimeout(vpResizeTimer);
+          vpResizeTimer = setTimeout(() => {
+            if (viewerState.mode === 'pdf' && viewerState.pdfDoc) {
+              if (viewerState.pdfFitMode) {
+                const prevZoom = viewerState.pdfZoom;
+                fitPdfWidth();
+                if (viewerState.pdfZoom === prevZoom) evaluateVisiblePdfPages();
+              } else {
+                evaluateVisiblePdfPages();
+              }
+            }
+          }, becameVisible ? 0 : 60);
+        });
+        vpRo.observe(vpEl);
+        viewerState.vpRo = vpRo;
+      }
+
       // 素材更新イベント（下部資料カードやココフォリア側で資料追加時）に自動追従
       window.addEventListener('ccf-refs-changed', () => {
         refreshPostDocList({ keepManual: true, autoOpen: false });
+      });
+
+      // クラウド素材パック取得完了時：現在表示中シナリオで同期テキスト表示中または空ならPDF本体へ自動切替
+      window.addEventListener('cloud-cache-changed', ev => {
+        const sid = ev && ev.detail && ev.detail.scenarioId ? String(ev.detail.scenarioId) : '';
+        const curSid = (viewerState.scenarioId != null ? String(viewerState.scenarioId) : '')
+          || (typeof currentScenarioId !== 'undefined' && currentScenarioId != null ? String(currentScenarioId) : '');
+        if (!curSid || (sid && sid !== curSid)) return;
+        const isSyncedOrEmpty = viewerState.mode === 'empty'
+          || (viewerState.mode === 'text' && (viewerState.isSyncedText || /^doc-text:\/\//i.test(String(viewerState.activeKey || ''))));
+        if (isSyncedOrEmpty) {
+          refreshPostDocList({ keepManual: true, autoOpen: true, forceReopen: true });
+        } else {
+          refreshPostDocList({ keepManual: true, autoOpen: false });
+        }
       });
 
       refreshPostDocList({ autoOpen: true });
